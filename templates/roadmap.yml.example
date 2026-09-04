@@ -1,0 +1,13 @@
+# ompo project-local config — all keys optional.
+# workerModel: model pattern passed to `omp --model` for every slice worker.
+#   Omit to use your configured default model. Cheap default recommended
+#   (this template pins a free-tier model; override hard slices via `Agent:`).
+workerModel: muse-spark-1.3-contributor-free
+maxRetries: 1
+specBudget: 12000
+workerTimeoutSec: 900
+# agentModels: per-slice `Agent:` name → model pattern.
+agentModels:
+  task: muse-spark-1.3-contributor-free
+# verifyDefaults: commands prepended before every slice's `Verify:` steps.
+verifyDefaults: []
