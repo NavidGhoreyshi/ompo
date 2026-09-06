@@ -38,7 +38,7 @@ export class RoadmapParseError extends Error {
 }
 
 const TRAILER_RE =
-  /^(depends|agent|effort|verify|files|retries|skip)\s*:\s*(.*)$/i;
+  /^(depends|agent|effort|verify|files|retries|skip|timeout)\s*:\s*(.*)$/i;
 const HEADING_RE = /^##\s+(.*)$/;
 const EXPLICIT_ID_RE = /^\[([A-Za-z0-9][A-Za-z0-9._-]*)\]\s*(.*)$/;
 
@@ -88,6 +88,24 @@ function parseRetries(value: string, sliceId: string): number {
   }
   return n;
 }
+function parseTimeout(value: string, sliceId: string): number {
+  const t = value.trim().toLowerCase();
+  const m = t.match(/^(\d+)\s*(s|sec|secs|second|seconds|m|min|mins|minute|minutes|h|hr|hrs|hour|hours)?$/);
+  if (!m) {
+    throw new RoadmapParseError(
+      `slice "${sliceId}": Timeout must be seconds or Ns|Nm|Nh, got "${value}"`,
+    );
+  }
+  const n = Number(m[1]);
+  const unit = m[2] ?? "s";
+  const seconds = n * (unit.startsWith("h") ? 3600 : unit.startsWith("m") ? 60 : 1);
+  if (seconds < 60 || seconds > 8 * 3600) {
+    throw new RoadmapParseError(
+      `slice "${sliceId}": Timeout must be 1m..8h, got "${value}"`,
+    );
+  }
+  return seconds * 1000;
+}
 
 function parseEffort(value: string, sliceId: string): Effort {
   const t = value.trim().toLowerCase();
@@ -131,7 +149,7 @@ export function parseRoadmap(markdown: string): RoadmapDoc {
       );
     }
     seen.set(id, slices.length);
-
+    let timeoutMs: number | undefined;
     let deps: string[] = [];
     let workerAgent: string | undefined;
     let effort: Effort | undefined;
@@ -171,6 +189,9 @@ export function parseRoadmap(markdown: string): RoadmapDoc {
           case "retries":
             maxRetries = parseRetries(value, id);
             break;
+          case "timeout":
+            timeoutMs = parseTimeout(value, id);
+            break;
           case "skip":
             skip = parseSkip(value);
             break;
@@ -198,6 +219,7 @@ export function parseRoadmap(markdown: string): RoadmapDoc {
       verify,
       files,
       maxRetries,
+      timeoutMs,
       skip: skip || undefined,
       status: skip ? "skipped" : "pending",
       attempts: 0,

@@ -74,6 +74,20 @@ describe("parseRoadmap", () => {
     expect(doc.slices[0]!.status).toBe("skipped");
   });
 
+  test("Timeout trailer parses durations to ms", () => {
+    const doc = parseRoadmap("## [a] A\nTimeout: 60m\n");
+    expect(doc.slices[0]!.timeoutMs).toBe(3600000);
+    expect(parseRoadmap("## [a] A\nTimeout: 90\n").slices[0]!.timeoutMs).toBe(90000);
+    expect(parseRoadmap("## [a] A\nTimeout: 2h\n").slices[0]!.timeoutMs).toBe(7200000);
+    expect(parseRoadmap("## [a] A\nDo it.\n").slices[0]!.timeoutMs).toBeUndefined();
+  });
+
+  test("Timeout rejects garbage and out-of-range", () => {
+    expect(() => parseRoadmap("## [a] A\nTimeout: soon\n")).toThrow(/Timeout/);
+    expect(() => parseRoadmap("## [a] A\nTimeout: 10s\n")).toThrow(/1m\.\.8h/);
+    expect(() => parseRoadmap("## [a] A\nTimeout: 24h\n")).toThrow(/1m\.\.8h/);
+  });
+
   test("multiple Verify lines accumulate", () => {
     const doc = parseRoadmap(
       "## [a] A\nVerify: cmd one\nVerify: cmd two\n",
@@ -99,5 +113,20 @@ describe("selector", () => {
     doc.slices[0]!.status = "failed";
     // b blocked (dep not done), c ready
     expect(readySlices(doc).map((s) => s.id)).toEqual(["c"]);
+  });
+
+  test("skipped dep satisfies downstream", () => {
+    const doc = parseRoadmap(
+      "## [a] A\nSkip: true\n## [b] B\nDepends: a\n",
+    );
+    expect(readySlices(doc).map((s) => s.id)).toEqual(["b"]);
+  });
+
+  test("failed dep still blocks downstream", () => {
+    const doc = parseRoadmap(
+      "## [a] A\n## [b] B\nDepends: a\n",
+    );
+    doc.slices[0]!.status = "failed";
+    expect(nextReady(doc)).toBeNull();
   });
 });

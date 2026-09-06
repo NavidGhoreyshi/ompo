@@ -1,14 +1,19 @@
 /**
  * Ready-selector (plan §6, M1): deterministic roadmap-order selection.
- * Only `pending` slices whose deps are all `done` are ready.
+ * Only `pending` slices whose deps are all `done` or `skipped` are ready.
+ * A skipped slice is intentionally not run — downstream must proceed past it.
  * `blocked` is advisory (computed, not stored): pending with unmet deps.
  */
 
 import type { RoadmapDoc, Slice } from "./types.ts";
+/** A dependency no longer blocks when done OR intentionally skipped. */
+export function depSatisfied(s: Slice | undefined): boolean {
+  return s?.status === "done" || s?.status === "skipped";
+}
 
 export function isReady(s: Slice, byId: Map<string, Slice>): boolean {
   if (s.status !== "pending") return false;
-  return s.deps.every((d) => byId.get(d)?.status === "done");
+  return s.deps.every((d) => depSatisfied(byId.get(d)));
 }
 
 /** First ready slice in roadmap order, or null when the roadmap stalls/ends. */

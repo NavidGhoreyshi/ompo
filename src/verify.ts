@@ -16,6 +16,8 @@ export interface VerifyOptions {
   tailChars?: number;
   /** Absolute path of the full log file to write. */
   logFile?: string;
+  /** Live progress line sink (verify start/finish per command). */
+  onProgress?: (line: string) => void;
 }
 
 export const DEFAULT_VERIFY_TIMEOUT_MS = 5 * 60 * 1000;
@@ -101,7 +103,11 @@ export async function runVerifiers(
     const name = command.length > 60 ? command.slice(0, 60) + "…" : command;
     const logRef = join(logDir, `verify-${steps.length}.log`);
     const t0 = Date.now();
+    opts.onProgress?.(`verify: $ ${command}`);
     const r = await runCommand(command, opts.projectDir, timeoutMs);
+    const secs = ((Date.now() - t0) / 1000).toFixed(1);
+    if (r.exit === 0 && !r.timedOut) opts.onProgress?.(`verify ok: ${name} (${secs}s)`);
+    else opts.onProgress?.(`verify FAIL: ${name} exit=${r.exit} timedOut=${r.timedOut} (${secs}s)`);
     const entry =
       `$ ${command}\n(exit=${r.exit} timedOut=${r.timedOut} ${Date.now() - t0}ms)\n${r.output}\n`;
     fullLog.push(entry);

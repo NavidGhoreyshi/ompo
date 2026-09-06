@@ -18,6 +18,8 @@ export interface SpecOptions {
   projectDir?: string;
   /** Extra repo conventions to cite (default AGENTS.md). */
   conventions?: string[];
+  /** Prior review rejection findings: addressed first, before new work. */
+  reviewNotes?: string;
 }
 
 export interface WorkerSpec {
@@ -76,14 +78,17 @@ export function buildWorkerSpec(
   let depLines = depSummaryLines(slice, opts.depSummaries);
   let truncatedDeps = false;
   const fixed = header + effort + filesNote + conventionsNote + contract;
+  const rejection = opts.reviewNotes
+    ? `\n## PRIOR REVIEW REJECTION — address these FIRST, before any new work\n${opts.reviewNotes}\n`
+    : "";
 
   const fit = (bodyText: string, deps: string[]): string =>
-    fixed + `## Dependencies (summaries only — never full transcripts)\n${deps.join("\n")}\n\n` + `## Slice\n\n${bodyText}\n`;
+    fixed + rejection + `## Dependencies (summaries only — never full transcripts)\n${deps.join("\n")}\n\n` + `## Slice\n\n${bodyText}\n`;
 
   // Note: scope duplicates body; rebuild with truncation-aware body.
   void scope;
   let bodyText = slice.body || "(no body)";
-  const mandatory = header + effort + filesNote + conventionsNote + contract +
+  const mandatory = header + effort + filesNote + conventionsNote + contract + rejection +
     "## Dependencies (summaries only — never full transcripts)\n(none)\n\n## Slice\n\n\n";
   if (mandatory.length + slice.title.length > budget) {
     throw new Error(

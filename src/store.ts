@@ -28,7 +28,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { join } from "node:path";
-import { crashedInFlight, type RoadmapDoc, type RunEvent, type RunEventType, type Slice } from "./types.ts";
+import { crashedInFlight, resumeDemotes, type RoadmapDoc, type RunEvent, type RunEventType, type Slice } from "./types.ts";
 
 export const STORE_DIR = join(".omp", "roadmap");
 export const RUNS_DIR = join(STORE_DIR, "runs");
@@ -222,6 +222,13 @@ export function appendEvent(
   return ev;
 }
 
+// Concurrency invariant: every mutation below is a synchronous read-modify-write
+// (readJson → appendFileSync → writeJsonAtomic tmp+rename). A single Node
+// process cannot interleave inside a sync block, so concurrent slice pipelines
+// in one orchestrator are atomic by construction — provided callers keep
+// selection and claim adjacent with no await between. Cross-process races are
+// excluded by the run lock (one orchestrator per run). Claims stay conditional
+// (pending-only) so a lost race surfaces as an error, never a double-run.
 function mutateSlice(
   projectDir: string,
   runId: string,
@@ -312,6 +319,24 @@ export const storeApi = {
       s.status = "failed";
     });
   },
+  /**
+   * Environment triage: the gate failed on infrastructure (port taken, DB
+   * down), not on the worker's code. No retry consumed; `resume` re-queues
+   * the slice once the operator fixes the environment.
+   */
+  blockEnv(projectDir: string, runId: string, sliceId: string, verdictRef: string, reason: string): RunCursor {
+    return mutateSlice(
+      projectDir,
+      runId,
+      sliceId,
+      "slice_blocked_env",
+      (s) => {
+        s.status = "blocked-env";
+        s.verdictRef = verdictRef;
+      },
+      reason,
+    );
+  },
   abortSlice(projectDir: string, runId: string, sliceId: string): RunCursor {
     return mutateSlice(projectDir, runId, sliceId, "run_aborted", (s) => {
       if (!crashedInFlight(s.status)) {
@@ -330,7 +355,7 @@ export const storeApi = {
     const cursor = loadRun(projectDir, runId);
     let demoted = 0;
     for (const s of cursor.doc.slices) {
-      if (crashedInFlight(s.status)) {
+      if (resumeDemotes(s.status)) {
         s.status = "pending";
         s.updatedAt = new Date().toISOString();
         demoted++;
@@ -374,6 +399,9 @@ export function rebuildStatusesFromEvents(
         break;
       case "slice_failed_terminal":
         status.set(ev.sliceId, "failed");
+        break;
+      case "slice_blocked_env":
+        status.set(ev.sliceId, "blocked-env");
         break;
       case "run_aborted":
         if (status.get(ev.sliceId) === "running" || status.get(ev.sliceId) === "verifying") {

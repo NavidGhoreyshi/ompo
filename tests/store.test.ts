@@ -79,6 +79,20 @@ describe("store", () => {
     expect(a.attempts).toBe(1);
   });
 
+  test("blocked-env replays from events and resume re-queues it", () => {
+    const dir = tmpProject();
+    const initial = parseRoadmap(MD);
+    createRun(dir, initial, "r");
+    storeApi.claimSlice(dir, "r", "a");
+    storeApi.workerFinished(dir, "r", "a", "rep");
+    storeApi.blockEnv(dir, "r", "a", "verdict", "port 3000 already in use");
+    expect(loadRun(dir, "r").doc.slices.find((s) => s.id === "a")!.status).toBe("blocked-env");
+    const rebuilt = rebuildStatusesFromEvents(initial, readEvents(dir, "r"));
+    expect(rebuilt.get("a")).toBe("blocked-env");
+    const resumed = storeApi.resumeRun(dir, "r");
+    expect(resumed.doc.slices.find((s) => s.id === "a")!.status).toBe("pending");
+  });
+
   test("lock contention raises exit-3 condition", () => {
     const dir = tmpProject();
     createRun(dir, parseRoadmap(MD), "r");
@@ -89,5 +103,13 @@ describe("store", () => {
     expect(lockHeld(dir, "r")).toBe(false);
     acquireLock(dir, "r");
     releaseLock(dir, "r");
+  });
+
+  test("double claim throws: claim is conditional on pending", () => {
+    const dir = tmpProject();
+    createRun(dir, parseRoadmap(MD), "r");
+    storeApi.claimSlice(dir, "r", "a");
+    expect(() => storeApi.claimSlice(dir, "r", "a")).toThrow(/cannot claim/);
+    expect(loadRun(dir, "r").doc.slices.find((s) => s.id === "a")!.attempts).toBe(1);
   });
 });

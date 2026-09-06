@@ -20,6 +20,28 @@ export class ReportValidationError extends Error {
 export const REPORT_OPEN = "<<<OMPO_REPORT";
 export const REPORT_CLOSE = ">>>";
 
+/** Harness-fix block markers (HARP-1): debugger-issued, loop-applied. */
+export const HARNESS_OPEN = "<<<OMPO_HARNESS_FIX";
+export const HARNESS_CLOSE = ">>>";
+
+/**
+ * A machine-parsable harness fix a debugger may append to its report when the
+ * failing gate is broken by harness/verify plumbing (proxy 502, stale
+ * DATABASE_URL in a Verify command) rather than by slice code. The orchestrator
+ * validates the rails and applies the diff to the worktree before re-running
+ * the gate; the slice branch's own merge lands it on the base checkout.
+ */
+export interface HarnessFix {
+  /** Must match the run report's sliceId. */
+  sliceId: string;
+  /** Repo-relative paths, all present at base HEAD, none slice-owned. */
+  filesPatched: string[];
+  /** Unified diff applied with `git apply --3way` (≤ MAX_HARNESS_DIFF_LINES). */
+  diff: string;
+  /** 5-20 words: why the harness bug broke this slice's gate. */
+  summary: string;
+}
+
 function tryParseJson(text: string): unknown | undefined {
   try {
     return JSON.parse(text);
@@ -60,6 +82,22 @@ export function extractReportFromOutput(output: string): unknown | undefined {
 
 function isStringArray(v: unknown): v is string[] {
   return Array.isArray(v) && v.every((e) => typeof e === "string");
+}
+
+/**
+ * Extract the harness-fix block from debugger stdout: the first
+ * `<<<OMPO_HARNESS_FIX` … `>>>` region parsed as JSON. Returns undefined when
+ * no block exists or its body does not parse (rail validation happens later in
+ * `validateHarnessFix`).
+ */
+export function extractHarnessFix(output: string): HarnessFix | undefined {
+  const open = output.indexOf(HARNESS_OPEN);
+  if (open < 0) return undefined;
+  const close = output.indexOf(HARNESS_CLOSE, open);
+  if (close <= open) return undefined;
+  const parsed = tryParseJson(output.slice(open + HARNESS_OPEN.length, close).trim());
+  if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) return undefined;
+  return parsed as HarnessFix;
 }
 
 export function validateCompletionReport(
@@ -115,5 +153,9 @@ ${JSON.stringify(
     null,
     2,
   )}
-${REPORT_CLOSE}`;
+${REPORT_CLOSE}
+// Debug sessions ONLY — optional <<<OMPO_HARNESS_FIX { "sliceId": ..., "filesPatched": [...],
+// "diff": ..., "summary": ... } >>> block for broken harness tooling (Playwright proxy 502).
+// NOT for implementers, do NOT print — see the debug prompt's rule 5b.
+`;
 }

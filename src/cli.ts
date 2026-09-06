@@ -9,6 +9,7 @@
  */
 
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { spawnSync } from "node:child_process";
 import { join, resolve } from "node:path";
 import { parseRoadmap, sha256Hex } from "./parse.ts";
 import { nextReady, summarize } from "./select.ts";
@@ -24,14 +25,17 @@ import {
   StoreLockedError,
 } from "./store.ts";
 import { runRoadmapLoop } from "./loop.ts";
+import { runImport } from "./import.ts";
+import { createTmuxRunner } from "./tmux.ts";
 
 const VERSION = "0.1.0";
-
 function help(): string {
   return `ompo ${VERSION} — long-horizon roadmap orchestrator for stock omp
 
 USAGE
   ompo init [--project DIR]                 scaffold ROADMAP.md + .omp/roadmap.yml
+  ompo import --from FILE [--project DIR] [--roadmap PATH] [--done IDS] [--active IDS] [--model M]
+                                            agentic import: foreign roadmap (any template) → ROADMAP.md
   ompo run [FLAGS]                          run roadmap (creates or resumes a run)
   ompo resume [FLAGS]                       resume latest run (alias: run --resume)
   ompo status [--run ID] [--project DIR]    read-only store dump
@@ -45,6 +49,19 @@ RUN FLAGS
   --slice ID         run only one slice (must be ready)
   --dry-run          parse + print ready order, spawn nothing
   --max-retries N    override per-slice retries
+  --tmux             live omp TUI per worker pane in this window (needs $TMUX_PANE)
+  --jobs N           max concurrent slices (default 1; git worktree isolation)
+  --timeout-sec N    global worker budget (beats per-slice Timeout:)
+  --no-review        skip the independent post-merge review session
+  --review-model M   reviewer model (default: roadmap.yml reviewModel → workerModel)
+  --no-debug         skip the debugger session on failure (straight to retry budget)
+
+IMPORT FLAGS (ompo import --from FILE)
+  --from FILE        foreign roadmap in any template (required)
+  --done IDS         comma/space-separated foreign keys already done (Skip: true)
+  --active IDS       comma/space-separated foreign keys in progress (body = remainder)
+  --model M          worker model pattern (default: .omp/roadmap.yml workerModel)
+  --timeout-sec N    import worker timeout in seconds
 
 EXIT CODES
   0 all done · 1 failures remain · 2 aborted · 3 resume-conflict (locked)
@@ -67,6 +84,22 @@ interface Args {
   slice?: string;
   dryRun: boolean;
   maxRetries?: number;
+  from?: string;
+  model?: string;
+  done?: string;
+  active?: string;
+  timeoutSec?: number;
+  tmux?: boolean;
+  jobs?: number;
+  noReview?: boolean;
+  reviewModel?: string;
+  noDebug?: boolean;
+}
+
+function splitIds(v?: string): string[] | undefined {
+  if (!v) return undefined;
+  const ids = v.split(/[,\s]+/).map((s) => s.trim()).filter(Boolean);
+  return ids.length ? ids : undefined;
 }
 
 function parseArgs(argv: string[]): Args {
@@ -86,7 +119,17 @@ function parseArgs(argv: string[]): Args {
     else if (t === "--slice" && argv[i + 1]) a.slice = argv[++i]!;
     else if (t === "--dry-run") a.dryRun = true;
     else if (t === "--max-retries" && argv[i + 1]) a.maxRetries = Number(argv[++i]!);
+    else if (t === "--from" && argv[i + 1]) a.from = argv[++i]!;
+    else if (t === "--model" && argv[i + 1]) a.model = argv[++i]!;
+    else if (t === "--done" && argv[i + 1]) a.done = argv[++i]!;
+    else if (t === "--active" && argv[i + 1]) a.active = argv[++i]!;
+    else if (t === "--timeout-sec" && argv[i + 1]) a.timeoutSec = Number(argv[++i]!);
+    else if (t === "--jobs" && argv[i + 1]) a.jobs = Number(argv[++i]!);
+    else if (t === "--no-review") a.noReview = true;
+    else if (t === "--no-debug") a.noDebug = true;
+    else if (t === "--review-model" && argv[i + 1]) a.reviewModel = argv[++i]!;
     else if (t === "--help" || t === "-h") a.cmd = "--help";
+    else if (t === "--tmux") a.tmux = true;
     else throw new Error(`unknown flag ${t}`);
   }
   if (!a.roadmap) a.roadmap = join(a.project, "ROADMAP.md");
@@ -159,6 +202,10 @@ function latestRun(project: string): string | null {
 }
 
 async function cmdRun(a: Args): Promise<number> {
+  if (a.jobs !== undefined && !(a.jobs >= 1)) {
+    console.error(`--jobs must be a positive integer (got "${a.jobs}")`);
+    return 1;
+  }
   if (!existsSync(a.roadmap)) {
     console.error(`roadmap not found: ${a.roadmap}\nrun \`ompo init --project ${a.project}\` first`);
     return 1;
@@ -214,6 +261,10 @@ async function cmdRun(a: Args): Promise<number> {
     // Dry-run runs create an empty run dir; leave it (it is a valid empty run).
     return 0;
   }
+  if (a.tmux && !process.env.TMUX_PANE) {
+    console.error("ompo run --tmux must run from inside a tmux client ($TMUX_PANE unset)");
+    return 1;
+  }
 
   try {
     acquireLock(a.project, runId);
@@ -233,12 +284,21 @@ async function cmdRun(a: Args): Promise<number> {
   process.on("SIGINT", onSig);
   process.on("SIGTERM", onSig);
 
+  if (a.tmux) {
+    spawnSync("tmux", ["select-pane", "-T", `ompo run ${runId}`]);
+  }
   try {
     const res = await runRoadmapLoop({
       projectDir: a.project,
       runId,
       onlySlice: a.slice,
       maxRetriesOverride: a.maxRetries,
+      timeoutMsOverride: a.timeoutSec ? a.timeoutSec * 1000 : undefined,
+      jobs: a.jobs,
+      runner: a.tmux ? createTmuxRunner() : undefined,
+      noReview: a.noReview,
+      reviewModel: a.reviewModel,
+      noDebug: a.noDebug,
       signal: ctrl.signal,
       onEvent: (m) => console.log(m),
     });
@@ -267,6 +327,29 @@ async function cmdStatus(a: Args): Promise<number> {
   return 0;
 }
 
+async function cmdImport(a: Args): Promise<number> {
+  if (!a.from) {
+    console.error("ompo import requires --from FILE (foreign roadmap in any template)");
+    return 1;
+  }
+  try {
+    await runImport({
+      projectDir: a.project,
+      fromPath: a.from,
+      roadmapPath: a.roadmap,
+      workerModel: a.model,
+      timeoutMs: a.timeoutSec ? a.timeoutSec * 1000 : undefined,
+      hints: { done: splitIds(a.done), active: splitIds(a.active) },
+      onEvent: (m) => console.log(m),
+    });
+    console.log(`next: \`ompo run --dry-run --project ${a.project}\`, then \`ompo run\``);
+    return 0;
+  } catch (err) {
+    console.error(`import failed: ${String((err as Error).message)}`);
+    return 1;
+  }
+}
+
 async function main(): Promise<number> {
   let a: Args;
   try {
@@ -279,6 +362,8 @@ async function main(): Promise<number> {
   switch (a.cmd) {
     case "init":
       return cmdInit(a);
+    case "import":
+      return cmdImport(a);
     case "run":
       return cmdRun(a);
     case "resume":

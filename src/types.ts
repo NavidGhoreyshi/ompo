@@ -12,6 +12,7 @@ export type SliceStatus =
   | "failed"
   | "aborted"
   | "blocked"
+  | "blocked-env"
   | "skipped";
 
 export const TERMINAL_STATUSES: ReadonlySet<SliceStatus> = new Set([
@@ -38,6 +39,8 @@ export interface Slice {
   /** File allowlist declared by the slice (advisory for spec-builder). */
   files: string[];
   maxRetries: number;
+  /** Per-slice worker budget in ms (`Timeout:` trailer). */
+  timeoutMs?: number;
   /** Skip without running (explicit `Skip: true` trailer or --slice filter). */
   skip?: boolean;
 
@@ -65,6 +68,7 @@ export type RunEventType =
   | "slice_retried"
   | "slice_done"
   | "slice_failed_terminal"
+  | "slice_blocked_env"
   | "slice_skipped"
   | "run_aborted"
   | "run_resumed"
@@ -116,4 +120,12 @@ export function terminalStatus(s: SliceStatus): boolean {
 /** Sentinel: crash-recovery demotes these back to pending (plan §14). */
 export function crashedInFlight(s: SliceStatus): boolean {
   return s === "running" || s === "verifying" || s === "aborted";
+}
+
+/**
+ * Sentinel: `resume` re-queues these as pending. In-flight crash states plus
+ * `blocked-env` (operator was asked to fix the environment and re-run).
+ */
+export function resumeDemotes(s: SliceStatus): boolean {
+  return crashedInFlight(s) || s === "blocked-env";
 }

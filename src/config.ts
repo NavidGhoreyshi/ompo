@@ -5,9 +5,11 @@
  *
  * Supported keys:
  *   workerModel: <model pattern for omp --model>
+ *   reviewModel: <independent reviewer model (defaults to workerModel)>
  *   maxRetries: <int default override>
  *   specBudget: <int chars>
  *   workerTimeoutSec: <int>
+ *   debugTimeoutSec: <int worker-debug session budget, default 600>
  *   agentModels:
  *     <agent-name>: <model pattern>
  *   verifyDefaults:
@@ -19,9 +21,13 @@ import { join } from "node:path";
 
 export interface RoadmapConfig {
   workerModel?: string;
+  /** Independent reviewer model (defaults to workerModel). */
+  reviewModel?: string;
   maxRetries?: number;
   specBudget?: number;
   workerTimeoutSec?: number;
+  /** Debugger session budget in seconds (default 600). */
+  debugTimeoutSec?: number;
   agentModels?: Record<string, string>;
   verifyDefaults?: string[];
 }
@@ -84,9 +90,11 @@ export function parseRoadmapYml(text: string): RoadmapConfig {
       } else {
         section = "root";
         if (key === "workerModel" && val) cfg.workerModel = val;
+        else if (key === "reviewModel" && val) cfg.reviewModel = val;
         else if (key === "maxRetries" && val) cfg.maxRetries = Number(val);
         else if (key === "specBudget" && val) cfg.specBudget = Number(val);
         else if (key === "workerTimeoutSec" && val) cfg.workerTimeoutSec = Number(val);
+        else if (key === "debugTimeoutSec" && val) cfg.debugTimeoutSec = Number(val);
       }
     } else if (section === "agentModels") {
       const m = trimmed.match(/^([^:]+?)\s*:\s*(.+)$/);
