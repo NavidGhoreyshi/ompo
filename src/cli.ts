@@ -27,6 +27,7 @@ import {
 import { runRoadmapLoop } from "./loop.ts";
 import { runImport } from "./import.ts";
 import { createTmuxRunner } from "./tmux.ts";
+import { cmdLog } from "./log.ts";
 
 const VERSION = "0.1.0";
 function help(): string {
@@ -40,6 +41,8 @@ USAGE
   ompo resume [FLAGS]                       resume latest run (alias: run --resume)
   ompo status [--run ID] [--project DIR]    read-only store dump
   ompo list [--project DIR]                 list runs
+  ompo log [--run ID] [--follow] [--json]   render a run's event stream (pretty | follow | raw)
+  ompo watch [--run ID] [--project DIR]     live TUI: slice board + attempt inspector
 
 RUN FLAGS
   --roadmap PATH     roadmap markdown (default: ROADMAP.md in project)
@@ -55,6 +58,10 @@ RUN FLAGS
   --no-review        skip the independent post-merge review session
   --review-model M   reviewer model (default: roadmap.yml reviewModel → workerModel)
   --no-debug         skip the debugger session on failure (straight to retry budget)
+
+LOG FLAGS
+  --follow           tail the run's event stream (works on a live run)
+  --json             raw events, one JSON object per line
 
 IMPORT FLAGS (ompo import --from FILE)
   --from FILE        foreign roadmap in any template (required)
@@ -94,6 +101,8 @@ interface Args {
   noReview?: boolean;
   reviewModel?: string;
   noDebug?: boolean;
+  follow?: boolean;
+  logJson?: boolean;
 }
 
 function splitIds(v?: string): string[] | undefined {
@@ -127,6 +136,8 @@ function parseArgs(argv: string[]): Args {
     else if (t === "--jobs" && argv[i + 1]) a.jobs = Number(argv[++i]!);
     else if (t === "--no-review") a.noReview = true;
     else if (t === "--no-debug") a.noDebug = true;
+    else if (t === "--follow") a.follow = true;
+    else if (t === "--json") a.logJson = true;
     else if (t === "--review-model" && argv[i + 1]) a.reviewModel = argv[++i]!;
     else if (t === "--help" || t === "-h") a.cmd = "--help";
     else if (t === "--tmux") a.tmux = true;
@@ -374,6 +385,19 @@ async function main(): Promise<number> {
     case "list":
       console.log(listRuns(a.project).join("\n") || "(no runs)");
       return 0;
+    case "log":
+      return cmdLog({
+        project: a.project,
+        run: a.run,
+        follow: a.follow ?? false,
+        json: a.logJson ?? false,
+      });
+    case "watch": {
+      // Lazy import: ink/react load only when the TUI actually runs, keeping
+      // every other command's startup lean.
+      const { cmdWatch } = await import("./watch.tsx");
+      return cmdWatch({ project: a.project, run: a.run });
+    }
     case "--help":
     case "help":
     case "-h":

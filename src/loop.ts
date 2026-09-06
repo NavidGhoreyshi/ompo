@@ -173,17 +173,44 @@ function summarize5(
   return lines.join("\n");
 }
 
-/** Retry-or-terminal shared by worker/spawn/report failures. */
-function failAttempt(ctx: AttemptCtx, sliceId: string, claimed: Slice, reason: string): void {
+/** Map a failure ref (file path) to a short machine-readable class. */
+function classifyFailure(ref: string): string {
+  if (ref.includes("worktree-")) return "worktree_failed";
+  if (ref.includes("report-") && ref.endsWith(".invalid.json")) return "report_missing";
+  if (ref.includes("worker-")) return "worker_failed";
+  if (ref.includes("review-")) return "review_rejected";
+  if (ref.includes("merge-")) return "merge_conflict";
+  if (ref.includes("unexpected-")) return "unexpected";
+  return "failed";
+}
+
+/**
+ * Retry-or-terminal shared by worker/spawn/report failures. The terminal
+ * events carry a short `reason` class (+ process exit/timing when known) so
+ * run logs explain a failure in one line instead of pointing at a file.
+ */
+function failAttempt(
+  ctx: AttemptCtx,
+  sliceId: string,
+  claimed: Slice,
+  ref: string,
+  meta?: { cause?: string; exit?: number | null; timedOut?: boolean; durationMs?: number },
+): void {
   const maxRetries = maxRetriesFor(claimed, ctx);
   const attempt = claimed.attempts;
+  const cause = meta?.cause ?? classifyFailure(ref);
+  const extra = {
+    exit: meta?.exit ?? null,
+    timedOut: meta?.timedOut ?? false,
+    durationMs: meta?.durationMs,
+  };
   if (attempt <= maxRetries) {
     storeApi.retrySlice(ctx.projectDir, ctx.runId, sliceId);
     log(ctx, `  retrying (${attempt}/${maxRetries} retries used)`);
   } else {
-    storeApi.verifyFailed(ctx.projectDir, ctx.runId, sliceId, reason);
-    storeApi.terminalFail(ctx.projectDir, ctx.runId, sliceId);
-    log(ctx, `  terminal failure (retries exhausted)`);
+    storeApi.verifyFailed(ctx.projectDir, ctx.runId, sliceId, ref, cause, extra);
+    storeApi.terminalFail(ctx.projectDir, ctx.runId, sliceId, cause, extra);
+    log(ctx, `  terminal failure (retries exhausted): ${cause}`);
   }
 }
 /** Repo-relative tracked paths at the base checkout's HEAD (harness-fix rail). */
@@ -216,6 +243,14 @@ function applyHarnessFix(projectDir: string, wtPath: string, hf: HarnessFix): vo
   const dirty = (status.stdout ?? "").trim();
   if (dirty) {
     throw new Error(`base checkout has uncommitted changes to patched files — refusing: ${dirty.split("\n").join("; ")}`);
+  }
+  // The debugger verifies its fix by editing the file in the worktree, so the
+  // patched paths may already carry that exact change. Reset them to HEAD so
+  // the emitted diff applies cleanly (filesPatched are never slice-owned, so
+  // this discards only the debugger's own harness edit, never slice work).
+  const reset = spawnSync("git", ["-C", wtPath, "checkout", "--", ...hf.filesPatched], { encoding: "utf8" });
+  if (reset.status !== 0) {
+    throw new Error(`git checkout failed in worktree: ${`${reset.stderr ?? ""}${reset.stdout ?? ""}`.trim().slice(-2000)}`);
   }
   const applied = spawnSync("git", ["-C", wtPath, "apply", "--3way", "--"], {
     input: hf.diff,
@@ -524,11 +559,15 @@ async function runAttempt(ctx: AttemptCtx, sliceId: string): Promise<void> {
   log(ctx, `  model: ${workerModel ?? "(default)"} worktree: ${wtPath} budget: ${formatTimeout(workerTimeoutMs)}`);
   const onProgress = progressFn(ctx, sliceId);
   let workerOut = "";
+  // Hoisted worker result so the worker_finished event (step 5) can carry
+  // exit/timing enrichment even though the result was scoped to the try.
+  let workerMeta: { exit: number | null; timedOut: boolean; durationMs: number } | undefined;
   try {
     const res = await ctx.runner(
       { prompt: spec.prompt, sliceId, attempt },
       { projectDir: wtPath, workerModel, timeoutMs: workerTimeoutMs, signal: ctx.signal, sessionDir: dir, onProgress },
     );
+    workerMeta = { exit: res.exit, timedOut: res.timedOut, durationMs: res.durationMs };
     workerOut = `exit=${res.exit} timedOut=${res.timedOut} durationMs=${res.durationMs}\n--- stdout ---\n${res.stdout}\n--- stderr ---\n${res.stderr}\n`;
     writeFileSync(join(dir, `worker-${attempt}.log`), workerOut, "utf8");
     if (res.eventsJsonl) {
@@ -544,6 +583,7 @@ async function runAttempt(ctx: AttemptCtx, sliceId: string): Promise<void> {
       preserveIncompleteWork(ctx, sliceId, attempt, "timeout");
       throw new Error(`worker timed out`);
     }
+    void workerMeta;
     if (res.exit !== 0) {
       // Non-zero exit: still try to extract a report (worker may have
       // printed one before failing); else worker failure.
@@ -560,7 +600,12 @@ async function runAttempt(ctx: AttemptCtx, sliceId: string): Promise<void> {
       return;
     }
     log(ctx, summarize5(claimed, `worker failure: ${msg}`));
-    failAttempt(ctx, sliceId, claimed, join("slices", sliceId, `worker-${attempt}.log`));
+    failAttempt(ctx, sliceId, claimed, join("slices", sliceId, `worker-${attempt}.log`), {
+      cause: msg.includes("timed out") ? "worker_timeout" : "worker_failed",
+      exit: workerMeta?.exit ?? null,
+      timedOut: workerMeta?.timedOut,
+      durationMs: workerMeta?.durationMs,
+    });
     return;
   }
 
@@ -588,7 +633,13 @@ async function runAttempt(ctx: AttemptCtx, sliceId: string): Promise<void> {
 
   // 5. Persist report → verifying.
   writeFileSync(join(dir, "report.json"), JSON.stringify(report, null, 2) + "\n", "utf8");
-  storeApi.workerFinished(projectDir, runId, sliceId, join("slices", sliceId, "report.json"));
+  const tracker = ctx.trackers.get(sliceId);
+  storeApi.workerFinished(projectDir, runId, sliceId, join("slices", sliceId, "report.json"), {
+    exit: workerMeta?.exit ?? null,
+    timedOut: workerMeta?.timedOut ?? false,
+    durationMs: workerMeta?.durationMs,
+    stats: tracker ? { turns: tracker.turns, tools: tracker.tools } : undefined,
+  });
 
   if (ctx.signal?.aborted) {
     storeApi.abortSlice(projectDir, runId, sliceId);
@@ -656,13 +707,13 @@ async function runAttempt(ctx: AttemptCtx, sliceId: string): Promise<void> {
       const reason = verdict.steps.length === 0
         ? "no verifiers"
         : `verify failed: ${verdict.steps.filter((s) => s.exit !== 0).map((s) => s.command).join("; ").slice(0, 300)}`;
-      storeApi.verifyFailed(projectDir, runId, sliceId, join("slices", sliceId, "verdict.json"));
+      storeApi.verifyFailed(projectDir, runId, sliceId, join("slices", sliceId, "verdict.json"), "verify_failed");
       if (attempt <= maxRetries) {
         storeApi.retrySlice(projectDir, runId, sliceId);
         log(ctx, summarize5(claimed, reason, report, false));
         log(ctx, `  retrying (${attempt}/${maxRetries} retries used)`);
       } else {
-        storeApi.terminalFail(projectDir, runId, sliceId);
+        storeApi.terminalFail(projectDir, runId, sliceId, "verify_failed");
         log(ctx, summarize5(claimed, `${reason} — terminal (retries exhausted)`, report, false));
       }
       return;
@@ -672,8 +723,8 @@ async function runAttempt(ctx: AttemptCtx, sliceId: string): Promise<void> {
     if (!m.merged) {
       const conflictFile = join("slices", sliceId, `merge-${attempt}.conflict.txt`);
       writeFileSync(join(dir, `merge-${attempt}.conflict.txt`), m.detail, "utf8");
-      storeApi.verifyFailed(projectDir, runId, sliceId, conflictFile);
-      storeApi.terminalFail(projectDir, runId, sliceId);
+      storeApi.verifyFailed(projectDir, runId, sliceId, conflictFile, "merge_conflict");
+      storeApi.terminalFail(projectDir, runId, sliceId, "merge_conflict");
       log(ctx, summarize5(claimed, `merge conflict — terminal. ${m.detail}`, report, true));
       log(ctx, `  resolve in the slice branch and re-run; worktree kept for forensics`);
       return;
@@ -791,8 +842,8 @@ export async function runRoadmapLoop(opts: LoopOptions): Promise<LoopResult> {
       const cur = loadRun(opts.projectDir, opts.runId).doc.slices.find((s) => s.id === sliceId)!;
       const ref = join("slices", sliceId, `unexpected-${cur.attempts}.error.txt`);
       writeFileSync(join(sliceDir(opts.projectDir, opts.runId, sliceId), `unexpected-${cur.attempts}.error.txt`), msg, "utf8");
-      storeApi.verifyFailed(opts.projectDir, opts.runId, sliceId, ref);
-      storeApi.terminalFail(opts.projectDir, opts.runId, sliceId);
+      storeApi.verifyFailed(opts.projectDir, opts.runId, sliceId, ref, "unexpected");
+      storeApi.terminalFail(opts.projectDir, opts.runId, sliceId, "unexpected");
       log(opts, `— slice ${sliceId}: unexpected pipeline error — terminal: ${msg.slice(0, 200)}`);
     } catch {
       /* store itself broken; loop will surface it on next load */

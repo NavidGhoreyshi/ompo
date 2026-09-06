@@ -28,7 +28,15 @@ import {
   writeFileSync,
 } from "node:fs";
 import { join } from "node:path";
-import { crashedInFlight, resumeDemotes, type RoadmapDoc, type RunEvent, type RunEventType, type Slice } from "./types.ts";
+import {
+  crashedInFlight,
+  resumeDemotes,
+  type EventExtra,
+  type RoadmapDoc,
+  type RunEvent,
+  type RunEventType,
+  type Slice,
+} from "./types.ts";
 
 export const STORE_DIR = join(".omp", "roadmap");
 export const RUNS_DIR = join(STORE_DIR, "runs");
@@ -236,6 +244,7 @@ function mutateSlice(
   type: RunEventType,
   fn: (s: Slice) => void,
   detail?: string,
+  extra?: EventExtra,
 ): RunCursor {
   const cursor = loadRun(projectDir, runId);
   const slice = cursor.doc.slices.find((s) => s.id === sliceId);
@@ -249,6 +258,7 @@ function mutateSlice(
     sliceId,
     attempt: slice.attempts,
     detail,
+    ...extra,
   };
   appendFileSync(eventsPath(projectDir, runId), JSON.stringify(ev) + "\n", "utf8");
   cursor.nextSeq += 1;
@@ -268,7 +278,13 @@ export const storeApi = {
       s.attempts += 1;
     });
   },
-  workerFinished(projectDir: string, runId: string, sliceId: string, reportRef: string): RunCursor {
+  workerFinished(
+    projectDir: string,
+    runId: string,
+    sliceId: string,
+    reportRef: string,
+    extra?: EventExtra,
+  ): RunCursor {
     return mutateSlice(
       projectDir,
       runId,
@@ -279,6 +295,7 @@ export const storeApi = {
         s.reportRef = reportRef;
       },
       `report=${reportRef}`,
+      extra,
     );
   },
   verifyPassed(projectDir: string, runId: string, sliceId: string, verdictRef: string): RunCursor {
@@ -296,7 +313,14 @@ export const storeApi = {
     c = mutateSlice(projectDir, runId, sliceId, "slice_done", () => {});
     return c;
   },
-  verifyFailed(projectDir: string, runId: string, sliceId: string, verdictRef: string): RunCursor {
+  verifyFailed(
+    projectDir: string,
+    runId: string,
+    sliceId: string,
+    verdictRef: string,
+    reason?: string,
+    extra?: EventExtra,
+  ): RunCursor {
     return mutateSlice(
       projectDir,
       runId,
@@ -307,6 +331,7 @@ export const storeApi = {
         s.verdictRef = verdictRef;
       },
       `verdict=${verdictRef}`,
+      { ...extra, reason },
     );
   },
   retrySlice(projectDir: string, runId: string, sliceId: string): RunCursor {
@@ -314,10 +339,24 @@ export const storeApi = {
       s.status = "pending";
     });
   },
-  terminalFail(projectDir: string, runId: string, sliceId: string): RunCursor {
-    return mutateSlice(projectDir, runId, sliceId, "slice_failed_terminal", (s) => {
-      s.status = "failed";
-    });
+  terminalFail(
+    projectDir: string,
+    runId: string,
+    sliceId: string,
+    reason?: string,
+    extra?: EventExtra,
+  ): RunCursor {
+    return mutateSlice(
+      projectDir,
+      runId,
+      sliceId,
+      "slice_failed_terminal",
+      (s) => {
+        s.status = "failed";
+      },
+      undefined,
+      { ...extra, reason },
+    );
   },
   /**
    * Environment triage: the gate failed on infrastructure (port taken, DB

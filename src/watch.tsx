@@ -1,0 +1,451 @@
+/**
+ * ompo watch — read-only TUI over the run store (log output for humans).
+ *
+ * Layout: header (run picker + summary) → two panes (slice board | detail of
+ * the selected slice) → key hints. Pure reader: it never writes to the store,
+ * so it costs the orchestrator nothing. Polls roadmap.json/events.jsonl on a
+ * throttle (~900ms) and re-renders diffs only — worker trace files are read
+ * lazily for the selected slice, never streamed.
+ *
+ * Keys:
+ *   ↑/↓ or j/k   select slice        ←/→ or h/l   switch run
+ *   r            force refresh       q            quit
+ *
+ * Implementation notes (why this stays cheap): state updates come from one
+ * interval; per tick we stat/read a handful of small JSONL/JSON files for the
+ * current run + the selected slice's artifacts (capped tails). No full-file
+ * scans, no tail -f equivalents, no per-event React renders — the verbose
+ * worker telemetry files are only touched on demand and only their tail.
+ */
+
+import React, { useEffect, useRef, useState } from "react";
+import { Box, Text, useInput } from "ink";
+import { readFileSync, readdirSync, existsSync } from "node:fs";
+import { join } from "node:path";
+import { listRuns, loadRun, lockHeld } from "./store.ts";
+import type { RunEvent, Slice, SliceStatus } from "./types.ts";
+
+const POLL_MS = 900;
+
+// ── tiny ANSI helpers (ink <color> is fine; keep status chips explicit) ──
+const STATUS_CHIP: Record<string, { label: string; color: string }> = {
+  pending: { label: "pend", color: "gray" },
+  running: { label: "run ", color: "cyan" },
+  verifying: { label: "gates", color: "yellow" },
+  done: { label: "done", color: "green" },
+  failed: { label: "FAIL", color: "red" },
+  aborted: { label: "stop", color: "red" },
+  blocked: { label: "wait", color: "magenta" },
+  "blocked-env": { label: "env ", color: "magenta" },
+  skipped: { label: "skip", color: "gray" },
+};
+
+interface SliceLine {
+  id: string;
+  title: string;
+  status: SliceStatus;
+  attempts: number;
+  updatedAt: string;
+  reason?: string;
+}
+
+interface DetailView {
+  sliceId: string;
+  title: string;
+  status: SliceStatus;
+  attempts: number;
+  reason?: string;
+  reportSummary?: string;
+  /** Invalid report block, or a short worker/debug log tail when nothing else explains it. */
+  note?: string;
+  verdictStep?: { name: string; exit: number | null; timedOut: boolean; tail: string };
+}
+
+interface RunView {
+  runs: string[];
+  runIdx: number;
+  sel: number;
+  runId: string;
+  createdAt: string;
+  updatedAt: string;
+  counts: { done: number; failed: number; skipped: number; blockedEnv: number; pending: number };
+  live: boolean;
+  slices: SliceLine[];
+  detail: DetailView | null;
+}
+
+function hhmmss(iso: string): string {
+  const d = new Date(iso);
+  const p = (n: number) => String(n).padStart(2, "0");
+  return `${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`;
+}
+
+function clip(s: string, n: number): string {
+  return s.length > n ? `${s.slice(0, n - 1)}…` : s;
+}
+
+/** Last terminal-failure reason for a slice, from its own events. */
+function reasonsBySlice(events: RunEvent[]): Map<string, string> {
+  const m = new Map<string, string>();
+  for (const ev of events) {
+    if (ev.sliceId && (ev.type === "slice_failed_terminal" || ev.type === "verify_failed") && ev.reason) {
+      m.set(ev.sliceId, ev.reason);
+    }
+  }
+  return m;
+}
+
+// ── artifact reads (selected slice only, capped) ───────────────────────
+function readJson<T>(path: string): T | null {
+  try {
+    return JSON.parse(readFileSync(path, "utf8")) as T;
+  } catch {
+    return null;
+  }
+}
+
+function tailOf(path: string, lines: number): string {
+  try {
+    const s = readFileSync(path, "utf8").split("\n");
+    return s.slice(-lines).join("\n").slice(-1200);
+  } catch {
+    return "";
+  }
+}
+
+function buildDetail(project: string, runId: string, slice: SliceLine): DetailView | null {
+  const dir = join(project, ".omp", "roadmap", "runs", runId, "slices", slice.id);
+  if (!existsSync(dir)) return null;
+  let files: string[] = [];
+  try {
+    files = readdirSync(dir).sort();
+  } catch {
+    /* keep empty */
+  }
+  const detail: DetailView = {
+    sliceId: slice.id,
+    title: slice.title,
+    status: slice.status,
+    attempts: slice.attempts,
+    reason: slice.reason,
+  };
+  void files;
+
+  const report = readJson<{ summary?: string; done?: boolean }>(join(dir, "report.json"));
+  if (report?.summary) detail.reportSummary = report.summary;
+
+  // Newest attempt's invalid report (worker produced no usable report block).
+  const invalid = files
+    .filter((f) => /^report-\d+\.invalid\.json$/.test(f))
+    .sort()
+    .at(-1);
+  if (invalid) {
+    const rec = readJson<{ error?: string }>(join(dir, invalid));
+    if (rec?.error) detail.note = clip(rec.error, 220);
+  }
+
+  // Verdict: first failing gate step + its output tail.
+  const verdict = readJson<{ pass?: boolean; steps?: { name: string; exit: number | null; timedOut: boolean; outputTail?: string }[] }>(
+    join(dir, "verdict.json"),
+  );
+  const failedStep = verdict?.steps?.find((s) => s.exit !== 0);
+  if (failedStep) {
+    detail.verdictStep = {
+      name: failedStep.name,
+      exit: failedStep.exit,
+      timedOut: failedStep.timedOut,
+      tail: clip((failedStep.outputTail ?? "").trim().slice(-400), 400),
+    };
+  }
+
+  // A short worker/diagnosis log tail is more useful than nothing.
+  const workerLog = files.filter((f) => /^(worker|debug)-\d+\.log$/.test(f)).sort().at(-1);
+  if (workerLog && !detail.note) {
+    const first = tailOf(join(dir, workerLog), 6);
+    if (first.trim()) detail.note = `…${workerLog} tail:\n${first}`;
+  }
+  return detail;
+}
+
+function loadView(project: string, runIdx: number, sel: number): RunView | null {
+  const runs = listRuns(project);
+  if (runs.length === 0) {
+    return { runs, runIdx: 0, sel: 0, runId: "", createdAt: "", updatedAt: "", counts: { done: 0, failed: 0, skipped: 0, blockedEnv: 0, pending: 0 }, live: false, slices: [], detail: null };
+  }
+  const idx = Math.min(Math.max(runIdx, 0), runs.length - 1);
+  const runId = runs[idx]!;
+  let cursor;
+  try {
+    cursor = loadRun(project, runId);
+  } catch {
+    return null;
+  }
+  const events = readEventsSafe(project, runId);
+  const reasons = reasonsBySlice(events);
+  const count = (s: SliceStatus) => cursor.doc.slices.filter((x) => x.status === s).length;
+  const slices: SliceLine[] = cursor.doc.slices.map((s: Slice) => ({
+    id: s.id,
+    title: s.title,
+    status: s.status,
+    attempts: s.attempts,
+    updatedAt: s.updatedAt,
+    reason: s.status === "failed" ? reasons.get(s.id) : undefined,
+  }));
+  const selIdx = Math.min(Math.max(sel, 0), Math.max(slices.length - 1, 0));
+  const selSlice = slices[selIdx] ?? null;
+  const live = lockHeld(project, runId);
+  const counts = {
+    done: count("done"),
+    failed: count("failed"),
+    skipped: count("skipped"),
+    blockedEnv: count("blocked-env"),
+    pending: cursor.doc.slices.filter((x) => !["done", "failed", "skipped"].includes(x.status)).length,
+  };
+  return {
+    runs,
+    runIdx: idx,
+    sel: selIdx,
+    runId,
+    createdAt: cursor.createdAt,
+    updatedAt: cursor.updatedAt,
+    counts,
+    live,
+    slices,
+    detail: selSlice ? buildDetail(project, runId, selSlice) : null,
+  };
+}
+
+function readEventsSafe(project: string, runId: string): RunEvent[] {
+  try {
+    const path = join(project, ".omp", "roadmap", "runs", runId, "events.jsonl");
+    if (!existsSync(path)) return [];
+    return readFileSync(path, "utf8")
+      .split("\n")
+      .filter((l) => l.trim())
+      .map((l) => JSON.parse(l) as RunEvent)
+      .filter((e) => typeof e?.seq === "number");
+  } catch {
+    return [];
+  }
+}
+
+function eventsTailFor(project: string, runId: string, sliceId: string): string[] {
+  return readEventsSafe(project, runId)
+    .filter((e) => e.sliceId === sliceId)
+    .slice(-10)
+    .map((e) => {
+      const extras: string[] = [];
+      if (e.reason) extras.push(e.reason);
+      if (e.stats) extras.push(`${e.stats.turns}t/${e.stats.tools}tl`);
+      const suf = extras.length ? ` ${extras.join(" ")}` : "";
+      return `${hhmmss(e.at)} ${e.type}${e.attempt !== undefined ? ` #${e.attempt}` : ""}${suf}`;
+    });
+}
+
+// ── UI ─────────────────────────────────────────────────────────────────
+/** Cursor lands on what needs eyes: failed/running first, then done, else top. */
+function preferredSel(slices: SliceLine[]): number {
+  const rank = (s: SliceLine) =>
+    s.status === "failed" || s.status === "running" || s.status === "verifying" ? 0 : s.status === "done" ? 1 : 2;
+  let best = 0;
+  for (let i = 1; i < slices.length; i++) if (rank(slices[i]!) < rank(slices[best]!)) best = i;
+  return best;
+}
+
+function WatchApp({ project, initialRun, onExit }: { project: string; initialRun?: string; onExit: () => void }) {
+  const runs0 = listRuns(project);
+  const startIdx = initialRun ? Math.max(runs0.indexOf(initialRun), 0) : runs0.length - 1;
+  const [view, setView] = useState<RunView | null>(() => {
+    const v = loadView(project, startIdx, 0);
+    if (!v) return v;
+    const sel = preferredSel(v.slices);
+    return sel === 0 ? v : loadView(project, startIdx, sel);
+  });
+  const viewRef = useRef(view);
+  viewRef.current = view;
+
+  useEffect(() => {
+    const t = setInterval(() => {
+      const v = viewRef.current;
+      setView(loadView(project, v?.runIdx ?? 0, v?.sel ?? 0));
+    }, POLL_MS);
+    return () => clearInterval(t);
+  }, [project]);
+
+  useInput((input, key) => {
+    const v = viewRef.current;
+    if (!v) return;
+    const { sel } = v;
+    let { runIdx } = v;
+    if (input === "q") {
+      onExit();
+      return;
+    }
+    if (input === "r") {
+      setView(loadView(project, runIdx, sel));
+      return;
+    }
+    if (input === "k" || key.upArrow || input === "j" || key.downArrow) {
+      const s = input === "k" || key.upArrow ? Math.max(sel - 1, 0) : Math.min(sel + 1, Math.max(v.slices.length - 1, 0));
+      setView(loadView(project, runIdx, s));
+      return;
+    }
+    if (input === "h" || key.leftArrow) runIdx = Math.max(runIdx - 1, 0);
+    else if (input === "l" || key.rightArrow) runIdx = Math.min(runIdx + 1, Math.max(v.runs.length - 1, 0));
+    else return;
+    // Run switch: land on the new run's most interesting slice.
+    const next = loadView(project, runIdx, 0);
+    if (!next) return;
+    const p = preferredSel(next.slices);
+    setView(p === 0 ? next : loadView(project, runIdx, p));
+    return;
+  });
+
+  if (!view) return <Text color="red">cannot read run store for {project}</Text>;
+  if (view.runs.length === 0) {
+    return <Text>no runs yet — start one with `ompo run`</Text>;
+  }
+
+  const { counts } = view;
+  const chip = (s: SliceLine) => {
+    const c = STATUS_CHIP[s.status] ?? { label: s.status.slice(0, 5), color: "gray" };
+    const label = c.label.padEnd(5);
+    const name = s.status === "failed" ? s.id : `${s.id}${s.attempts > 1 ? ` ×${s.attempts}` : ""}`;
+    return (
+      <Text color={c.color}>
+        {`[${label}]`} <Text>{name}</Text>
+        {s.status === "failed" && s.reason ? <Text color="red"> {s.reason}</Text> : null}
+      </Text>
+    );
+  };
+
+  const selSlice = view.detail;
+  const summary = [
+    counts.done ? `done ${counts.done}` : null,
+    counts.failed ? `fail ${counts.failed}` : null,
+    counts.blockedEnv ? `env ${counts.blockedEnv}` : null,
+    counts.skipped ? `skip ${counts.skipped}` : null,
+    counts.pending ? `pend ${counts.pending}` : null,
+  ]
+    .filter(Boolean)
+    .join(" · ");
+
+  return (
+    <Box flexDirection="column">
+      {/* Header: run picker */}
+      <Box>
+        <Text color="cyan">{view.live ? "●" : "○"}</Text>
+        <Text> </Text>
+        <Text bold>{view.runId}</Text>
+        <Text color="gray"> · {summary}</Text>
+        <Text color="gray"> · runs {view.runIdx + 1}/{view.runs.length} (◀ ▶)</Text>
+      </Box>
+      <Box>
+        <Text color="gray">updated {hhmmss(view.updatedAt)} · created {view.createdAt.slice(0, 10)}</Text>
+      </Box>
+
+      {/* Two panes */}
+      <Box flexDirection="row">
+        <Box flexDirection="column" width={64} borderStyle="round" borderColor="gray">
+          <Text bold color="gray"> slices </Text>
+          {view.slices.map((s, i) => (
+            <Box key={s.id}>
+              <Text color={i === view.sel ? "green" : "gray"}>{i === view.sel ? "▸ " : "  "}</Text>
+              {chip(s)}
+            </Box>
+          ))}
+        </Box>
+
+        <Box flexDirection="column" borderStyle="round" borderColor={view.detail && view.detail.status === "failed" ? "red" : "gray"} flexGrow={1}>
+          {selSlice ? (
+            <>
+              <Text bold>
+                {selSlice.title} <Text color="gray">({selSlice.sliceId})</Text>
+              </Text>
+              <Text color="gray">
+                status {selSlice.status} · attempt {selSlice.attempts} {selSlice.reason ? <Text color="red">· {selSlice.reason}</Text> : null}
+              </Text>
+              {selSlice.reportSummary ? (
+                <Text wrap="wrap" color="green">
+                  summary: {clip(selSlice.reportSummary, 400)}
+                </Text>
+              ) : null}
+              {selSlice.verdictStep ? (
+                <Box flexDirection="column">
+                  <Text color="red">
+                    ✗ gate {selSlice.verdictStep.name} exit={String(selSlice.verdictStep.exit)} timedOut={String(selSlice.verdictStep.timedOut)}
+                  </Text>
+                  <Text wrap="wrap" color="gray">
+                    {selSlice.verdictStep.tail}
+                  </Text>
+                </Box>
+              ) : null}
+              {selSlice.note ? (
+                <Text wrap="wrap" color="yellow">
+                  {selSlice.note}
+                </Text>
+              ) : null}
+              <Box flexDirection="column" marginTop={1}>
+                <Text color="gray"> events (tail) </Text>
+                {eventsTailFor(project, view.runId, selSlice.sliceId).map((e, i) => (
+                  <Text key={i} color="gray">
+                    {"  " + e}
+                  </Text>
+                ))}
+              </Box>
+            </>
+          ) : (
+            <Text color="gray">no artifacts for this slice yet</Text>
+          )}
+        </Box>
+      </Box>
+
+      {/* Footer */}
+      <Box marginTop={1}>
+        <Text color="gray">
+          ↑/↓ select slice · ◀/▶ switch run · r refresh · q quit · polls every {POLL_MS / 1000}s
+        </Text>
+      </Box>
+    </Box>
+  );
+}
+
+export interface WatchOptions {
+  project: string;
+  run?: string;
+}
+
+/** Read-only live TUI. Never writes to the store. */
+export async function cmdWatch(o: WatchOptions): Promise<number> {
+  if (o.run) {
+    const runs = listRuns(o.project);
+    if (!runs.includes(o.run)) {
+      console.error(`unknown run "${o.run}" — use ompo list`);
+      return 1;
+    }
+  }
+  // Ink needs a real terminal; under a pipe it would dump a raw-mode stack
+  // trace. Point the user at the pipe-safe sibling instead.
+  if (!process.stdin.isTTY || !process.stdout.isTTY) {
+    console.error("ompo watch needs an interactive terminal (raw-mode TUI).");
+    console.error("For pipes/SSH/CI use:  ompo log [--run ID] [--follow]");
+    return 0;
+  }
+  const { render } = await import("ink");
+  const instance = render(
+    <WatchApp
+      project={o.project}
+      initialRun={o.run}
+      onExit={() => {
+        try {
+          instance.unmount();
+        } catch {
+          /* already unmounted */
+        }
+        setTimeout(() => process.exit(0), 20);
+      }}
+    />,
+  );
+  await instance.waitUntilExit().catch(() => {});
+  return 0;
+}

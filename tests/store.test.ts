@@ -112,4 +112,41 @@ describe("store", () => {
     expect(() => storeApi.claimSlice(dir, "r", "a")).toThrow(/cannot claim/);
     expect(loadRun(dir, "r").doc.slices.find((s) => s.id === "a")!.attempts).toBe(1);
   });
+
+  test("enrichment: worker stats/exit land on worker_finished, reason on terminal events", () => {
+    const dir = tmpProject();
+    createRun(dir, parseRoadmap(MD), "r");
+    storeApi.claimSlice(dir, "r", "a");
+    storeApi.workerFinished(dir, "r", "a", "slices/a/report.json", {
+      exit: 0,
+      timedOut: false,
+      durationMs: 12_345,
+      stats: { turns: 9, tools: 41 },
+    });
+    storeApi.verifyFailed(dir, "r", "a", "slices/a/verdict.json", "verify_failed");
+    storeApi.terminalFail(dir, "r", "a", "verify_failed");
+
+    const events = readEvents(dir, "r");
+    const wf = events.find((e) => e.type === "worker_finished")!;
+    expect(wf.exit).toBe(0);
+    expect(wf.timedOut).toBe(false);
+    expect(wf.durationMs).toBe(12_345);
+    expect(wf.stats).toEqual({ turns: 9, tools: 41 });
+    const vf = events.find((e) => e.type === "verify_failed")!;
+    expect(vf.reason).toBe("verify_failed");
+    const tf = events.find((e) => e.type === "slice_failed_terminal")!;
+    expect(tf.reason).toBe("verify_failed");
+    expect(tf.attempt).toBe(1);
+  });
+
+  test("enrichment: legacy events without extra fields stay readable", () => {
+    const dir = tmpProject();
+    createRun(dir, parseRoadmap(MD), "r");
+    storeApi.claimSlice(dir, "r", "a");
+    storeApi.terminalFail(dir, "r", "a"); // pre-enrichment call shape: no reason
+    const events = readEvents(dir, "r");
+    const tf = events.find((e) => e.type === "slice_failed_terminal")!;
+    expect(tf.reason).toBeUndefined();
+    expect(tf.seq).toBeGreaterThan(0);
+  });
 });

@@ -81,7 +81,21 @@ export interface RunEvent {
   sliceId?: string;
   attempt?: number;
   detail?: string;
+  // ---- enrichment (all optional; runs recorded before these fields land
+  // render the missing columns as "-", never break readers) ----
+  /** Short machine-readable failure class, e.g. report_missing | worker_timeout | merge_conflict. */
+  reason?: string;
+  /** Process exit code (null/absent when killed or timed out). */
+  exit?: number | null;
+  timedOut?: boolean;
+  /** Wall-clock duration of the underlying process (worker/gate). */
+  durationMs?: number;
+  /** Agent session counters (worker_finished only; best-effort). */
+  stats?: { turns: number; tools: number };
 }
+
+/** Enrichment fields a store mutation may attach to the event it appends. */
+export type EventExtra = Partial<Pick<RunEvent, "reason" | "exit" | "timedOut" | "durationMs" | "stats">>;
 
 /** Strict completion report a worker must produce (plan §12). */
 export interface CompletionReport {
