@@ -1,9 +1,10 @@
 import { describe, expect, test } from "bun:test";
-import { mkdtempSync, readFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { parseRoadmap } from "../src/parse.ts";
 import {
+  RUNS_DIR,
   acquireLock,
   createRun,
   listRuns,
@@ -14,6 +15,7 @@ import {
   releaseLock,
   storeApi,
   StoreLockedError,
+  writeJsonAtomic,
 } from "../src/store.ts";
 
 function tmpProject(): string {
@@ -149,4 +151,28 @@ describe("store", () => {
     expect(tf.reason).toBeUndefined();
     expect(tf.seq).toBeGreaterThan(0);
   });
+});
+
+test("listRuns is chronological (createdAt), not lexical run-id order", () => {
+  const dir = tmpProject();
+  const doc = parseRoadmap(MD);
+  // Ids chosen so lexical order (aaa < zzz) inverts creation order.
+  const z = loadRun(dir, createRun(dir, doc, "20260901-zzz").runId);
+  const a = loadRun(dir, createRun(dir, doc, "20260901-aaa").runId);
+  z.createdAt = "2026-09-01T00:00:00.000Z";
+  a.createdAt = "2026-09-02T00:00:00.000Z";
+  writeJsonAtomic(join(dir, RUNS_DIR, "20260901-zzz", "roadmap.json"), z);
+  writeJsonAtomic(join(dir, RUNS_DIR, "20260901-aaa", "roadmap.json"), a);
+  expect(listRuns(dir)).toEqual(["20260901-zzz", "20260901-aaa"]);
+});
+
+test("a run missing its cursor sorts first so it never reads as latest", () => {
+  const dir = tmpProject();
+  const doc = parseRoadmap(MD);
+  createRun(dir, doc, "run-b");
+  createRun(dir, doc, "run-a");
+  // Drop run-b's cursor (simulates a half-created run dir): it must not become
+  // the "latest" default (watch/log/resume) since loadRun would fail on it.
+  rmSync(join(dir, RUNS_DIR, "run-b", "roadmap.json"));
+  expect(listRuns(dir)).toEqual(["run-b", "run-a"]);
 });

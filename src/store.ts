@@ -177,13 +177,29 @@ export function createRun(
   return loadRun(projectDir, runId);
 }
 
+/** Creation time of a run, from its cursor; "" when the cursor is missing. */
+function runCreatedAt(projectDir: string, runId: string): string {
+  try {
+    return readJson<{ createdAt?: string }>(cursorPath(projectDir, runId)).createdAt ?? "";
+  } catch {
+    return "";
+  }
+}
+
 export function listRuns(projectDir: string): string[] {
   const dir = runsDir(projectDir);
   if (!existsSync(dir)) return [];
   return readdirSync(dir, { withFileTypes: true })
     .filter((e) => e.isDirectory())
     .map((e) => e.name)
-    .sort();
+    // Run ids are `YYYYMMDD-<random>` (see generateRunId), so lexical order is
+    // NOT chronological. Every "latest run" default (watch/log/status/resume)
+    // takes the last element, so sort by the cursor's createdAt — newest last.
+    .sort(
+      (a, b) =>
+        runCreatedAt(projectDir, a).localeCompare(runCreatedAt(projectDir, b)) ||
+        a.localeCompare(b),
+    );
 }
 
 export function loadRun(projectDir: string, runId: string): RunCursor {
