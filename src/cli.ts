@@ -131,9 +131,9 @@ function parseNonNegativeInt(raw: string, flag: string, max: number): number {
   return n;
 }
 
- function parseArgs(argv: string[]): Args {
+function parseArgs(argv: string[]): Args {
   const a: Args = {
-    cmd: argv[0] ?? "--help",
+    cmd: argv[0] ?? "tui",
     project: process.cwd(),
     roadmap: "",
     resume: false,
