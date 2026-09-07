@@ -120,9 +120,9 @@ budget is touched:
    Missing **named credentials/URLs** (e.g. `SEED_ADMIN_PASSWORD must be set`)
    take a different path: ompo injects a deterministic dev-only placeholder,
    notes it in `.omp/roadmap/runs/<runId>/placeholders.md`, and re-runs the
-   gate — no retry consumed, roadmap keeps moving. Deploy slices (`deploy`
-   in id/title) never auto-inject; they park as `blocked-env` so real values
-   gate the release. At run end ompo prints the swap report:
+   gate — no retry consumed, roadmap keeps moving. Deploy slices inject
+   placeholders like any other slice; you fill the real values later, before
+   the release goes live. At run end ompo prints the swap report:
    ```
    placeholders: 1 dev-only value(s) — SEED_ADMIN_PASSWORD (see .omp/roadmap/runs/<runId>/placeholders.md)
    only deployment slice(s) left (deploy) — swap real values, exercise the UI/UX, then deploy

@@ -181,7 +181,7 @@ describe("loop", () => {
     }
   });
 
-  test("deploy slices park on missing creds instead of injecting", async () => {
+  test("deploy slices heal with placeholders like any other slice", async () => {
     const dir = tmpProject();
     const varName = "OMPO_TEST_PH_DEPLOY";
     delete process.env[varName];
@@ -193,10 +193,11 @@ describe("loop", () => {
     const events: string[] = [];
     try {
       const res = await runRoadmapLoop({ projectDir: dir, runId: "r", runner: okRunner, onEvent: (m) => events.push(m) });
-      expect(res.blockedEnv).toBe(1);
-      expect(loadRun(dir, "r").doc.slices[0]!.status).toBe("blocked-env");
-      expect(loadPlaceholders(dir, "r")[varName]).toBeUndefined();
-      expect(events.some((m) => m.includes("deploy gate"))).toBe(true);
+      expect(res.exitCode).toBe(0);
+      expect(res.done).toBe(1);
+      expect(loadRun(dir, "r").doc.slices[0]!.status).toBe("done");
+      expect(events.some((m) => m.includes(`placeholder: ${varName} unset`))).toBe(true);
+      expect(loadPlaceholders(dir, "r")[varName]?.firstSeenSlice).toBe("deploy");
     } finally {
       delete process.env[varName];
     }

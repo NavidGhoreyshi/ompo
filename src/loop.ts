@@ -24,7 +24,7 @@ import { sliceDir, storeApi, loadRun, RUNS_DIR } from "./store.ts";
 import type { CompletionReport, RoadmapDoc, Slice, Verdict } from "./types.ts";
 import { extractHarnessFix, extractReportFromOutput, validateCompletionReport, type HarnessFix } from "./report.ts";
 import { buildDebugPrompt, classifyEnvFailure, DEFAULT_DEBUG_TIMEOUT_MS, validateHarnessFix } from "./debug.ts";
-import { buildReviewPrompt, extractReviewFromOutput, validateReviewVerdict } from "./review.ts";
+import { buildReviewPrompt, extractReviewFromOutput, formatReviewFindings, validateReviewVerdict } from "./review.ts";
 import { runVerifiers } from "./verify.ts";
 import { resolveWorkerModel, runOmpWorker, type WorkerRunner } from "./worker.ts";
 import { createMutex, type Mutex } from "./mutex.ts";
@@ -368,13 +368,17 @@ async function runReview(
     );
     log(ctx, summarize5(claimed, `review rejected: ${msg}`));
     // Findings feed the next attempt's prompt (see reviewNotes at spec build).
+    // Normalize via formatReviewFindings so structured {file, behavior, spec}
+    // objects still render as readable lines instead of [object Object].
     try {
       const notes = extracted !== undefined
-        ? (extracted as { findings?: string[]; notes?: string })
+        ? (extracted as { findings?: unknown; notes?: unknown })
         : null;
+      const findings = formatReviewFindings(notes?.findings) ?? [];
+      const reviewerNotes = typeof notes?.notes === "string" && notes.notes.trim() ? notes.notes.trim() : "";
       const lines = [
-        ...(notes?.findings ?? []).map((f) => `- ${f}`),
-        notes?.notes ? `\nReviewer notes: ${notes.notes}` : "",
+        ...findings.map((f) => `- ${f}`),
+        reviewerNotes ? `\nReviewer notes: ${reviewerNotes}` : "",
       ].filter(Boolean).join("\n");
       if (lines) writeFileSync(join(dir, "review-notes.md"), lines + "\n", "utf8");
     } catch {
@@ -524,7 +528,6 @@ async function recoverWithPlaceholders(
   ctx: AttemptCtx,
   sliceId: string,
   attempt: number,
-  claimed: Slice,
   verdict: Verdict,
   runGate: (tag: string, env?: Record<string, string>) => Promise<Verdict>,
 ): Promise<PlaceholderRecovery> {
@@ -540,14 +543,6 @@ async function recoverWithPlaceholders(
     if (!block) return { kind: "failed", verdict: cur, env: { ...extraEnv } };
     const name = extractMissingVar(block.reason, tails);
     if (!name) return { kind: "park", verdict: cur, reason: block.reason, fix: block.fix };
-    if (isDeploySlice(sliceId, claimed.title)) {
-      return {
-        kind: "park",
-        verdict: cur,
-        reason: block.reason,
-        fix: `deploy gate needs the real ${name} — swap the placeholders in ${docRef} first, then \`ompo resume\``,
-      };
-    }
     // Already set (operator value or earlier injection) yet still named:
     // the value itself is rejected — genuine failure for the debugger.
     // Only truly-unset vars are invented, so real secrets are never recorded.
@@ -782,12 +777,12 @@ async function runAttempt(ctx: AttemptCtx, sliceId: string): Promise<void> {
       // consuming a retry so a dead Postgres can't terminal-fail good code.
       // Missing NAMED credentials/URLs instead get a dev-only placeholder
       // (noted in the run's placeholders.md) and the gate re-runs, so the
-      // roadmap keeps moving. Deploy slices and infra failures still park.
+      // roadmap keeps moving. Only infra failures still park.
       let envBlock = classifyEnvFailure(verdict.steps.map((s) => s.outputTail));
       // Attempt-scoped placeholder env: every gate re-run below (debugger
       // re-verify, reviewer's own checks) sees the same injected values.
       if (envBlock && !ctx.noPlaceholders && ctx.cfg.placeholders !== false) {
-        const rec = await recoverWithPlaceholders(ctx, sliceId, attempt, claimed, verdict, runGate);
+        const rec = await recoverWithPlaceholders(ctx, sliceId, attempt, verdict, runGate);
         verdict = rec.verdict;
         writeFileSync(join(dir, "verdict.json"), JSON.stringify(verdict, null, 2) + "\n", "utf8");
         if (rec.kind === "park") {

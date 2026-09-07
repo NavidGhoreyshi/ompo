@@ -6,6 +6,7 @@ import {
   ReviewValidationError,
   buildReviewPrompt,
   extractReviewFromOutput,
+  formatReviewFinding,
   reviewBlockSkeleton,
   validateReviewVerdict,
 } from "../src/review.ts";
@@ -93,6 +94,37 @@ describe("validateReviewVerdict", () => {
 
   test("rejects non-object payloads", () => {
     expect(() => validateReviewVerdict("a", "a")).toThrow(/verdict must be a JSON object/);
+  });
+
+  test("normalizes structured {file, behavior, spec} findings to strings", () => {
+    const v = validateReviewVerdict(
+      {
+        sliceId: "a",
+        approved: false,
+        findings: [{ file: "qa/s1/report.md", behavior: "file does not exist", spec: "restore evidence required" }],
+        notes: "checked the tree",
+      },
+      "a",
+    );
+    expect(v.approved).toBe(false);
+    expect(v.findings).toHaveLength(1);
+    expect(v.findings[0]).toContain("qa/s1/report.md");
+    expect(v.findings[0]).toContain("file does not exist");
+    expect(v.findings[0]).toContain("restore evidence required");
+  });
+
+  test("rejects approved=false with empty findings", () => {
+    expect(() =>
+      validateReviewVerdict({ sliceId: "a", approved: false, findings: [], notes: "no reason given" }, "a"),
+    ).toThrow(/at least one entry in findings/);
+  });
+
+  test("formatReviewFinding renders objects without [object Object]", () => {
+    const s = formatReviewFinding({ file: "f.ts", behavior: "missing", spec: "spec line" });
+    expect(s).not.toContain("[object Object]");
+    expect(s).toContain("f.ts");
+    expect(formatReviewFinding(42)).toBeUndefined();
+    expect(formatReviewFinding("  ")).toBeUndefined();
   });
 });
 

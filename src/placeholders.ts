@@ -13,8 +13,8 @@
  * never in the slice branch or base checkout. Values the operator already
  * exported are never recorded. Before deploy / the final UI-UX pass the
  * operator swaps every entry for its real value (see the swap report at
- * run end). Deploy slices (`deploy` in id/title) never auto-inject: they
- * park as blocked-env so real values gate the release.
+ * run end). Deploy slices inject placeholders like any other slice: the
+ * operator fills the real values later, before the release goes live.
  */
 
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";

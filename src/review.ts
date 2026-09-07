@@ -44,30 +44,70 @@ export function extractReviewFromOutput(output: string): unknown | undefined {
   }
 }
 
-function isStringArray(v: unknown): v is string[] {
-  return Array.isArray(v) && v.every((e) => typeof e === "string");
+/** Normalize one findings entry to a plain string.
+ * Models often emit structured {file, behavior, spec} objects despite the
+ * string[] contract — those carry the file/behavior/spec the prompt asks
+ * for, so render them instead of rejecting the verdict. Returns undefined
+ * for entries with no readable content. */
+export function formatReviewFinding(entry: unknown): string | undefined {
+  if (typeof entry === "string") {
+    const s = entry.trim();
+    return s ? s : undefined;
+  }
+  if (typeof entry === "object" && entry !== null) {
+    const r = entry as Record<string, unknown>;
+    const parts = ["file", "behavior", "spec", "message", "detail", "reason"]
+      .map((k) => r[k])
+      .filter((v): v is string => typeof v === "string" && v.trim().length > 0)
+      .map((s) => s.trim());
+    if (parts.length > 0) return parts.join(" — ");
+    try {
+      const s = JSON.stringify(entry);
+      return s && s !== "{}" ? s : undefined;
+    } catch {
+      return undefined;
+    }
+  }
+  return undefined;
 }
 
-export function validateReviewVerdict(data: unknown, expectedSliceId: string): ReviewVerdict {
-  const reasons: string[] = [];
-  if (typeof data !== "object" || data === null) {
-    throw new ReviewValidationError(["verdict must be a JSON object"]);
+/** Normalize a findings array; undefined when any entry is unreadable. */
+export function formatReviewFindings(v: unknown): string[] | undefined {
+  if (!Array.isArray(v)) return undefined;
+  const out: string[] = [];
+  for (const e of v) {
+    const s = formatReviewFinding(e);
+    if (s === undefined) return undefined;
+    out.push(s);
   }
-  const r = data as Record<string, unknown>;
-  if (r["sliceId"] !== expectedSliceId) {
-    reasons.push(`sliceId must be "${expectedSliceId}", got ${JSON.stringify(r["sliceId"])}`);
-  }
-  if (typeof r["approved"] !== "boolean") reasons.push("approved must be boolean");
-  if (!isStringArray(r["findings"])) reasons.push("findings must be string[]");
-  if (typeof r["notes"] !== "string") reasons.push("notes must be a string");
-  if (reasons.length) throw new ReviewValidationError(reasons);
-  return {
-    sliceId: expectedSliceId,
-    approved: r["approved"] as boolean,
-    findings: r["findings"] as string[],
-    notes: r["notes"] as string,
-  };
+  return out;
 }
+
+
+ export function validateReviewVerdict(data: unknown, expectedSliceId: string): ReviewVerdict {
+   const reasons: string[] = [];
+   if (typeof data !== "object" || data === null) {
+     throw new ReviewValidationError(["verdict must be a JSON object"]);
+   }
+   const r = data as Record<string, unknown>;
+   if (r["sliceId"] !== expectedSliceId) {
+     reasons.push(`sliceId must be "${expectedSliceId}", got ${JSON.stringify(r["sliceId"])}`);
+   }
+   if (typeof r["approved"] !== "boolean") reasons.push("approved must be boolean");
+  const findings = formatReviewFindings(r["findings"]);
+  if (findings === undefined) reasons.push("findings must be string[]");
+   if (typeof r["notes"] !== "string") reasons.push("notes must be a string");
+  if (r["approved"] === false && findings !== undefined && findings.length === 0) {
+    reasons.push("approved=false requires at least one entry in findings");
+  }
+   if (reasons.length) throw new ReviewValidationError(reasons);
+   return {
+     sliceId: expectedSliceId,
+     approved: r["approved"] as boolean,
+    findings: findings as string[],
+     notes: r["notes"] as string,
+   };
+ }
 
 export function reviewBlockSkeleton(sliceId: string): string {
   return `${REVIEW_OPEN}
@@ -123,7 +163,9 @@ When done, print EXACTLY one verdict block, no prose outside it beyond a short n
 ${reviewBlockSkeleton(slice.id)}
 
 Rules: sliceId must equal "${slice.id}". approved=false requires at least one
-entry in findings, each naming the file/behavior and the spec line it breaks.
+entry in findings, each a plain string naming the file/behavior and the spec
+line it breaks (e.g. "qa/s1/report.md — file missing; spec requires restore
+evidence"). findings must be string[] — never objects.
 If you cannot complete the audit, print the block with approved=false and say
 so in notes.
 `;
