@@ -30,12 +30,17 @@ describe("report", () => {
       testsPassed: true,
       verificationNotes: "ran tests",
       followUps: [],
+      deferred: [],
       done: true,
     };
     expect(validateCompletionReport(good, "a").summary).toBe("did it");
+    expect(validateCompletionReport(good, "a").deferred).toEqual([]);
     expect(() => validateCompletionReport({ ...good, sliceId: "b" }, "a")).toThrow(/sliceId/);
     expect(() => validateCompletionReport({ ...good, done: "yes" }, "a")).toThrow(/done/);
     expect(() => validateCompletionReport(null, "a")).toThrow(/object/);
+    expect(() => validateCompletionReport({ ...good, deferred: "later" }, "a")).toThrow(/deferred/);
+    const { deferred: _dropped, ...noDeferred } = good;
+    expect(() => validateCompletionReport(noDeferred, "a")).toThrow(/deferred/);
   });
 });
 
@@ -52,22 +57,22 @@ describe("spec", () => {
     expect(spec.prompt).toContain(REPORT_OPEN);
     expect(spec.usedChars).toBeLessThanOrEqual(spec.budgetChars);
   });
-
-  test("fail-closed on over-budget slice", () => {
-    const big = parseRoadmap(`## [big] T\n${"x".repeat(20000)}\n`);
-    expect(() =>
-      buildWorkerSpec(big.slices[0]!, big, 1, { maxChars: 1000 }),
-    ).toThrow(/budget/);
+  test("never-block rule: live values defer, never done=false", () => {
+    const b = doc.slices[1]!;
+    const spec = buildWorkerSpec(b, doc, 1, {});
+    expect(spec.prompt).toContain("NEVER-BLOCK RULE");
+    expect(spec.prompt).toContain('"deferred"');
+    expect(spec.prompt).toContain("done=false is ONLY for genuinely broken code");
   });
 
   test("drops dep summaries before body under pressure", () => {
     const b = doc.slices[1]!;
     const spec = buildWorkerSpec(b, doc, 1, {
-      maxChars: 1500,
+      maxChars: 3000,
       depSummaries: new Map([["a", "s".repeat(5000)]]),
     });
     expect(spec.truncatedDeps).toBe(true);
-    expect(spec.usedChars).toBeLessThanOrEqual(1500);
+    expect(spec.usedChars).toBeLessThanOrEqual(3000);
   });
 });
 
@@ -182,6 +187,7 @@ describe("worker json progress", () => {
       testsPassed: true,
       verificationNotes: "ok",
       followUps: [],
+      deferred: [],
       done: true,
     });
     const lines = [

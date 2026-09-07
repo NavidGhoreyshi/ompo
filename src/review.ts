@@ -143,6 +143,8 @@ Files changed: ${report.filesChanged.join(", ") || "(none listed)"}
 Tests run: ${report.testsRun.join(", ") || "(none listed)"} (passed: ${report.testsPassed})
 Verification notes: ${report.verificationNotes}
 Follow-ups: ${report.followUps.join("; ") || "(none)"}
+Deferred live items (standing never-block rule — pre-approved exclusions, NOT findings):
+${report.deferred.map((d) => `- ${d}`).join("\n") || "(none)"}
 
 ## Gate commands (already green — re-run the load-bearing ones yourself)
 
@@ -156,7 +158,9 @@ ${verdictCommands.map((c) => `- ${c}`).join("\n") || "(none)"}
    failure would invalidate the slice). Spot-run focused tests for new behavior.
 3. Look for what the worker would hide: weakened tests, widened scopes,
    unrelated diffs, missing error paths, hardcoded values the spec forbids.
-4. Approve ONLY if the slice spec holds against the tree as it stands.
+4. Approve ONLY if the slice spec holds against the tree as it stands, minus
+   the deferred items above: never reject for a deferred live value, but DO
+   reject a real-looking secret committed to a tracked file.
 
 When done, print EXACTLY one verdict block, no prose outside it beyond a short note:
 

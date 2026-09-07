@@ -139,6 +139,28 @@ budget is touched:
 
 `ompo run --no-debug` skips stage 2 (straight to retry budget).
 
+## Never-block rule: live values defer, the roadmap never stops
+
+Standing worker contract (in every slice prompt, overrides slice wording):
+a missing live value — secret/token/key, account action, phone step,
+DNS/domain, external approval or publish — must **never** produce
+`done=false`. The worker implements everything implementable, verifies
+with deterministic placeholders or stubs (placeholders only in gitignored
+env files, never in tracked source), reports `done=true`, and lists each
+live-only item in its report's `deferred` array as
+`<what> — needs <value>; manual check: <how>`. `done=false` is reserved
+for genuinely broken code. The reviewer treats deferred items as
+pre-approved exclusions (but still rejects a real-looking secret committed
+to a tracked file).
+
+At run end ompo aggregates every done slice's deferred list into one
+checklist for your post-run manual pass:
+```
+deferred: 3 live check(s) across 2 slice(s) (see .omp/roadmap/runs/<runId>/deferred.md)
+```
+Future roadmaps need no manual deferral sections — write the slice as if
+live values exist; the worker defers what it cannot prove.
+
 ## Model matrix (plan §10, zero resolver code)
 
 | Role         | Where            | Default                          |

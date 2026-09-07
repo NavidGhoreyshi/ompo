@@ -15,7 +15,7 @@ function tmpProject(): string {
   return mkdtempSync(join(tmpdir(), "ompo-loop-"));
 }
 
-function reportFor(sliceId: string, summary = `did ${sliceId}`): string {
+function reportFor(sliceId: string, summary = `did ${sliceId}`, deferred: string[] = []): string {
   return `note\n${REPORT_OPEN}\n${JSON.stringify({
     sliceId,
     summary,
@@ -24,6 +24,7 @@ function reportFor(sliceId: string, summary = `did ${sliceId}`): string {
     testsPassed: true,
     verificationNotes: "ok",
     followUps: [],
+    deferred,
     done: true,
   })}\n${REPORT_CLOSE}`;
 }
@@ -75,6 +76,28 @@ describe("loop", () => {
     const c = loadRun(dir, "r");
     expect(c.doc.slices.every((s) => s.status === "done")).toBe(true);
   });
+  test("deferred live items aggregate into deferred.md, run still exits 0", async () => {
+    const dir = tmpProject();
+    createRun(dir, parseRoadmap("## [a] A\nDo A.\n"), "r");
+    const events: string[] = [];
+    const deferring = reviewAware(async (call) => ({
+      exit: 0,
+      timedOut: false,
+      stdout: reportFor(call.sliceId, "did a with placeholders", [
+        "Real KEY — needs owner key; manual check: one live call",
+      ]),
+      stderr: "",
+      durationMs: 1,
+    }));
+    const res = await runRoadmapLoop({ projectDir: dir, runId: "r", runner: deferring, onEvent: (m) => events.push(m) });
+    expect(res.exitCode).toBe(0);
+    expect(res.done).toBe(1);
+    const md = readFileSync(join(dir, ".omp", "roadmap", "runs", "r", "deferred.md"), "utf8");
+    expect(md).toContain("## a — A");
+    expect(md).toContain("Real KEY");
+    expect(events.some((m) => m.includes("deferred: 1 live check(s)"))).toBe(true);
+  });
+
 
   test("worker onProgress surfaces as prefixed log lines", async () => {
     const dir = tmpProject();

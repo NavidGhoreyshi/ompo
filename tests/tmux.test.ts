@@ -23,6 +23,7 @@ function reportJson(sliceId: string, done: boolean): string {
     testsPassed: true,
     verificationNotes: "ran it",
     followUps: [],
+    deferred: [],
     done,
   });
 }

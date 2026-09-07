@@ -108,6 +108,14 @@ export interface CompletionReport {
   testsPassed: boolean;
   verificationNotes: string;
   followUps: string[];
+  /**
+   * Never-block rule: live-only items the worker could not prove because
+   * they need operator-supplied real values (secrets, accounts, phone
+   * steps, domains, approvals). Missing live values must NEVER yield
+   * done=false — the worker defers them here and the run aggregates them
+   * into deferred.md for the post-run manual pass.
+   */
+  deferred: string[];
   done: boolean;
 }
 

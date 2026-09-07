@@ -70,9 +70,17 @@ export function buildWorkerSpec(
     `1. Implement the slice, then verify it yourself (run relevant tests/lint).\n` +
     `2. When done, print EXACTLY one report block, no prose outside it beyond a short note:\n\n` +
     `${reportBlockSkeleton(slice.id)}\n\n` +
+    `NEVER-BLOCK RULE (standing, overrides slice wording): a missing live value — ` +
+    `secret/token/key, account action, phone step, DNS/domain, external approval or publish — ` +
+    `must NEVER make you report done=false. Implement everything implementable, verify with ` +
+    `deterministic placeholders or stubs (placeholders only in gitignored env files, never in ` +
+    `tracked source), report done=true with testsPassed=true, and list each live-only item in ` +
+    `"deferred" as "<what> — needs <value>; manual check: <how>". ` +
+    `done=false is ONLY for genuinely broken code (red tests you cannot fix, impossible scope).\n` +
     `Rules: sliceId must equal "${slice.id}". done=true only when the slice body is fully ` +
     `implemented AND you ran verification. filesChanged lists repo-relative paths you touched. ` +
-    `If you cannot complete, still print the block with done=false and explain in verificationNotes.\n`;
+    `If you cannot complete, still print the block with done=false and explain in verificationNotes. ` +
+    `Missing live values are never "cannot complete" — defer them.\n`;
 
   // Budget: header + scope are mandatory; shrink dep lines, then body.
   let depLines = depSummaryLines(slice, opts.depSummaries);

@@ -122,6 +122,7 @@ export function validateCompletionReport(
     reasons.push("verificationNotes must be a string");
   }
   if (!isStringArray(r["followUps"])) reasons.push("followUps must be string[]");
+  if (!isStringArray(r["deferred"])) reasons.push("deferred must be string[]");
   if (typeof r["done"] !== "boolean") reasons.push("done must be boolean");
   if (reasons.length) throw new ReportValidationError(reasons);
   return {
@@ -132,6 +133,7 @@ export function validateCompletionReport(
     testsPassed: r["testsPassed"] as boolean,
     verificationNotes: r["verificationNotes"] as string,
     followUps: r["followUps"] as string[],
+    deferred: r["deferred"] as string[],
     done: r["done"] as boolean,
   };
 }
@@ -148,6 +150,7 @@ ${JSON.stringify(
       testsPassed: true,
       verificationNotes: "<how you verified>",
       followUps: [],
+      deferred: [],
       done: true,
     },
     null,

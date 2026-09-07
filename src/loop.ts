@@ -593,6 +593,48 @@ function reportPlaceholders(opts: { projectDir: string; runId: string; onEvent?:
 }
 
 /**
+ * End-of-run deferred manifest (never-block rule): every done slice's
+ * report.json `deferred` list lands in one checklist with the values needed
+ * plus the manual check, so the operator's post-run pass is a single doc.
+ * Best-effort: unreadable reports are skipped, never fatal.
+ */
+function reportDeferred(opts: { projectDir: string; runId: string; onEvent?: (msg: string) => void }): void {
+  let doc: RoadmapDoc;
+  try {
+    doc = loadRun(opts.projectDir, opts.runId).doc;
+  } catch {
+    return;
+  }
+  const sections: string[] = [];
+  let items = 0;
+  for (const s of doc.slices) {
+    if (s.status !== "done") continue;
+    let deferred: unknown;
+    try {
+      deferred = (JSON.parse(readFileSync(join(sliceDir(opts.projectDir, opts.runId, s.id), "report.json"), "utf8")) as CompletionReport).deferred;
+    } catch {
+      continue;
+    }
+    if (!Array.isArray(deferred)) continue;
+    const lines = deferred.filter((d): d is string => typeof d === "string" && d.trim() !== "");
+    if (lines.length === 0) continue;
+    items += lines.length;
+    sections.push(`## ${s.id} — ${s.title}\n${lines.map((d) => `- ${d}`).join("\n")}`);
+  }
+  if (sections.length === 0) return;
+  try {
+    mkdirSync(join(opts.projectDir, RUNS_DIR, opts.runId), { recursive: true });
+    writeFileSync(
+      join(opts.projectDir, RUNS_DIR, opts.runId, "deferred.md"),
+      `# Deferred live values — run ${opts.runId}\n\nFill these with real values after the run, then run each manual check.\n\n${sections.join("\n\n")}\n`,
+      "utf8",
+    );
+  } catch {
+    return;
+  }
+  log(opts, `deferred: ${items} live check(s) across ${sections.length} slice(s) (see ${join(RUNS_DIR, opts.runId, "deferred.md")})`);
+}
+/**
  * One attempt of one slice: worktree → spec → worker → report →
  * verify → merge → review → done. Total: never rejects; all failures land
  * in the store. The worktree is dropped only after review approval.
@@ -915,6 +957,7 @@ export async function runRoadmapLoop(opts: LoopOptions): Promise<LoopResult> {
     const pending = cursor.doc.slices.filter((x) => !["done", "failed", "skipped"].includes(x.status)).length;
     const exitCode = failed > 0 || pending > 0 ? 1 : 0;
     reportPlaceholders({ projectDir: opts.projectDir, runId: opts.runId, onEvent: opts.onEvent });
+    reportDeferred({ projectDir: opts.projectDir, runId: opts.runId, onEvent: opts.onEvent });
     return { exitCode, done, failed, skipped, pending, blockedEnv };
   };
 

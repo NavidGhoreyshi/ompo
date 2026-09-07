@@ -26,6 +26,7 @@ function sampleReport(): CompletionReport {
     testsPassed: true,
     verificationNotes: "ran bun test, green",
     followUps: [],
+    deferred: [],
     done: true,
   };
 }
@@ -154,4 +155,13 @@ describe("buildReviewPrompt", () => {
     expect(prompt).toContain('"sliceId": "a"');
     expect(prompt).toContain("approved=false requires at least one\nentry in findings");
   });
+  test("deferred live items are pre-approved exclusions, never findings", () => {
+    const slice = sampleSlice();
+    const report = { ...sampleReport(), deferred: ["Real KEY — needs owner key; manual check: one live call"] };
+    const prompt = buildReviewPrompt(slice, report, ["bun test"]);
+    expect(prompt).toContain("Real KEY");
+    expect(prompt).toContain("pre-approved exclusions, NOT findings");
+    expect(prompt).toContain("never reject for a deferred live value");
+  });
+
 });
