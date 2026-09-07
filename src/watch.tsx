@@ -27,18 +27,81 @@ import type { RunEvent, Slice, SliceStatus } from "./types.ts";
 
 const POLL_MS = 900;
 
-// ── tiny ANSI helpers (ink <color> is fine; keep status chips explicit) ──
-const STATUS_CHIP: Record<string, { label: string; color: string }> = {
-  pending: { label: "pend", color: "gray" },
-  running: { label: "run ", color: "cyan" },
-  verifying: { label: "gates", color: "yellow" },
-  done: { label: "done", color: "green" },
-  failed: { label: "FAIL", color: "red" },
-  aborted: { label: "stop", color: "red" },
-  blocked: { label: "wait", color: "magenta" },
-  "blocked-env": { label: "env ", color: "magenta" },
-  skipped: { label: "skip", color: "gray" },
+// ── semantic state (glyph + word + color; never color alone) ──
+// Glyphs stay in the same compatibility class as the existing ●○▸▲◀▶✗:
+// hollow ○ = idle/waiting, solid ● = active work, ✓/!/– = outcome.
+const STATUS_STYLE: Record<string, { glyph: string; label: string; color: string; bold?: boolean }> = {
+  pending: { glyph: "○", label: "pend", color: "gray" },
+  running: { glyph: "●", label: "run ", color: "cyan" },
+  verifying: { glyph: "●", label: "gates", color: "yellow" },
+  done: { glyph: "✓", label: "done", color: "green" },
+  failed: { glyph: "!", label: "FAIL", color: "red", bold: true },
+  aborted: { glyph: "–", label: "stop", color: "gray" },
+  blocked: { glyph: "○", label: "wait", color: "magenta" },
+  "blocked-env": { glyph: "○", label: "env ", color: "magenta" },
+  skipped: { glyph: "○", label: "skip", color: "gray" },
 };
+
+/**
+ * Running indicator derived from the existing 900ms poll tick — no new
+ * render loop. Frozen glyph when idle (pass live=false → always ○).
+ */
+export function spinnerFrame(nowMs: number, live: boolean): string {
+  if (!live) return "○";
+  return ["◐", "◓", "◑", "◒"][Math.floor(nowMs / 900) % 4]!;
+}
+export interface AgentRow {
+  id: string;
+  tag?: string;
+  last: string;
+}
+
+/**
+ * Live agent states derived from recent `[id] …` / `[id tag] …` worker
+ * progress lines — no extra plumbing, computed at render time from the
+ * capped log bus. Pure — unit-tested.
+ */
+export function agentStates(lines: string[]): AgentRow[] {
+  const seen = new Map<string, AgentRow>();
+  for (const line of lines) {
+    const m = line.match(/^\s*\[([^\]\s]+)(?:\s+([^\]]+))?\]\s*(.*)$/);
+    if (m) seen.set(m[1]!, { id: m[1]!, tag: m[2]?.trim() || undefined, last: (m[3] ?? "").trim() });
+  }
+  return [...seen.values()].slice(-8);
+}
+
+/** Operational agent summary: state glyph + slice status + last line. */
+export function AgentsPane({ agents, statusOf }: { agents: AgentRow[]; statusOf: (id: string) => SliceLine | undefined }) {
+  return (
+    <Box flexDirection="column" borderStyle="round" borderColor="gray" marginTop={1}>
+      <Text bold color="gray"> agents </Text>
+      {agents.length === 0 ? (
+        <Text color="gray">(idle — no agent output yet)</Text>
+      ) : (
+        agents.map((a) => {
+          const s = statusOf(a.id);
+          const st = (s && STATUS_STYLE[s.status]) ?? { glyph: "○", label: "?", color: "gray" };
+          return (
+            <Text key={a.id}>
+              <Text color={st.color} bold>{st.glyph}</Text> {a.id}
+              {a.tag ? <Text color="gray"> · {a.tag}</Text> : null}
+              {s ? <Text color={st.color}> {st.label.trim()}</Text> : null} — {clip(a.last || "(started)", 40)}
+            </Text>
+          );
+        })
+      )}
+    </Box>
+  );
+}
+
+/** Compact wall-clock duration: 45s · 5m · 2h04m. Pure. */
+export function formatDuration(ms: number): string {
+  const s = Math.max(0, Math.round(ms / 1000));
+  if (s < 60) return `${s}s`;
+  const m = Math.floor(s / 60);
+  if (m < 60) return `${m}m`;
+  return `${Math.floor(m / 60)}h${String(m % 60).padStart(2, "0")}m`;
+}
 
 export interface SliceLine {
   id: string;
@@ -56,6 +119,12 @@ export interface DetailView {
   attempts: number;
   reason?: string;
   reportSummary?: string;
+  /** Last finished worker run counters (worker_finished event stats). */
+  metrics?: { turns: number; tools: number; durationMs?: number };
+  /** Newest slice events first (formatted, capped for the LAST EVENT section). */
+  recentEvents: string[];
+  /** Older slice events, dimmed HISTORY section (formatted, capped). */
+  history: string[];
   /** Invalid report block, or a short worker/debug log tail when nothing else explains it. */
   note?: string;
   verdictStep?: { name: string; exit: number | null; timedOut: boolean; tail: string };
@@ -68,7 +137,7 @@ export interface RunView {
   runId: string;
   createdAt: string;
   updatedAt: string;
-  counts: { done: number; failed: number; skipped: number; blockedEnv: number; pending: number };
+  counts: { done: number; active: number; failed: number; skipped: number; blockedEnv: number; pending: number };
   live: boolean;
   slices: SliceLine[];
   detail: DetailView | null;
@@ -94,6 +163,31 @@ function reasonsBySlice(events: RunEvent[]): Map<string, string> {
   }
   return m;
 }
+/** One scannable event row: TIME → EVENT → SOURCE → OPTIONAL DETAIL. Pure. */
+export function formatEventLine(e: RunEvent, opts?: { source?: boolean }): string {
+  const extras: string[] = [];
+  if (e.attempt !== undefined) extras.push(`#${e.attempt}`);
+  if (e.reason) extras.push(e.reason);
+  if (e.stats) extras.push(`${e.stats.turns}t/${e.stats.tools}tl`);
+  if (e.durationMs !== undefined && /finished/.test(e.type)) extras.push(formatDuration(e.durationMs));
+  const suf = extras.length ? ` ${extras.join(" ")}` : "";
+  const src = opts?.source === false || !e.sliceId ? "" : ` ${e.sliceId}`;
+  return `${hhmmss(e.at)} ${e.type}${src}${suf}`;
+}
+
+/** Counters from the slice's last finished worker run, if any. Pure. */
+export function sliceMetrics(events: RunEvent[], sliceId: string): { turns: number; tools: number; durationMs?: number } | undefined {
+  for (let i = events.length - 1; i >= 0; i--) {
+    const e = events[i]!;
+    if (e.sliceId === sliceId && e.type === "worker_finished" && e.stats) {
+      return e.durationMs !== undefined
+        ? { turns: e.stats.turns, tools: e.stats.tools, durationMs: e.durationMs }
+        : { turns: e.stats.turns, tools: e.stats.tools };
+    }
+  }
+  return undefined;
+}
+
 
 // ── artifact reads (selected slice only, capped) ───────────────────────
 function readJson<T>(path: string): T | null {
@@ -113,7 +207,7 @@ function tailOf(path: string, lines: number): string {
   }
 }
 
-function buildDetail(project: string, runId: string, slice: SliceLine): DetailView | null {
+function buildDetail(project: string, runId: string, slice: SliceLine, events: RunEvent[]): DetailView | null {
   const dir = join(project, ".omp", "roadmap", "runs", runId, "slices", slice.id);
   if (!existsSync(dir)) return null;
   let files: string[] = [];
@@ -122,12 +216,17 @@ function buildDetail(project: string, runId: string, slice: SliceLine): DetailVi
   } catch {
     /* keep empty */
   }
+  const sliceEvents = events.filter((e) => e.sliceId === slice.id);
+  const recent = sliceEvents.slice(-2).reverse().map((e) => formatEventLine(e, { source: false }));
   const detail: DetailView = {
     sliceId: slice.id,
     title: slice.title,
     status: slice.status,
     attempts: slice.attempts,
     reason: slice.reason,
+    recentEvents: recent,
+    history: sliceEvents.slice(0, -2).slice(-8).reverse().map((e) => formatEventLine(e, { source: false })),
+    metrics: sliceMetrics(events, slice.id),
   };
   void files;
 
@@ -191,6 +290,7 @@ export function viewForRun(project: string, runId: string, sel: number): RunView
   const live = lockHeld(project, runId);
   const counts = {
     done: count("done"),
+    active: count("running") + count("verifying"),
     failed: count("failed"),
     skipped: count("skipped"),
     blockedEnv: count("blocked-env"),
@@ -207,14 +307,14 @@ export function viewForRun(project: string, runId: string, sel: number): RunView
     counts,
     live,
     slices,
-    detail: selSlice ? buildDetail(project, runId, selSlice) : null,
+    detail: selSlice ? buildDetail(project, runId, selSlice, events) : null,
   };
 }
 
 function loadView(project: string, runIdx: number, sel: number): RunView | null {
   const runs = listRuns(project);
   if (runs.length === 0) {
-    return { runs, runIdx: 0, sel: 0, runId: "", createdAt: "", updatedAt: "", counts: { done: 0, failed: 0, skipped: 0, blockedEnv: 0, pending: 0 }, live: false, slices: [], detail: null };
+    return { runs, runIdx: 0, sel: 0, runId: "", createdAt: "", updatedAt: "", counts: { done: 0, active: 0, failed: 0, skipped: 0, blockedEnv: 0, pending: 0 }, live: false, slices: [], detail: null };
   }
   const idx = Math.min(Math.max(runIdx, 0), runs.length - 1);
   return viewForRun(project, runs[idx]!, sel);
@@ -234,19 +334,6 @@ function readEventsSafe(project: string, runId: string): RunEvent[] {
   }
 }
 
-function eventsTailFor(project: string, runId: string, sliceId: string): string[] {
-  return readEventsSafe(project, runId)
-    .filter((e) => e.sliceId === sliceId)
-    .slice(-10)
-    .map((e) => {
-      const extras: string[] = [];
-      if (e.reason) extras.push(e.reason);
-      if (e.stats) extras.push(`${e.stats.turns}t/${e.stats.tools}tl`);
-      const suf = extras.length ? ` ${extras.join(" ")}` : "";
-      return `${hhmmss(e.at)} ${e.type}${e.attempt !== undefined ? ` #${e.attempt}` : ""}${suf}`;
-    });
-}
-
 // ── UI ─────────────────────────────────────────────────────────────────
 /** Cursor lands on what needs eyes: failed/running first, then done, else top. */
 export function preferredSel(slices: SliceLine[]): number {
@@ -257,11 +344,12 @@ export function preferredSel(slices: SliceLine[]): number {
   return best;
 }
 
-/** Compact run-progress line: "done 2 · fail 1 · pend 3" (header, both TUIs). */
+/** Compact run-progress line: "done 2 · active 1 · pend 3" (header, all TUIs). */
 export function summaryText(view: RunView): string {
   const { counts } = view;
   return [
     counts.done ? `done ${counts.done}` : null,
+    counts.active ? `active ${counts.active}` : null,
     counts.failed ? `fail ${counts.failed}` : null,
     counts.blockedEnv ? `env ${counts.blockedEnv}` : null,
     counts.skipped ? `skip ${counts.skipped}` : null,
@@ -271,36 +359,54 @@ export function summaryText(view: RunView): string {
     .join(" · ");
 }
 
-function SliceChip({ slice }: { slice: SliceLine }) {
-  const c = STATUS_CHIP[slice.status] ?? { label: slice.status.slice(0, 5), color: "gray" };
+function SliceChip({ slice, maxName, selected }: { slice: SliceLine; maxName: number; selected: boolean }) {
+  const c = STATUS_STYLE[slice.status] ?? { glyph: "○", label: slice.status.slice(0, 5), color: "gray" };
   const label = c.label.padEnd(5);
   const name = slice.status === "failed" ? slice.id : `${slice.id}${slice.attempts > 1 ? ` ×${slice.attempts}` : ""}`;
   return (
-    <Text color={c.color}>
-      {`[${label}]`} <Text>{name}</Text>
-      {slice.status === "failed" && slice.reason ? <Text color="red"> {slice.reason}</Text> : null}
+    <Text bold={selected || c.bold} wrap="truncate">
+      <Text color={c.color} bold={selected || c.bold}>{`${c.glyph} [${label}]`}</Text> {clip(name, maxName)}
+      {slice.status === "failed" && slice.reason ? <Text color="red"> {clip(slice.reason, maxName)}</Text> : null}
     </Text>
   );
 }
 
+/** Adaptive board width: ~30% of columns, clamped so ids survive narrow screens. */
+export function boardWidth(cols: number): number {
+  return Math.max(24, Math.min(38, Math.floor(cols * 0.3)));
+}
+
 /** Left pane: the slice board (shared by watch + live run TUIs). */
-export function BoardPane({ view }: { view: RunView }) {
+export function BoardPane({ view, width }: { view: RunView; width?: number }) {
+  const w = width ?? 32;
+  const maxName = Math.max(8, w - 16);
   return (
-    <Box flexDirection="column" width={64} borderStyle="round" borderColor="gray">
+    <Box flexDirection="column" width={w} borderStyle="round" borderColor="gray">
       <Text bold color="gray"> slices </Text>
       {view.slices.map((s, i) => (
         <Box key={s.id}>
-          <Text color={i === view.sel ? "green" : "gray"}>{i === view.sel ? "▸ " : "  "}</Text>
-          <SliceChip slice={s} />
+          <Box flexShrink={0}>
+            <Text color={i === view.sel ? "green" : "gray"}>{i === view.sel ? "▸ " : "  "}</Text>
+          </Box>
+          <SliceChip slice={s} maxName={maxName} selected={i === view.sel} />
         </Box>
       ))}
     </Box>
   );
 }
 
+function Section({ title }: { title: string }) {
+  return (
+    <Text bold color="gray">
+      {" "}{title}{" "}
+    </Text>
+  );
+}
+
 /** Right pane: attempt inspector for the selected slice (shared). */
-export function InspectorPane({ project, view }: { project: string; view: RunView }) {
+export function InspectorPane({ view }: { view: RunView }) {
   const selSlice = view.detail;
+  const style = (selSlice && STATUS_STYLE[selSlice.status]) ?? { glyph: "○", label: "?", color: "gray" };
   return (
     <Box flexDirection="column" borderStyle="round" borderColor={view.detail && view.detail.status === "failed" ? "red" : "gray"} flexGrow={1}>
       {selSlice ? (
@@ -308,9 +414,35 @@ export function InspectorPane({ project, view }: { project: string; view: RunVie
           <Text bold>
             {selSlice.title} <Text color="gray">({selSlice.sliceId})</Text>
           </Text>
-          <Text color="gray">
-            status {selSlice.status} · attempt {selSlice.attempts} {selSlice.reason ? <Text color="red">· {selSlice.reason}</Text> : null}
+          <Section title="STATUS" />
+          <Text>
+            <Text color={style.color} bold>{`${style.glyph} ${selSlice.status}`}</Text>
+            <Text color="gray"> · attempt {selSlice.attempts}</Text>
+            {selSlice.reason ? <Text color="red"> · {selSlice.reason}</Text> : null}
           </Text>
+          {selSlice.status === "running" || selSlice.status === "verifying" ? (
+            <Text color="gray">Worker in progress — live output streams in activity below.</Text>
+          ) : null}
+          {selSlice.metrics ? (
+            <>
+              <Section title="LAST RUN" />
+              <Text color="gray">
+                {selSlice.metrics.turns} turns · {selSlice.metrics.tools} tools
+                {selSlice.metrics.durationMs !== undefined ? ` · ${formatDuration(selSlice.metrics.durationMs)}` : ""}
+              </Text>
+            </>
+          ) : null}
+          {selSlice.recentEvents.length > 0 ? (
+            <>
+              <Section title="LAST EVENT" />
+              {selSlice.recentEvents.map((e, i) => (
+                <Text key={i} color={i === 0 ? undefined : "gray"}>
+                  {"  " + e}
+                </Text>
+              ))}
+            </>
+          ) : null}
+          <Section title="OUTPUT" />
           {selSlice.reportSummary ? (
             <Text wrap="wrap" color="green">
               summary: {clip(selSlice.reportSummary, 400)}
@@ -331,14 +463,25 @@ export function InspectorPane({ project, view }: { project: string; view: RunVie
               {selSlice.note}
             </Text>
           ) : null}
-          <Box flexDirection="column" marginTop={1}>
-            <Text color="gray"> events (tail) </Text>
-            {eventsTailFor(project, view.runId, selSlice.sliceId).map((e, i) => (
-              <Text key={i} color="gray">
-                {"  " + e}
-              </Text>
-            ))}
-          </Box>
+          {!selSlice.reportSummary && !selSlice.verdictStep && !selSlice.note ? (
+            <Text color="gray">
+              {selSlice.status === "running" || selSlice.status === "verifying"
+                ? "no output yet — waiting for worker output…"
+                : selSlice.status === "pending" || selSlice.status === "blocked" || selSlice.status === "blocked-env"
+                  ? "no output yet — worker hasn't started"
+                  : "no output yet"}
+            </Text>
+          ) : null}
+          {selSlice.history.length > 0 ? (
+            <Box flexDirection="column" marginTop={1}>
+              <Section title="HISTORY" />
+              {selSlice.history.map((e, i) => (
+                <Text key={i} color="gray">
+                  {"  " + e}
+                </Text>
+              ))}
+            </Box>
+          ) : null}
         </>
       ) : (
         <Text color="gray">no artifacts for this slice yet</Text>
@@ -419,14 +562,15 @@ function WatchApp({ project, initialRun, onExit }: { project: string; initialRun
 
       {/* Two panes */}
       <Box flexDirection="row">
-        <BoardPane view={view} />
-        <InspectorPane project={project} view={view} />
+        <BoardPane view={view} width={boardWidth(process.stdout.columns ?? 80)} />
+        <InspectorPane view={view} />
       </Box>
 
       {/* Footer */}
       <Box marginTop={1}>
         <Text color="gray">
-          ↑/↓ select slice · ◀/▶ switch run · r refresh · q quit · polls every {POLL_MS / 1000}s
+          <Text bold color="white">↑/↓</Text> select · <Text bold color="white">◀/▶</Text> run ·{" "}
+          <Text bold color="white">r</Text> refresh · <Text bold color="white">q</Text> quit · polls every {POLL_MS / 1000}s
         </Text>
       </Box>
     </Box>

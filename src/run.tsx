@@ -23,10 +23,15 @@ import React, { useEffect, useReducer, useRef, useState } from "react";
 import { Box, Text, useInput } from "ink";
 import { runRoadmapLoop, type LoopOptions, type LoopResult } from "./loop.ts";
 import {
+  AgentsPane,
+  agentStates,
+  boardWidth,
   BoardPane,
+  clip,
   hhmmss,
   InspectorPane,
   preferredSel,
+  spinnerFrame,
   summaryText,
   viewForRun,
   type RunView,
@@ -84,6 +89,93 @@ export function logLineColor(line: string): string | undefined {
   if (/retrying|still running|worker exited|timed ?out|timeout/.test(line)) return "yellow";
   if (/^\[[^\]]+\]/.test(line)) return "cyan"; // worker progress: [id] turn/tool…
   return undefined;
+}
+/** Middle-truncate a long command: keep head + tail, total ≤ n chars. Pure. */
+export function truncateMiddle(s: string, n: number): string {
+  const t = s.trim().replace(/\s+/g, " ");
+  if (t.length <= n || n <= 2) return t.length <= n ? t : t.slice(0, Math.max(0, n - 1)) + "…";
+  const tail = Math.floor((n - 1) * 0.35);
+  const head = n - 1 - tail;
+  return `${t.slice(0, head)}…${t.slice(t.length - tail)}`;
+}
+
+const ACT_PREFIX_RE = /^\s*\[([^\]\s]+)(?:\s+([^\]]+))?\]\s*(.*)$/;
+
+/**
+ * Structured single-line summary for a raw bus row (TIME→EVENT→SOURCE has no
+ * timestamps in the bus stream, so rows lead with the event kind instead):
+ * `[id] tool bash: <cmd>` → `$ bash <cmd…>`, `[id] turn 12…` → `· id turn 12`.
+ * Long commands middle-truncate to the pane width; everything else truncates
+ * at the end. Full text stays in the slice worker logs + `ompo log`. Pure.
+ */
+export function formatActivityLine(line: string, width: number): string {
+  const cw = Math.max(20, width - 6);
+  const m = line.match(ACT_PREFIX_RE);
+  if (m) {
+    const id = m[1]!;
+    const tag = m[2] ? ` ${m[2]}` : "";
+    const rest = (m[3] ?? "").trim();
+    const tool = rest.match(/^tool\s+([^:]+):\s*(.*)$/);
+    if (tool) {
+      const kind = tool[1]!.trim();
+      const tagPart = tag ? ` [${tag.trim()}]` : "";
+      const cmd = truncateMiddle(tool[2] ?? "", Math.max(10, cw - kind.length - tagPart.length - 4));
+      return cmd ? `$ ${kind}${tagPart} ${cmd}` : `$ ${kind}${tagPart}`;
+    }
+    const turn = rest.match(/^turn\s+(.*)$/);
+    if (turn) return clip(`· ${id}${tag} turn ${turn[1]!.trim()}`, cw);
+    const says = rest.match(/^says:\s*(.*)$/);
+    if (says) return clip(`» ${id}${tag} ${says[1]!.trim()}`, cw);
+    return clip(line.trim(), cw);
+  }
+  return clip(line.trim(), cw);
+}
+
+/** Color for a *formatted* activity row (logLineColor still owns raw lines). */
+export function activityColor(row: string): string | undefined {
+  if (/^· /.test(row)) return "gray";
+  return logLineColor(row);
+}
+
+/**
+ * Activity pane text rows for a terminal height: fixed (never shrunk to
+ * fit idle content — that would jitter the frame as lines stream) but
+ * capped low so the inspector keeps the larger share. Pure.
+ */
+export function activityRows(totalRows: number): number {
+  return Math.max(3, Math.min(9, totalRows - 18));
+}
+
+/**
+ * Scannable live activity: bus rows are summarized to single lines
+ * (formatActivityLine) before windowing, so the wrap math is exact and long
+ * commands never dominate the pane. Shared by run + unified TUIs.
+ */
+export function ActivityPane({ lines, cols, logRows, scrollUp, emptyHint }: {
+  lines: string[];
+  cols: number;
+  logRows: number;
+  scrollUp: number;
+  emptyHint: string;
+}) {
+  const texts = lines.map((l) => formatActivityLine(l, cols));
+  const win = logWindow(texts, logRows - 1, cols, scrollUp);
+  return (
+    <Box flexDirection="column" borderStyle="round" borderColor="gray" marginTop={1} height={logRows + 2}>
+      <Text bold color="gray">
+        {win.offset > 0 ? ` activity ▲${win.offset} (PgDn for live) ` : " activity · live "}
+      </Text>
+      {win.shown.length === 0 ? (
+        <Text color="gray">{emptyHint}</Text>
+      ) : (
+        win.shown.map((row, i) => (
+          <Text key={`${win.offset}-${i}`} color={activityColor(row)}>
+            {row}
+          </Text>
+        ))
+      )}
+    </Box>
+  );
 }
 
 /**
@@ -221,49 +313,46 @@ export function LiveRunApp({ project, runId, bus, requestAbort }: LiveRunAppProp
 
   const cols = process.stdout.columns ?? 80;
   const rows = process.stdout.rows ?? 24;
-  // Header (2) + panes (~11) + footer (1) leave the rest for the activity
-  // pane, clamped so it stays usable on short terminals.
-  const logRows = Math.max(4, Math.min(12, rows - 16));
-  // One row is the pane's title; the windowed text rows fit the remainder.
-  const win = logWindow(bus.lines, logRows - 1, cols, scrollUp);
+  // Header (2) + panes + footer (1) leave the rest for the activity pane.
+  const logRows = activityRows(rows);
+  const bw = boardWidth(cols);
+  const statusOf = (id: string) => view.slices.find((s) => s.id === id);
 
   return (
     <Box flexDirection="column">
       <Box>
-        <Text color="cyan">●</Text>
+        <Text color={view.live ? "cyan" : "gray"}>{spinnerFrame(Date.now(), view.live)}</Text>
         <Text> </Text>
-        <Text bold>{view.runId}</Text>
+        <Text bold>ompo</Text>
+        <Text color={view.live ? undefined : "gray"}> · {view.live ? "RUNNING" : "IDLE"}</Text>
         <Text color="gray"> · {summaryText(view)}</Text>
       </Box>
       <Box>
-        <Text color="gray">updated {hhmmss(view.updatedAt)} · created {view.createdAt.slice(0, 10)}</Text>
+        <Text color="gray">run {view.runId} · updated {hhmmss(view.updatedAt)}</Text>
       </Box>
 
-      {/* Slice board + attempt inspector (same panes as ompo watch) */}
+      {/* Slice board + agents | attempt inspector */}
       <Box flexDirection="row">
-        <BoardPane view={view} />
-        <InspectorPane project={project} view={view} />
+        <Box flexDirection="column" width={bw}>
+          <BoardPane view={view} width={bw} />
+          <AgentsPane agents={agentStates(bus.lines)} statusOf={statusOf} />
+        </Box>
+        <InspectorPane view={view} />
       </Box>
 
-      {/* Live activity log: fixed height, scrolled from the inside (PgUp/PgDn
-          or Shift+↑/↓) so the frame never exceeds the screen height. */}
-      <Box flexDirection="column" borderStyle="round" borderColor="gray" marginTop={1} height={logRows + 2}>
-        <Text bold color="gray">
-          {win.offset > 0 ? ` activity ▲${win.offset} (PgDn for live) ` : " activity · live "}
-        </Text>
-        {win.shown.length === 0 ? (
-          <Text color="gray">(no activity yet — worker lines stream here live)</Text>
-        ) : (
-          win.shown.map((line, i) => (
-            <Text key={`${win.offset}-${i}`} wrap="wrap" color={logLineColor(line)}>
-              {line}
-            </Text>
-          ))
-        )}
-      </Box>
+      <ActivityPane
+        lines={bus.lines}
+        cols={cols}
+        logRows={logRows}
+        scrollUp={scrollUp}
+        emptyHint="(no activity yet — worker lines stream here live)"
+      />
 
       <Box marginTop={1}>
-        <Text color="gray">↑/↓ select slice · PgUp/PgDn scroll log · r refresh · q or Ctrl-C abort run (finish store write, exit 2)</Text>
+        <Text color="gray">
+          <Text bold color="white">↑/↓</Text> select · <Text bold color="white">PgUp/PgDn</Text> scroll ·{" "}
+          <Text bold color="white">r</Text> refresh · <Text bold color="yellow">q</Text> abort (finish store write, exit 2)
+        </Text>
       </Box>
     </Box>
   );

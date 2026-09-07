@@ -85,3 +85,32 @@ describe("driveUnifiedFlow", () => {
     expect(logs.some((m) => m.includes("resumed run r1"))).toBe(true);
   });
 });
+
+describe("stalled latest run", () => {
+  test("terminal failure dead-ending the roadmap starts fresh instead of resuming", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "ompo-uni-"));
+    const two = `${MINI}## [b] B\nDo B.\nDepends: a\nVerify: true\nRetries: 0\n`;
+    writeFileSync(join(dir, "ROADMAP.md"), two, "utf8");
+    createRun(dir, parseRoadmap(two), "r1");
+    const cursorPath = join(dir, ".omp", "roadmap", "runs", "r1", "roadmap.json");
+    const cursor = JSON.parse(readFileSync(cursorPath, "utf8")) as {
+      doc: { slices: { id: string; status: string }[] };
+    };
+    cursor.doc.slices.find((s) => s.id === "a")!.status = "failed";
+    writeFileSync(cursorPath, JSON.stringify(cursor), "utf8");
+    const logs: string[] = [];
+    const session: UnifiedSession = { phase: "planning", runId: null, note: "" };
+    const seen: { opts: LoopOptions | null } = { opts: null };
+    const res = await driveUnifiedFlow(
+      { projectDir: dir, looper: okLoop(seen) },
+      (m: string) => logs.push(m),
+      session,
+      new AbortController().signal,
+    );
+    expect(res.exitCode).toBe(0);
+    expect(session.runId).not.toBe("r1");
+    expect(seen.opts?.runId).toBe(session.runId ?? undefined);
+    expect(logs.some((m) => m.includes("stalled") && m.includes("starting fresh"))).toBe(true);
+    expect(existsSync(join(dir, ".omp", "roadmap", "runs", session.runId ?? ""))).toBe(true);
+  });
+});

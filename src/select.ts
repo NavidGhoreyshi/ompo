@@ -5,7 +5,9 @@
  * `blocked` is advisory (computed, not stored): pending with unmet deps.
  */
 
+import { resumeDemotes, terminalStatus } from "./types.ts";
 import type { RoadmapDoc, Slice } from "./types.ts";
+
 /** A dependency no longer blocks when done OR intentionally skipped. */
 export function depSatisfied(s: Slice | undefined): boolean {
   return s?.status === "done" || s?.status === "skipped";
@@ -48,6 +50,17 @@ export function stalled(doc: RoadmapDoc): boolean {
       return dep !== undefined && !depSatisfied(dep) && dep.status !== "pending";
     }),
   );
+}
+
+/** True when resuming would do no work: after resume demotion (in-flight +
+ * blocked-env → pending) no slice is runnable. Terminal `failed` slices
+ * never demote, so a mid-roadmap failure dead-ends every downstream pending
+ * slice and resume would exit instantly. Pure — unit-tested. */
+export function resumeStalled(slices: Slice[]): boolean {
+  const after = new Map(slices.map((s) => [s.id, resumeDemotes(s.status) ? "pending" : s.status]));
+  const satisfied = (id: string): boolean => after.get(id) === "done" || after.get(id) === "skipped";
+  const runnable = (s: Slice): boolean => after.get(s.id) === "pending" && s.deps.every(satisfied);
+  return slices.some((s) => !terminalStatus(s.status)) && !slices.some(runnable);
 }
 
 export function summarize(doc: RoadmapDoc): Record<string, number> {

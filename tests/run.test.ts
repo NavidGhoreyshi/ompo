@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { createLogBus, fitLogTail, logLineColor, logWindow, stripAnsi, wrapLogLine } from "../src/run.tsx";
+import { activityColor, activityRows, createLogBus, fitLogTail, formatActivityLine, logLineColor, logWindow, stripAnsi, truncateMiddle, wrapLogLine } from "../src/run.tsx";
 
 describe("log bus", () => {
   test("splits newlines into rows, strips ANSI, drops blanks", () => {
@@ -102,5 +102,52 @@ describe("logWindow", () => {
     expect(tail.totalRows).toBe(5);
     expect(tail.shown).toEqual(["x".repeat(52), "tail"]);
     expect(logWindow(lines, 2, 80, 2).shown).toEqual(["x".repeat(74), "x".repeat(74)]);
+  });
+});
+
+describe("formatActivityLine", () => {
+  test("tool rows collapse to $ kind + middle-truncated command", () => {
+    const cmd = `docker tag node:20-bookworm-slim node:20-slim --extra ${"x".repeat(120)}`;
+    const row = formatActivityLine(`[s1-deploy-a] tool bash: ${cmd}`, 80);
+    expect(row.startsWith("$ bash docker tag")).toBe(true);
+    expect(row.length).toBeLessThanOrEqual(74);
+    expect(row).toContain("…");
+  });
+  test("session tags bracket out of the command", () => {
+    const row = formatActivityLine("[s1-deploy-b review] tool bash: docker images", 80);
+    expect(row).toBe("$ bash [review] docker images");
+  });
+  test("turn rows become dimmable · markers, says rows quote", () => {
+    expect(formatActivityLine("[a] turn 12 done (3 tool results)", 80)).toBe("· a turn 12 done (3 tool results)");
+    expect(formatActivityLine("[a review] turn 5…", 80)).toBe("· a review turn 5…");
+    expect(formatActivityLine("[a] says: wiring this up", 80)).toBe("» a wiring this up");
+  });
+
+  test("state lines pass through, truncated to the pane", () => {
+    expect(formatActivityLine("run finished: done=2 failed=0", 80)).toBe("run finished: done=2 failed=0");
+    const long = `  placeholder: ${"y".repeat(200)}`;
+    expect(formatActivityLine(long, 80).length).toBeLessThanOrEqual(74);
+  });
+});
+
+describe("truncateMiddle + activityColor", () => {
+  test("keeps head and tail of long commands", () => {
+    const t = truncateMiddle(`docker compose up -d --build ${"z".repeat(100)} --timeout 30`, 40);
+    expect(t.length).toBe(40);
+    expect(t.startsWith("docker compose")).toBe(true);
+    expect(t.endsWith("--timeout 30")).toBe(true);
+  });
+
+  test("turn markers dim, tool rows keep stream color", () => {
+    expect(activityColor("· a turn 12 done")).toBe("gray");
+    expect(activityColor("$ bash docker ps")).toBeUndefined();
+  });
+});
+
+describe("activityRows", () => {
+  test("capped low, floored for short terminals", () => {
+    expect(activityRows(40)).toBe(9);
+    expect(activityRows(24)).toBe(6);
+    expect(activityRows(16)).toBe(3);
   });
 });

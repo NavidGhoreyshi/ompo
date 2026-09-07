@@ -30,15 +30,20 @@ import {
   releaseLock,
   storeApi,
 } from "./store.ts";
+import { resumeStalled } from "./select.ts";
 import { crashedInFlight } from "./types.ts";
 import { runRoadmapLoop, type LoopOptions, type LoopResult } from "./loop.ts";
 import { createTmuxRunner } from "./tmux.ts";
-import { createLogBus, logLineColor, logWindow, type LogBus } from "./run.tsx";
+import { ActivityPane, activityRows, createLogBus, type LogBus } from "./run.tsx";
 import {
+  AgentsPane,
+  agentStates,
   BoardPane,
-  InspectorPane,
+  boardWidth,
   hhmmss,
+  InspectorPane,
   preferredSel,
+  spinnerFrame,
   summaryText,
   viewForRun,
   type RunView,
@@ -72,24 +77,8 @@ export interface UnifiedSession {
   note: string;
 }
 
-export interface AgentState {
-  id: string;
-  last: string;
-}
-
-/**
- * Live agent states derived from recent `[id] …` worker progress lines —
- * no extra plumbing, computed at render time from the capped log bus.
- * Pure — unit-tested.
- */
-export function agentStates(lines: string[]): AgentState[] {
-  const seen = new Map<string, string>();
-  for (const line of lines) {
-    const m = line.match(/^\[([^\]\s]+)\]\s*(.*)$/);
-    if (m) seen.set(m[1]!, (m[2] ?? "").trim());
-  }
-  return [...seen.entries()].map(([id, last]) => ({ id, last })).slice(-8);
-}
+export type { AgentRow } from "./watch.tsx";
+export { agentStates } from "./watch.tsx";
 
 function abortedResult(): LoopResult {
   return { exitCode: 2, done: 0, failed: 0, skipped: 0, pending: 0, blockedEnv: 0 };
@@ -169,12 +158,14 @@ export async function driveUnifiedFlow(
     const open = cur.doc.slices.some(
       (s) => s.status === "pending" || s.status === "blocked-env" || crashedInFlight(s.status),
     );
-    if (open && !drifted) {
+    if (open && !drifted && !resumeStalled(cur.doc.slices)) {
       runId = latest;
       storeApi.resumeRun(o.projectDir, runId);
       log(`resumed run ${runId}`);
-    } else if (open) {
+    } else if (open && drifted) {
       log(`latest run ${latest} predates roadmap edits — starting fresh`);
+    } else if (open) {
+      log(`latest run ${latest} is stalled (resume would do no work) — starting fresh`);
     }
   }
   if (!runId) {
@@ -220,23 +211,6 @@ interface UnifiedAppProps {
   requestAbort: () => void;
 }
 
-function AgentsPane({ lines }: { lines: string[] }): React.JSX.Element {
-  const agents = agentStates(lines);
-  return (
-    <Box flexDirection="column" borderStyle="round" borderColor="gray" marginTop={1}>
-      <Text bold color="gray"> agents </Text>
-      {agents.length === 0 ? (
-        <Text color="gray">(idle — no agent output yet)</Text>
-      ) : (
-        agents.map((a) => (
-          <Text key={a.id} color="cyan">
-            [{a.id}] <Text color="gray">{a.last.slice(0, 52)}</Text>
-          </Text>
-        ))
-      )}
-    </Box>
-  );
-}
 
 export function UnifiedApp({ project, session, bus, requestAbort }: UnifiedAppProps): React.JSX.Element {
   const [view, setView] = useState<RunView | null>(null);
@@ -306,71 +280,64 @@ export function UnifiedApp({ project, session, bus, requestAbort }: UnifiedAppPr
 
   const cols = process.stdout.columns ?? 80;
   const rows = process.stdout.rows ?? 24;
-  // Header (2) + panes + footer (1) leave the rest for the activity pane,
-  // clamped so it stays usable on short terminals.
-  const logRows = Math.max(4, Math.min(12, rows - 16));
-  // One row is the pane's title; the windowed text rows fit the remainder.
-  const win = logWindow(bus.lines, logRows - 1, cols, scrollUp);
-
+  // Header (2) + panes + footer (1) leave the rest for the activity pane.
+  const logRows = activityRows(rows);
   const phaseLabel = session.phase === "planning"
     ? "planning — surveying project docs…"
     : session.phase === "ready"
       ? "ready — starting run…"
       : session.phase === "running"
-        ? "running"
+        ? view && view.live ? "RUNNING" : "running"
         : `done ${session.note}`;
+  const live = session.phase === "planning" || session.phase === "ready" || (session.phase === "running" && (!view || view.live));
+  const bw = boardWidth(cols);
+  const statusOf = (id: string) => view?.slices.find((s) => s.id === id);
 
   return (
     <Box flexDirection="column">
       <Box>
-        <Text color="cyan">●</Text>
+        <Text color={live ? "cyan" : "gray"}>{spinnerFrame(Date.now(), live)}</Text>
         <Text> </Text>
         <Text bold>ompo</Text>
         <Text color="gray"> · {phaseLabel}</Text>
-        {view ? <Text color="gray"> · {view.runId} · {summaryText(view)}</Text> : null}
+        {view ? <Text color="gray"> · {summaryText(view)}</Text> : null}
       </Box>
       <Box>
         {view
-          ? <Text color="gray">updated {hhmmss(view.updatedAt)} · created {view.createdAt.slice(0, 10)}</Text>
+          ? <Text color="gray">run {view.runId} · updated {hhmmss(view.updatedAt)}</Text>
           : <Text color="gray">no run yet — roadmap first</Text>}
       </Box>
 
       <Box flexDirection="row">
-        <Box flexDirection="column" width={64}>
-          {view ? <BoardPane view={view} /> : (
+        <Box flexDirection="column" width={bw}>
+          {view ? <BoardPane view={view} width={bw} /> : (
             <Box flexDirection="column" borderStyle="round" borderColor="gray">
               <Text bold color="gray"> slices </Text>
               <Text color="gray">(roadmap not ready)</Text>
             </Box>
           )}
-          <AgentsPane lines={bus.lines} />
+          <AgentsPane agents={agentStates(bus.lines)} statusOf={statusOf} />
         </Box>
-        {view ? <InspectorPane project={project} view={view} /> : (
+        {view ? <InspectorPane view={view} /> : (
           <Box flexDirection="column" borderStyle="round" borderColor="gray" flexGrow={1}>
             <Text color="gray">major step logs appear here once the run starts</Text>
           </Box>
         )}
       </Box>
 
-      {/* Live activity log: fixed height, scrolled from the inside so the
-          frame never exceeds the screen height. */}
-      <Box flexDirection="column" borderStyle="round" borderColor="gray" marginTop={1} height={logRows + 2}>
-        <Text bold color="gray">
-          {win.offset > 0 ? ` activity ▲${win.offset} (PgDn for live) ` : " activity · live "}
-        </Text>
-        {win.shown.length === 0 ? (
-          <Text color="gray">(no activity yet — planner/worker lines stream here live)</Text>
-        ) : (
-          win.shown.map((line, i) => (
-            <Text key={`${win.offset}-${i}`} wrap="wrap" color={logLineColor(line)}>
-              {line}
-            </Text>
-          ))
-        )}
-      </Box>
+      <ActivityPane
+        lines={bus.lines}
+        cols={cols}
+        logRows={logRows}
+        scrollUp={scrollUp}
+        emptyHint="(no activity yet — planner/worker lines stream here live)"
+      />
 
       <Box marginTop={1}>
-        <Text color="gray">↑/↓ select slice · PgUp/PgDn scroll log · r refresh · q abort (resume by re-running `ompo`)</Text>
+        <Text color="gray">
+          <Text bold color="white">↑/↓</Text> select · <Text bold color="white">PgUp/PgDn</Text> scroll ·{" "}
+          <Text bold color="white">r</Text> refresh · <Text bold color="yellow">q</Text> abort (resume by re-running `ompo`)
+        </Text>
       </Box>
     </Box>
   );
