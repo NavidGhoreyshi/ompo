@@ -129,6 +129,24 @@ const ENV_PATTERNS: EnvPattern[] = [
     reason: () => "disk full",
     fix: "free disk space, then `ompo resume`",
   },
+  {
+    match: /\b([A-Z][A-Z0-9_]{2,})\s+must be set\b/,
+    reason: (m) => `missing env var "${m[1]}"`,
+    fix: "export the required env var/secret (see the verifier output for its name), then `ompo resume`",
+  },
+  {
+    match: /missing[^\n]*\benv(ironment)?\s+var(iable)?s?\b[^\n]*|\benv(ironment)?\s+var(iable)?s?\b[^\n]*(missing|not set|not defined|undefined|required|must be set)/i,
+    reason: (m) => {
+      const v = m[0].match(/[A-Z][A-Z0-9_]{2,}/);
+      return v ? `missing env var "${v[0]}"` : "required env var missing";
+    },
+    fix: "export the required env var/secret (see the verifier output for its name), then `ompo resume`",
+  },
+  {
+    match: /parameter null or not set|unbound variable/i,
+    reason: () => "required env var missing (shell strict mode)",
+    fix: "export the required variable (or relax 'set -u' in the gate), then `ompo resume`",
+  },
 ];
 
 /**
@@ -191,7 +209,7 @@ export function buildDebugPrompt(slice: Slice, brief: DebugBrief): string {
     `## Contract (STRICT)`,
     `1. Reproduce: run the failing command yourself in the worktree.`,
     `2. Fix ONLY the root cause. If the failure is environmental (port taken,`,
-    `   database down, missing service) STOP and say so — do not hack around it.`,
+    `   database down, missing service, missing env var/secret) STOP and say so — do not hack around it.`,
     `3. Re-run the failing command until it passes.`,
     `4. When finished, print EXACTLY one report block:`,
     ``,
@@ -210,7 +228,7 @@ export function buildDebugPrompt(slice: Slice, brief: DebugBrief): string {
     `block with filesPatched (repo files only, NOT this slice's declared Files`,
     `list), diff (unified, ≤ ${MAX_HARNESS_DIFF_LINES} lines, base-clean only), and summary.`,
     `The patch is applied to the worktree + base on your behalf before the gate`,
-    `re-runs. If the failure is truly environmental (dead DB, squatted port you`,
+    `re-runs. If the failure is truly environmental (dead DB, squatted port, missing secret you`,
     `can't fix in code), STOP and report done=false with verificationNotes — do`,
     `not paper over it.`,
   ].join("\n");

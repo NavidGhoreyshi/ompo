@@ -9,10 +9,12 @@ with a durable store, verifier gates, retries, and crash resume.
 
 ```bash
 cd <project>
-ompo init            # scaffold ROADMAP.md + .omp/roadmap.yml
-# edit ROADMAP.md — one ## [id] section per slice
+ompo                 # unified TUI: plan (if needed) → run → done
+# …or step by step:
+ompo init            # planner session surveys docs → ROADMAP.md (+ .omp/roadmap.yml)
+# review ROADMAP.md — one ## [id] section per slice (--template for blank, --replan to redo)
 ompo run --dry-run   # parse + dependency order, spawns nothing
-ompo run             # execute headlessly, slice by slice
+ompo run             # live TUI: board + inspector + scrollable log panel (PgUp/PgDn)
 ompo status          # read-only progress dump
 ```
 
@@ -114,6 +116,19 @@ budget is touched:
    `ompo resume` re-queues blocked slices once you've fixed the environment.
    This is what saves a dead Postgres or a squatted port from terminal-failing
    correct code.
+
+   Missing **named credentials/URLs** (e.g. `SEED_ADMIN_PASSWORD must be set`)
+   take a different path: ompo injects a deterministic dev-only placeholder,
+   notes it in `.omp/roadmap/runs/<runId>/placeholders.md`, and re-runs the
+   gate — no retry consumed, roadmap keeps moving. Deploy slices (`deploy`
+   in id/title) never auto-inject; they park as `blocked-env` so real values
+   gate the release. At run end ompo prints the swap report:
+   ```
+   placeholders: 1 dev-only value(s) — SEED_ADMIN_PASSWORD (see .omp/roadmap/runs/<runId>/placeholders.md)
+   only deployment slice(s) left (deploy) — swap real values, exercise the UI/UX, then deploy
+   ```
+   Opt out with `placeholders: false` (`.omp/roadmap.yml`) or `--no-placeholders`.
+
 2. **Debugger session** — for genuine failures, one bounded fresh worker
    (same worktree, default 10m budget via `debugTimeoutSec`, `[id debug]`
    log prefix) diagnoses and fixes only the failure, re-running the failing
@@ -146,7 +161,8 @@ one-shot `omp -p` processes, so no mid-run model swap is possible.
 - **Kill -9 / crash**: same as interrupt; `ompo resume` rebuilds from
   `.omp/roadmap/runs/<runId>/events.jsonl`.
 - **Blocked environment**: slices parked as `blocked-env` (port taken, DB
-  down) re-queue on `ompo resume` after you fix the environment.
+  down, deploy gate awaiting real values) re-queue on `ompo resume` after
+  you fix the environment / export real values.
 - **Roadmap edited mid-run**: resume refuses on `sourceHash` mismatch.
   Finish the run first, then start a new one.
 - **Lock held (exit 3)**: another `ompo run` owns the run. Wait or remove

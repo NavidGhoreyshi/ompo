@@ -33,6 +33,16 @@ describe("classifyEnvFailure", () => {
     expect(classifyEnvFailure(["write failed: no space left on device"])?.reason).toBe("disk full");
   });
 
+  test("missing env var / secret parks as env, lowercase app validation does not", () => {
+    const hit = classifyEnvFailure(["Error: SEED_ADMIN_PASSWORD must be set to run the s3 spec"]);
+    expect(hit?.reason).toBe('missing env var "SEED_ADMIN_PASSWORD"');
+    expect(hit?.fix).toContain("ompo resume");
+    expect(classifyEnvFailure(["missing required environment variable FOO"])?.reason).toBe('missing env var "FOO"');
+    expect(classifyEnvFailure(["environment variable BAR is not set"])?.reason).toBe('missing env var "BAR"');
+    expect(classifyEnvFailure(["FOO: parameter null or not set"])?.reason).toContain("required env var missing");
+    expect(classifyEnvFailure(["Error: username must be set"]) ?? null).toBeNull();
+  });
+
   test("genuine code failures are not env", () => {
     expect(classifyEnvFailure(["AssertionError: expected 1 to equal 2"])?.reason ?? null).toBeNull();
     expect(classifyEnvFailure(["TypeError: Cannot read properties of undefined", "at foo (bar.ts:1:2)"])).toBeNull();
