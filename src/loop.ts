@@ -20,7 +20,7 @@ import { join } from "node:path";
 import { loadRoadmapConfig, type RoadmapConfig } from "./config.ts";
 import { depSatisfied, readySlices } from "./select.ts";
 import { buildWorkerSpec } from "./spec.ts";
-import { sliceDir, storeApi, loadRun } from "./store.ts";
+import { sliceDir, storeApi, loadRun, RUNS_DIR } from "./store.ts";
 import type { CompletionReport, RoadmapDoc, Slice, Verdict } from "./types.ts";
 import { extractHarnessFix, extractReportFromOutput, validateCompletionReport, type HarnessFix } from "./report.ts";
 import { buildDebugPrompt, classifyEnvFailure, DEFAULT_DEBUG_TIMEOUT_MS, validateHarnessFix } from "./debug.ts";
@@ -29,6 +29,7 @@ import { runVerifiers } from "./verify.ts";
 import { resolveWorkerModel, runOmpWorker, type WorkerRunner } from "./worker.ts";
 import { createMutex, type Mutex } from "./mutex.ts";
 import { worktreeOpsFor, type WorktreeOps } from "./worktree.ts";
+import { extractMissingVar, isDeploySlice, loadPlaceholders, placeholderFor, placeholdersDocRef, recordPlaceholder } from "./placeholders.ts";
 
 export interface LoopOptions {
   projectDir: string;
@@ -59,6 +60,8 @@ export interface LoopOptions {
   noDebug?: boolean;
   /** Debugger budget override (default 10m). */
   debugTimeoutMs?: number;
+  /** Disable dev-only placeholder injection for missing env creds (`--no-placeholders`). */
+  noPlaceholders?: boolean;
 }
 
 export interface LoopResult {
@@ -83,6 +86,7 @@ interface AttemptCtx {
   reviewTimeoutMs?: number;
   noDebug: boolean;
   debugTimeoutMs?: number;
+  noPlaceholders: boolean;
   maxRetriesOverride?: number;
   timeoutMsOverride?: number;
   signal?: AbortSignal;
@@ -153,8 +157,11 @@ function depSummaries(projectDir: string, runId: string, slice: Slice): Map<stri
   return out;
 }
 
-function maxRetriesFor(slice: Slice, opts: { maxRetriesOverride?: number }): number {
-  return opts.maxRetriesOverride ?? slice.maxRetries;
+function maxRetriesFor(slice: Slice, opts: { maxRetriesOverride?: number; cfg?: { maxRetries?: number } }): number {
+  // Precedence: CLI flag > explicit `Retries:` trailer > yml default > parser default.
+  if (opts.maxRetriesOverride !== undefined) return opts.maxRetriesOverride;
+  if (slice.maxRetriesExplicit) return slice.maxRetries;
+  return opts.cfg?.maxRetries ?? slice.maxRetries;
 }
 
 function summarize5(
@@ -286,6 +293,7 @@ async function runReview(
   claimed: Slice,
   report: CompletionReport,
   verifyCommands: string[],
+  env?: Record<string, string>,
 ): Promise<boolean> {
   const { projectDir, runId } = ctx;
   const dir = sliceDir(projectDir, runId, sliceId);
@@ -307,13 +315,14 @@ async function runReview(
   writeFileSync(join(dir, `review-prompt-${attempt}.md`), prompt, "utf8");
   const onProgress = progressFn(ctx, sliceId, "review");
   let reviewOut = "";
+  let reviewStdout = "";
   try {
     const res = await ctx.reviewer(
       { prompt, sliceId, attempt, label: `${sliceId} review` },
-      { projectDir, workerModel: reviewModel, timeoutMs: reviewBudgetMs, signal: ctx.signal, sessionDir: dir, onProgress },
+      { projectDir, workerModel: reviewModel, timeoutMs: reviewBudgetMs, signal: ctx.signal, sessionDir: dir, onProgress, env },
     );
+    reviewStdout = res.stdout;
     reviewOut = `exit=${res.exit} timedOut=${res.timedOut} durationMs=${res.durationMs}\n--- stdout ---\n${res.stdout}\n--- stderr ---\n${res.stderr}\n`;
-    writeFileSync(join(dir, `review-${attempt}.log`), reviewOut, "utf8");
     if (res.eventsJsonl) {
       try {
         writeFileSync(join(dir, `review-${attempt}.events.jsonl`), res.eventsJsonl, "utf8");
@@ -338,9 +347,7 @@ async function runReview(
     failAttempt(ctx, sliceId, claimed, join("slices", sliceId, `review-${attempt}.log`));
     return false;
   }
-
-  const rawStdout = reviewOut.split("--- stdout ---\n")[1]?.split("\n--- stderr ---")[0] ?? "";
-  const extracted = extractReviewFromOutput(rawStdout);
+  const extracted = extractReviewFromOutput(reviewStdout);
   // Artifact the failure refs: review.json once a verdict parsed, else the
   // invalid-output record.
   let verdictRef = join("slices", sliceId, `review-${attempt}.invalid.json`);
@@ -397,6 +404,7 @@ async function runDebugger(
   verifyCommands: string[],
   verdict: Verdict,
   wtPath: string,
+  env?: Record<string, string>,
 ): Promise<boolean> {
   const { projectDir, runId } = ctx;
   const dir = sliceDir(projectDir, runId, sliceId);
@@ -415,11 +423,13 @@ async function runDebugger(
 
   const onProgress = progressFn(ctx, sliceId, "debug");
   let debugOut = "";
+  let debugStdout = "";
   try {
     const res = await ctx.runner(
       { prompt, sliceId, attempt, label: `${sliceId} debug` },
-      { projectDir: wtPath, workerModel, timeoutMs: debugBudgetMs, signal: ctx.signal, sessionDir: dir, onProgress },
+      { projectDir: wtPath, workerModel, timeoutMs: debugBudgetMs, signal: ctx.signal, sessionDir: dir, onProgress, env },
     );
+    debugStdout = res.stdout;
     debugOut = `exit=${res.exit} timedOut=${res.timedOut} durationMs=${res.durationMs}\n--- stdout ---\n${res.stdout}\n--- stderr ---\n${res.stderr}\n`;
     writeFileSync(join(dir, `debug-${attempt}.log`), debugOut, "utf8");
     if (res.eventsJsonl) {
@@ -450,8 +460,7 @@ async function runDebugger(
     return false;
   }
 
-  const rawStdout = debugOut.split("--- stdout ---\n")[1]?.split("\n--- stderr ---")[0] ?? "";
-  const extracted = extractReportFromOutput(rawStdout);
+  const extracted = extractReportFromOutput(debugStdout);
   try {
     if (extracted === undefined) throw new Error("no <<<OMPO_REPORT>>> block in debugger output");
     const dreport = validateCompletionReport(extracted, sliceId);
@@ -462,7 +471,7 @@ async function runDebugger(
     // <<<OMPO_HARNESS_FIX>>> block. Validate every rail, apply, and let the
     // caller re-run the gate as for any debugger fix. One shot: any rail or
     // apply failure rejects the block and returns false (retry-or-terminal).
-    const harness = extractHarnessFix(rawStdout);
+    const harness = extractHarnessFix(debugStdout);
     if (harness) {
       writeFileSync(join(dir, `debug-${attempt}.harness-fix.json`), JSON.stringify(harness, null, 2) + "\n", "utf8");
       const violations = validateHarnessFix(harness, claimed.files, headFileSet(projectDir));
@@ -496,6 +505,95 @@ async function runDebugger(
     const msg = err instanceof Error ? err.message : String(err);
     log(ctx, summarize5(claimed, `debug inconclusive: ${msg} (falling back to retry budget)`));
     return false;
+  }
+}
+
+/**
+ * Placeholder recovery for missing named credentials/URLs (default on).
+ * Up to 5 rounds: extract the unset var, inject a dev-only placeholder,
+ * re-run the gate. Returns passed (gate green), failed (the failure is
+ * genuine now — the debugger owns it), or park (deploy slice / unnamed
+ * var / still missing — the caller records blocked-env).
+ */
+type PlaceholderRecovery =
+  | { kind: "passed"; verdict: Verdict; env: Record<string, string> }
+  | { kind: "failed"; verdict: Verdict; env: Record<string, string> }
+  | { kind: "park"; verdict: Verdict; reason: string; fix: string };
+
+async function recoverWithPlaceholders(
+  ctx: AttemptCtx,
+  sliceId: string,
+  attempt: number,
+  claimed: Slice,
+  verdict: Verdict,
+  runGate: (tag: string, env?: Record<string, string>) => Promise<Verdict>,
+): Promise<PlaceholderRecovery> {
+  const { projectDir, runId } = ctx;
+  const docRef = placeholdersDocRef(runId);
+  // Scoped to this attempt's gate re-runs: never touches process.env, so
+  // concurrent pipelines cannot see each other's placeholders.
+  const extraEnv: Record<string, string> = {};
+  let cur = verdict;
+  for (let round = 0; round < 5; round++) {
+    const tails = cur.steps.map((s) => s.outputTail);
+    const block = classifyEnvFailure(tails);
+    if (!block) return { kind: "failed", verdict: cur, env: { ...extraEnv } };
+    const name = extractMissingVar(block.reason, tails);
+    if (!name) return { kind: "park", verdict: cur, reason: block.reason, fix: block.fix };
+    if (isDeploySlice(sliceId, claimed.title)) {
+      return {
+        kind: "park",
+        verdict: cur,
+        reason: block.reason,
+        fix: `deploy gate needs the real ${name} — swap the placeholders in ${docRef} first, then \`ompo resume\``,
+      };
+    }
+    // Already set (operator value or earlier injection) yet still named:
+    // the value itself is rejected — genuine failure for the debugger.
+    // Only truly-unset vars are invented, so real secrets are never recorded.
+    if (process.env[name] || extraEnv[name]) return { kind: "failed", verdict: cur, env: { ...extraEnv } };
+    const value = placeholderFor(name);
+    extraEnv[name] = value;
+    recordPlaceholder(projectDir, runId, {
+      name,
+      value,
+      firstSeenSlice: sliceId,
+      firstSeenAttempt: attempt,
+      at: new Date().toISOString(),
+    });
+    log(ctx, `  placeholder: ${name} unset — injected dev-only value, noted in ${docRef} (no retry consumed)`);
+    cur = await runGate("verify", { ...extraEnv });
+    if (cur.pass) {
+      log(ctx, `  gate green with placeholder(s): ${Object.keys(extraEnv).join(", ")}`);
+      return { kind: "passed", verdict: cur, env: { ...extraEnv } };
+    }
+  }
+  const tails = cur.steps.map((s) => s.outputTail);
+  const block = classifyEnvFailure(tails);
+  return {
+    kind: "park",
+    verdict: cur,
+    reason: block ? block.reason : "repeated missing credentials",
+    fix: block ? block.fix : `set the missing values (see ${docRef}), then \`ompo resume\``,
+  };
+}
+
+/**
+ * End-of-run swap report: var names (never values — those live in the doc)
+ * plus the deploy-gate call to action when only deployment slices remain.
+ */
+function reportPlaceholders(opts: { projectDir: string; runId: string; onEvent?: (msg: string) => void }): void {
+  const all = loadPlaceholders(opts.projectDir, opts.runId);
+  const names = Object.keys(all);
+  if (names.length === 0) return;
+  const ref = placeholdersDocRef(opts.runId);
+  log(opts, `placeholders: ${names.length} dev-only value(s) — ${names.join(", ")} (see ${ref})`);
+  const doc = loadRun(opts.projectDir, opts.runId).doc;
+  const remaining = doc.slices.filter((s) => !["done", "failed", "skipped"].includes(s.status));
+  if (remaining.length > 0 && remaining.every((s) => isDeploySlice(s.id, s.title))) {
+    log(opts, `only deployment slice(s) left (${remaining.map((s) => s.id).join(", ")}) — swap real values, exercise the UI/UX, then deploy`);
+  } else {
+    log(opts, `swap real values before the deploy slice / final UI-UX pass`);
   }
 }
 
@@ -559,6 +657,7 @@ async function runAttempt(ctx: AttemptCtx, sliceId: string): Promise<void> {
   log(ctx, `  model: ${workerModel ?? "(default)"} worktree: ${wtPath} budget: ${formatTimeout(workerTimeoutMs)}`);
   const onProgress = progressFn(ctx, sliceId);
   let workerOut = "";
+  let workerStdout = "";
   // Hoisted worker result so the worker_finished event (step 5) can carry
   // exit/timing enrichment even though the result was scoped to the try.
   let workerMeta: { exit: number | null; timedOut: boolean; durationMs: number } | undefined;
@@ -568,6 +667,7 @@ async function runAttempt(ctx: AttemptCtx, sliceId: string): Promise<void> {
       { projectDir: wtPath, workerModel, timeoutMs: workerTimeoutMs, signal: ctx.signal, sessionDir: dir, onProgress },
     );
     workerMeta = { exit: res.exit, timedOut: res.timedOut, durationMs: res.durationMs };
+    workerStdout = res.stdout;
     workerOut = `exit=${res.exit} timedOut=${res.timedOut} durationMs=${res.durationMs}\n--- stdout ---\n${res.stdout}\n--- stderr ---\n${res.stderr}\n`;
     writeFileSync(join(dir, `worker-${attempt}.log`), workerOut, "utf8");
     if (res.eventsJsonl) {
@@ -583,7 +683,6 @@ async function runAttempt(ctx: AttemptCtx, sliceId: string): Promise<void> {
       preserveIncompleteWork(ctx, sliceId, attempt, "timeout");
       throw new Error(`worker timed out`);
     }
-    void workerMeta;
     if (res.exit !== 0) {
       // Non-zero exit: still try to extract a report (worker may have
       // printed one before failing); else worker failure.
@@ -615,9 +714,9 @@ async function runAttempt(ctx: AttemptCtx, sliceId: string): Promise<void> {
     return;
   }
 
-  // 4. Extract + validate strict report.
-  const rawStdout = workerOut.split("--- stdout ---\n")[1]?.split("\n--- stderr ---")[0] ?? "";
-  const extracted = extractReportFromOutput(rawStdout);
+  // 4. Extract + validate strict report (raw stdout — the decorated log may
+  // contain the same delimiters in worker prose).
+  const extracted = extractReportFromOutput(workerStdout);
   let report: CompletionReport;
   try {
     if (extracted === undefined) throw new Error("no <<<OMPO_REPORT>>> block found in worker output");
@@ -652,13 +751,15 @@ async function runAttempt(ctx: AttemptCtx, sliceId: string): Promise<void> {
   // after the merge lands, so dependents branch off merged state.
   const verifyCommands = [...(ctx.cfg.verifyDefaults ?? []), ...claimed.verify];
   let mergedDetail = "";
+  let gateEnv: Record<string, string> | undefined;
   const release = await ctx.commit.acquire();
   try {
     log(ctx, `  verify: ${verifyCommands.length} command(s) in ${wtPath}`);
-    const runGate = (tag: string) =>
+    const runGate = (tag: string, env?: Record<string, string>) =>
       runVerifiers(sliceId, attempt, verifyCommands, join(dir, "logs"), {
         projectDir: wtPath,
         onProgress: progressFn(ctx, sliceId, tag),
+        env,
       });
     let verdict = await runGate("verify");
     writeFileSync(join(dir, "verdict.json"), JSON.stringify(verdict, null, 2) + "\n", "utf8");
@@ -679,8 +780,31 @@ async function runAttempt(ctx: AttemptCtx, sliceId: string): Promise<void> {
       // Triage before spending anything: infrastructure failures (port taken,
       // DB down) are never the worker's fault — park the slice WITHOUT
       // consuming a retry so a dead Postgres can't terminal-fail good code.
-      const envBlock = classifyEnvFailure(verdict.steps.map((s) => s.outputTail));
-      if (envBlock) {
+      // Missing NAMED credentials/URLs instead get a dev-only placeholder
+      // (noted in the run's placeholders.md) and the gate re-runs, so the
+      // roadmap keeps moving. Deploy slices and infra failures still park.
+      let envBlock = classifyEnvFailure(verdict.steps.map((s) => s.outputTail));
+      // Attempt-scoped placeholder env: every gate re-run below (debugger
+      // re-verify, reviewer's own checks) sees the same injected values.
+      if (envBlock && !ctx.noPlaceholders && ctx.cfg.placeholders !== false) {
+        const rec = await recoverWithPlaceholders(ctx, sliceId, attempt, claimed, verdict, runGate);
+        verdict = rec.verdict;
+        writeFileSync(join(dir, "verdict.json"), JSON.stringify(verdict, null, 2) + "\n", "utf8");
+        if (rec.kind === "park") {
+          storeApi.blockEnv(projectDir, runId, sliceId, join("slices", sliceId, "verdict.json"), rec.reason);
+          log(ctx, summarize5(claimed, `environment blocked: ${rec.reason} (no retry consumed)`, report, false));
+          log(ctx, `  fix: ${rec.fix}`);
+          return;
+        }
+        gateEnv = rec.env;
+        if (!verdict.pass) {
+          logTail();
+          envBlock = classifyEnvFailure(verdict.steps.map((s) => s.outputTail));
+        } else {
+          envBlock = null;
+        }
+      }
+      if (envBlock && !verdict.pass) {
         storeApi.blockEnv(projectDir, runId, sliceId, join("slices", sliceId, "verdict.json"),
           envBlock.reason);
         log(ctx, summarize5(claimed, `environment blocked: ${envBlock.reason} (no retry consumed)`, report, false));
@@ -692,11 +816,11 @@ async function runAttempt(ctx: AttemptCtx, sliceId: string): Promise<void> {
       // Not recursive: whatever the debugger leaves behind goes through the
       // standard retry-or-terminal path below.
       if (!ctx.noDebug) {
-        const debugged = await runDebugger(ctx, sliceId, attempt, claimed, verifyCommands, verdict, wtPath);
+        const debugged = await runDebugger(ctx, sliceId, attempt, claimed, verifyCommands, verdict, wtPath, gateEnv);
         if (ctx.signal?.aborted) return; // abort already recorded inside runDebugger
         if (debugged) {
           log(ctx, `  debugger claims a fix — re-running the gate`);
-          verdict = await runGate("verify");
+          verdict = await runGate("verify", gateEnv ? { ...gateEnv } : undefined);
           writeFileSync(join(dir, "verdict.json"), JSON.stringify(verdict, null, 2) + "\n", "utf8");
           if (!verdict.pass) logTail();
         }
@@ -729,6 +853,7 @@ async function runAttempt(ctx: AttemptCtx, sliceId: string): Promise<void> {
       log(ctx, `  resolve in the slice branch and re-run; worktree kept for forensics`);
       return;
     }
+    if (m.nothingToCommit) log(ctx, `  merge: nothing to commit — worker changed no files, proceeding to review`);
     mergedDetail = m.detail;
   } finally {
     release();
@@ -738,7 +863,7 @@ async function runAttempt(ctx: AttemptCtx, sliceId: string): Promise<void> {
   // Runs OUTSIDE the commit mutex: review only reads and spot-checks, so it
   // may overlap other pipelines' work. Done lands only on approval.
   if (!ctx.noReview) {
-    const approved = await runReview(ctx, sliceId, attempt, claimed, report, verifyCommands);
+    const approved = await runReview(ctx, sliceId, attempt, claimed, report, verifyCommands, gateEnv);
     if (!approved) return;
   }
 
@@ -775,6 +900,7 @@ export async function runRoadmapLoop(opts: LoopOptions): Promise<LoopResult> {
     reviewModel: opts.reviewModel,
     reviewTimeoutMs: opts.reviewTimeoutMs,
     noDebug: opts.noDebug ?? false,
+    noPlaceholders: opts.noPlaceholders ?? false,
     debugTimeoutMs: opts.debugTimeoutMs
       ?? (cfg.debugTimeoutSec ? cfg.debugTimeoutSec * 1000 : undefined),
     maxRetriesOverride: opts.maxRetriesOverride,
@@ -793,6 +919,7 @@ export async function runRoadmapLoop(opts: LoopOptions): Promise<LoopResult> {
     const blockedEnv = count("blocked-env");
     const pending = cursor.doc.slices.filter((x) => !["done", "failed", "skipped"].includes(x.status)).length;
     const exitCode = failed > 0 || pending > 0 ? 1 : 0;
+    reportPlaceholders({ projectDir: opts.projectDir, runId: opts.runId, onEvent: opts.onEvent });
     return { exitCode, done, failed, skipped, pending, blockedEnv };
   };
 
@@ -827,7 +954,12 @@ export async function runRoadmapLoop(opts: LoopOptions): Promise<LoopResult> {
     if (!next) return null;
     try {
       storeApi.claimSlice(opts.projectDir, opts.runId, next.id);
-    } catch {
+    } catch (err) {
+      // Lost race with a concurrent pipeline (already claimed): try the next
+      // ready slice. Any other store error is real — fail the slice in-store
+      // instead of silently treating it as end-of-work.
+      if (err instanceof Error && err.message.includes("cannot claim slice")) return null;
+      unexpectedFailure(next.id, err);
       return null;
     }
     return loadRun(opts.projectDir, opts.runId).doc.slices.find((s) => s.id === next.id)!;

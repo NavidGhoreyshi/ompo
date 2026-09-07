@@ -7,6 +7,7 @@ import { parseRoadmap } from "../src/parse.ts";
 import { runRoadmapLoop } from "../src/loop.ts";
 import { createRun, loadRun, sliceDir, storeApi } from "../src/store.ts";
 import { HARNESS_CLOSE, HARNESS_OPEN, REPORT_CLOSE, REPORT_OPEN } from "../src/report.ts";
+import { loadPlaceholders } from "../src/placeholders.ts";
 import { REVIEW_CLOSE, REVIEW_OPEN } from "../src/review.ts";
 import type { WorkerCall, WorkerContext, WorkerResult, WorkerRunner } from "../src/worker.ts";
 
@@ -111,6 +112,26 @@ describe("loop", () => {
     expect(events.some((m) => m.includes("trouble-marker"))).toBe(true);
   });
 
+  test("yml maxRetries applies when the slice sets no Retries trailer", async () => {
+    const dir = tmpProject();
+    mkdirSync(join(dir, ".omp"), { recursive: true });
+    writeFileSync(join(dir, ".omp", "roadmap.yml"), "maxRetries: 0\n", "utf8");
+    createRun(dir, parseRoadmap("## [a] A\nDo A.\nVerify: exit 1\n"), "r");
+    const res = await runRoadmapLoop({ projectDir: dir, runId: "r", runner: okRunner, noDebug: true, onEvent: () => {} });
+    expect(res.exitCode).toBe(1);
+    expect(loadRun(dir, "r").doc.slices[0]!.attempts).toBe(1);
+  });
+
+  test("explicit Retries trailer beats the yml default", async () => {
+    const dir = tmpProject();
+    mkdirSync(join(dir, ".omp"), { recursive: true });
+    writeFileSync(join(dir, ".omp", "roadmap.yml"), "maxRetries: 0\n", "utf8");
+    createRun(dir, parseRoadmap("## [a] A\nDo A.\nVerify: exit 1\nRetries: 1\n"), "r");
+    const res = await runRoadmapLoop({ projectDir: dir, runId: "r", runner: okRunner, noDebug: true, onEvent: () => {} });
+    expect(res.exitCode).toBe(1);
+    expect(loadRun(dir, "r").doc.slices[0]!.attempts).toBe(2);
+  });
+
   test("verify EADDRINUSE parks the slice as blocked-env, no retry consumed", async () => {
     const dir = tmpProject();
     createRun(
@@ -136,6 +157,71 @@ describe("loop", () => {
     // Resume re-queues the slice once the operator fixes the environment.
     storeApi.resumeRun(dir, "r");
     expect(loadRun(dir, "r").doc.slices[0]!.status).toBe("pending");
+  });
+
+  test("missing named cred heals with a dev-only placeholder, no retry consumed", async () => {
+    const dir = tmpProject();
+    const varName = "OMPO_TEST_PH_HEAL";
+    delete process.env[varName];
+    createRun(
+      dir,
+      parseRoadmap(`## [a] A\nDo A.\nVerify: node -e "if (!process.env.${varName}) { console.error('${varName} must be set'); process.exit(1) }"\nRetries: 0\n`),
+      "r",
+    );
+    const events: string[] = [];
+    try {
+      const res = await runRoadmapLoop({ projectDir: dir, runId: "r", runner: okRunner, onEvent: (m) => events.push(m) });
+      expect(res.exitCode).toBe(0);
+      expect(res.done).toBe(1);
+      expect(loadRun(dir, "r").doc.slices[0]!.status).toBe("done");
+      expect(events.some((m) => m.includes(`placeholder: ${varName} unset`))).toBe(true);
+      expect(loadPlaceholders(dir, "r")[varName]?.firstSeenSlice).toBe("a");
+    } finally {
+      delete process.env[varName];
+    }
+  });
+
+  test("deploy slices park on missing creds instead of injecting", async () => {
+    const dir = tmpProject();
+    const varName = "OMPO_TEST_PH_DEPLOY";
+    delete process.env[varName];
+    createRun(
+      dir,
+      parseRoadmap(`## [deploy] Deploy\nShip it.\nVerify: node -e "if (!process.env.${varName}) { console.error('${varName} must be set'); process.exit(1) }"\nRetries: 0\n`),
+      "r",
+    );
+    const events: string[] = [];
+    try {
+      const res = await runRoadmapLoop({ projectDir: dir, runId: "r", runner: okRunner, onEvent: (m) => events.push(m) });
+      expect(res.blockedEnv).toBe(1);
+      expect(loadRun(dir, "r").doc.slices[0]!.status).toBe("blocked-env");
+      expect(loadPlaceholders(dir, "r")[varName]).toBeUndefined();
+      expect(events.some((m) => m.includes("deploy gate"))).toBe(true);
+    } finally {
+      delete process.env[varName];
+    }
+  });
+
+  test("placeholders: false parks missing creds as blocked-env", async () => {
+    const dir = tmpProject();
+    const varName = "OMPO_TEST_PH_OFF";
+    delete process.env[varName];
+    mkdirSync(join(dir, ".omp"), { recursive: true });
+    writeFileSync(join(dir, ".omp", "roadmap.yml"), "placeholders: false\n", "utf8");
+    createRun(
+      dir,
+      parseRoadmap(`## [a] A\nDo A.\nVerify: node -e "if (!process.env.${varName}) { console.error('${varName} must be set'); process.exit(1) }"\nRetries: 0\n`),
+      "r",
+    );
+    const events: string[] = [];
+    try {
+      const res = await runRoadmapLoop({ projectDir: dir, runId: "r", runner: okRunner, onEvent: (m) => events.push(m) });
+      expect(res.blockedEnv).toBe(1);
+      expect(loadRun(dir, "r").doc.slices[0]!.status).toBe("blocked-env");
+      expect(loadPlaceholders(dir, "r")[varName]).toBeUndefined();
+    } finally {
+      delete process.env[varName];
+    }
   });
 
   test("debugger fixes a genuine failure and the gate re-runs green", async () => {
