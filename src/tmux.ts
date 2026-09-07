@@ -65,6 +65,7 @@ function extractLastBlock(texts: string, open: string, close: string): unknown |
 }
 
 /** Assistant text of sessions created after `baseline` (current attempt only). */
+const MAX_TMUX_TEXT_CHARS = 2_000_000;
 function scanSessionTexts(sessionDir: string, baseline: ReadonlySet<string>): string {
   let files: string[];
   try {
@@ -73,6 +74,7 @@ function scanSessionTexts(sessionDir: string, baseline: ReadonlySet<string>): st
     return "";
   }
   const texts: string[] = [];
+  let chars = 0;
   for (const f of files) {
     let content: string;
     try {
@@ -82,6 +84,7 @@ function scanSessionTexts(sessionDir: string, baseline: ReadonlySet<string>): st
       continue;
     }
     for (const line of content.split("\n")) {
+      if (chars >= MAX_TMUX_TEXT_CHARS) break;
       if (!line.includes('"assistant"')) continue;
       try {
         const ev = JSON.parse(line) as {
@@ -90,14 +93,19 @@ function scanSessionTexts(sessionDir: string, baseline: ReadonlySet<string>): st
         };
         if (ev.type !== "message" || ev.message?.role !== "assistant") continue;
         for (const part of ev.message.content ?? []) {
-          if (part.type === "text" && part.text) texts.push(part.text);
+          if (part.type === "text" && part.text) {
+            texts.push(part.text);
+            chars += part.text.length + 1;
+          }
         }
       } catch {
         /* partial line mid-write; next poll */
       }
     }
+    if (chars >= MAX_TMUX_TEXT_CHARS) break;
   }
-  return texts.join("\n");
+  const joined = texts.join("\n");
+  return joined.length > MAX_TMUX_TEXT_CHARS ? joined.slice(-MAX_TMUX_TEXT_CHARS) : joined;
 }
 
 function listSessions(sessionDir: string): Set<string> {

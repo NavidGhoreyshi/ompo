@@ -30,6 +30,11 @@ export interface WorkerContext {
   signal?: AbortSignal;
   /** Live progress line sink (one concise line per agent step). */
   onProgress?: (line: string) => void;
+  /**
+   * Extra env for the worker (placeholder injection — scoped to the attempt).
+   * Honored by the headless runner; tmux panes inherit the server env instead.
+   */
+  env?: Record<string, string>;
 }
 
 export interface WorkerResult {
@@ -181,7 +186,7 @@ export const runOmpWorker: WorkerRunner = (call, ctx) =>
     // bogus "worker failure … retrying" on the way to aborting.
     const child = spawn("omp", args, {
       cwd: ctx.projectDir,
-      env: process.env,
+      env: ctx.env ? { ...process.env, ...ctx.env } : process.env,
       stdio: ["ignore", "pipe", "pipe"],
       detached: true,
     });
@@ -206,6 +211,7 @@ export const runOmpWorker: WorkerRunner = (call, ctx) =>
     let done = false;
     const progressState: ProgressState = { turn: 0, cwd: ctx.projectDir };
     const emit = (line: string) => {
+      if (done) return;
       try {
         ctx.onProgress?.(line);
       } catch {
@@ -213,6 +219,7 @@ export const runOmpWorker: WorkerRunner = (call, ctx) =>
       }
     };
     const handleLine = (line: string): void => {
+      if (done) return;
       if (!line.trim()) return;
       if (rawChars < 2_000_000) {
         rawLines.push(line);

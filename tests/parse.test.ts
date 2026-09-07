@@ -94,6 +94,23 @@ describe("parseRoadmap", () => {
     );
     expect(doc.slices[0]!.verify).toEqual(["cmd one", "cmd two"]);
   });
+
+  test("trailer-like lines in fenced blocks stay in the body", () => {
+    const doc = parseRoadmap(
+      "## [a] A\nBody line.\n```\nVerify: not a command\nDepends: nope\n```\nVerify: bun test\n",
+    );
+    const a = doc.slices[0]!;
+    expect(a.verify).toEqual(["bun test"]);
+    expect(a.deps).toEqual([]);
+    expect(a.body).toContain("Verify: not a command");
+  });
+
+  test("Retries trailer records explicitness", () => {
+    const doc = parseRoadmap("## [a] A\nRetries: 0\n## [b] B\nBody\n");
+    expect(doc.slices[0]!.maxRetries).toBe(0);
+    expect(doc.slices[0]!.maxRetriesExplicit).toBe(true);
+    expect(doc.slices[1]!.maxRetriesExplicit).toBeUndefined();
+  });
 });
 
 describe("selector", () => {

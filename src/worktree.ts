@@ -18,6 +18,8 @@ import { join } from "node:path";
 export interface MergeOutcome {
   merged: boolean;
   detail: string;
+  /** True when the worktree held no committable change (not a conflict). */
+  nothingToCommit?: boolean;
 }
 
 export interface WorktreeOps {
@@ -86,7 +88,7 @@ export const gitWorktreeOps: WorktreeOps = {
   commitWork(projectDir: string, runId: string, sliceId: string, attempt: number, reason: string): MergeOutcome {
     const wt = pathOf(projectDir, runId, sliceId);
     if (git(wt, "status", "--porcelain").out.trim() === "") {
-      return { merged: true, detail: "nothing to commit" };
+      return { merged: true, detail: "nothing to commit", nothingToCommit: true };
     }
     // Shared state links (node_modules, .env) are committed neither here
     // nor anywhere: git would store the symlink blob itself.
@@ -96,7 +98,7 @@ export const gitWorktreeOps: WorktreeOps = {
     // Judge by staged content, not the exit code.
     git(wt, "add", "-A", "--", ...exclude);
     if (git(wt, "diff", "--cached", "--quiet").exit === 0) {
-      return { merged: false, detail: `git add staged nothing` };
+      return { merged: true, detail: `nothing to commit`, nothingToCommit: true };
     }
     const commit = git(
       wt,

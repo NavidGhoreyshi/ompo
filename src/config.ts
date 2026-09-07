@@ -28,6 +28,8 @@ export interface RoadmapConfig {
   workerTimeoutSec?: number;
   /** Debugger session budget in seconds (default 600). */
   debugTimeoutSec?: number;
+  /** Auto-inject dev-only placeholders for missing env creds (default true). */
+  placeholders?: boolean;
   agentModels?: Record<string, string>;
   verifyDefaults?: string[];
 }
@@ -58,8 +60,22 @@ function unquote(v: string): string {
   }
   return t;
 }
+function parseConfigInt(raw: string, key: string, min: number, max: number): number {
+  const n = Number(raw.trim());
+  if (!Number.isInteger(n) || n < min || n > max) {
+    throw new Error(`.omp/roadmap.yml: ${key} must be an integer ${min}..${max} (got "${raw.trim()}")`);
+  }
+  return n;
+}
 
-export function parseRoadmapYml(text: string): RoadmapConfig {
+function parseConfigBool(raw: string, key: string): boolean {
+  const t = raw.trim().toLowerCase();
+  if (["true", "yes", "1", "on"].includes(t)) return true;
+  if (["false", "no", "0", "off"].includes(t)) return false;
+  throw new Error(`.omp/roadmap.yml: ${key} must be true/false (got "${raw.trim()}")`);
+}
+
+ export function parseRoadmapYml(text: string): RoadmapConfig {
   const cfg: RoadmapConfig = {};
   let section: "root" | "agentModels" | "verifyDefaults" = "root";
   for (const raw of text.split("\n")) {
@@ -91,10 +107,11 @@ export function parseRoadmapYml(text: string): RoadmapConfig {
         section = "root";
         if (key === "workerModel" && val) cfg.workerModel = val;
         else if (key === "reviewModel" && val) cfg.reviewModel = val;
-        else if (key === "maxRetries" && val) cfg.maxRetries = Number(val);
-        else if (key === "specBudget" && val) cfg.specBudget = Number(val);
-        else if (key === "workerTimeoutSec" && val) cfg.workerTimeoutSec = Number(val);
-        else if (key === "debugTimeoutSec" && val) cfg.debugTimeoutSec = Number(val);
+        else if (key === "maxRetries" && val) cfg.maxRetries = parseConfigInt(val, "maxRetries", 0, 10);
+        else if (key === "specBudget" && val) cfg.specBudget = parseConfigInt(val, "specBudget", 1000, 1_000_000);
+        else if (key === "workerTimeoutSec" && val) cfg.workerTimeoutSec = parseConfigInt(val, "workerTimeoutSec", 60, 8 * 3600);
+        else if (key === "debugTimeoutSec" && val) cfg.debugTimeoutSec = parseConfigInt(val, "debugTimeoutSec", 60, 8 * 3600);
+        else if (key === "placeholders" && val) cfg.placeholders = parseConfigBool(val, "placeholders");
       }
     } else if (section === "agentModels") {
       const m = trimmed.match(/^([^:]+?)\s*:\s*(.+)$/);

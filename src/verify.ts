@@ -18,6 +18,8 @@ export interface VerifyOptions {
   logFile?: string;
   /** Live progress line sink (verify start/finish per command). */
   onProgress?: (line: string) => void;
+  /** Extra env for gate commands (placeholder injection — scoped to the gate). */
+  env?: Record<string, string>;
 }
 
 export const DEFAULT_VERIFY_TIMEOUT_MS = 5 * 60 * 1000;
@@ -30,10 +32,12 @@ function runCommand(
   command: string,
   cwd: string,
   timeoutMs: number,
+  env?: Record<string, string>,
 ): Promise<{ exit: number | null; timedOut: boolean; output: string }> {
   return new Promise((resolve) => {
     const child = spawn("bash", ["-lc", command], {
       cwd,
+      env: env ? { ...process.env, ...env } : process.env,
       stdio: ["ignore", "pipe", "pipe"],
     });
     let output = "";
@@ -65,8 +69,9 @@ function runCommand(
     });
     child.on("error", (err) => {
       clearTimeout(timer);
-      finish(null, false);
       output += `\nspawn error: ${String(err)}`;
+      if (output.length > 1_000_000) output = output.slice(-1_000_000);
+      finish(null, false);
     });
     child.on("close", (code) => {
       clearTimeout(timer);
@@ -104,7 +109,7 @@ export async function runVerifiers(
     const logRef = join(logDir, `verify-${steps.length}.log`);
     const t0 = Date.now();
     opts.onProgress?.(`verify: $ ${command}`);
-    const r = await runCommand(command, opts.projectDir, timeoutMs);
+    const r = await runCommand(command, opts.projectDir, timeoutMs, opts.env);
     const secs = ((Date.now() - t0) / 1000).toFixed(1);
     if (r.exit === 0 && !r.timedOut) opts.onProgress?.(`verify ok: ${name} (${secs}s)`);
     else opts.onProgress?.(`verify FAIL: ${name} exit=${r.exit} timedOut=${r.timedOut} (${secs}s)`);

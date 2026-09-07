@@ -19,7 +19,8 @@
  * - Each `## ` heading opens a slice. Content before the first `##` is ignored.
  * - `## [explicit-id] Title` pins the id; otherwise id = slug(title).
  * - Trailer lines `Key: value` (case-insensitive key) are stripped from the body.
- *   They may appear anywhere inside the slice section. `Verify:` may repeat.
+ *   They may appear anywhere inside the slice section except inside fenced
+ *   code blocks (``` … ```), which are always kept verbatim. `Verify:` may repeat.
  * - `Depends:` is comma/space separated. Empty = no deps.
  * - Validator rejects: zero slices, duplicate ids, unknown deps, dependency
  *   cycles (Kahn), invalid Effort / Retries values.
@@ -156,11 +157,14 @@ export function parseRoadmap(markdown: string): RoadmapDoc {
     const verify: string[] = [];
     let files: string[] = [];
     let maxRetries = DEFAULT_MAX_RETRIES;
+    let maxRetriesExplicit = false;
     let skip = false;
     const bodyLines: string[] = [];
 
+    let inFence = false;
     for (const line of sec.lines) {
-      const t = line.match(TRAILER_RE);
+      if (/^\s*```/.test(line)) inFence = !inFence;
+      const t = !inFence ? line.match(TRAILER_RE) : null;
       if (t) {
         const key = t[1]!.toLowerCase();
         const value = t[2] ?? "";
@@ -188,6 +192,7 @@ export function parseRoadmap(markdown: string): RoadmapDoc {
             break;
           case "retries":
             maxRetries = parseRetries(value, id);
+            maxRetriesExplicit = true;
             break;
           case "timeout":
             timeoutMs = parseTimeout(value, id);
@@ -219,6 +224,7 @@ export function parseRoadmap(markdown: string): RoadmapDoc {
       verify,
       files,
       maxRetries,
+      ...(maxRetriesExplicit ? { maxRetriesExplicit: true as const } : {}),
       timeoutMs,
       skip: skip || undefined,
       status: skip ? "skipped" : "pending",

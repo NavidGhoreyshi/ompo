@@ -87,6 +87,25 @@ export function writeJsonAtomic(path: string, value: unknown): void {
   renameSync(tmp, path);
 }
 
+/** Remove crashed `writeJsonAtomic` leftovers (`roadmap.json.<pid>.tmp`). Best-effort. */
+function reapTmpFiles(projectDir: string, runId: string): void {
+  let entries: string[];
+  try {
+    entries = readdirSync(runDir(projectDir, runId));
+  } catch {
+    return;
+  }
+  for (const e of entries) {
+    if (/^roadmap\.json\.\d+\.tmp$/.test(e)) {
+      try {
+        rmSync(join(runDir(projectDir, runId), e), { force: true });
+      } catch {
+        /* best-effort */
+      }
+    }
+  }
+}
+
 function readJson<T>(path: string): T {
   return JSON.parse(readFileSync(path, "utf8")) as T;
 }
@@ -114,8 +133,9 @@ function pidAlive(pid: number): boolean {
 }
 
 /** Acquire exclusive lock. Throws StoreLockedError when held by a live process. */
-export function acquireLock(projectDir: string, runId: string): void {
+export function acquireLock(projectDir: string, runId: string, attempts = 5): void {
   mkdirSync(runsDir(projectDir), { recursive: true });
+  reapTmpFiles(projectDir, runId);
   const path = lockPath(projectDir, runId);
   const data: LockData = { pid: process.pid, startedAt: new Date().toISOString() };
   try {
@@ -128,12 +148,17 @@ export function acquireLock(projectDir: string, runId: string): void {
     if (code !== "EEXIST") throw err;
   }
   // Lock exists: reclaim iff owner dead or heartbeat older than 10 min.
+  // The `wx` create above serializes concurrent reclaimers: losers re-read
+  // the winner's fresh lock below and back off with StoreLockedError.
+  if (attempts <= 0) {
+    throw new StoreLockedError(`run "${runId}" is locked (reclaim raced); retry \`ompo resume\``);
+  }
   try {
     const prev = readJson<LockData>(path);
     const ageMs = Date.now() - Date.parse(prev.startedAt);
     if (!pidAlive(prev.pid) || ageMs > 10 * 60 * 1000) {
       rmSync(path, { force: true });
-      return acquireLock(projectDir, runId);
+      return acquireLock(projectDir, runId, attempts - 1);
     }
     throw new StoreLockedError(
       `run "${runId}" is locked by live pid ${prev.pid} (started ${prev.startedAt}). Use --resume in the owning process or remove ${path} if stale.`,
@@ -142,7 +167,7 @@ export function acquireLock(projectDir: string, runId: string): void {
     if (err instanceof StoreLockedError) throw err;
     // Unreadable lock: replace it.
     rmSync(path, { force: true });
-    return acquireLock(projectDir, runId);
+    return acquireLock(projectDir, runId, attempts - 1);
   }
 }
 

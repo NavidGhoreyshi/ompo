@@ -39,6 +39,8 @@ export interface Slice {
   /** File allowlist declared by the slice (advisory for spec-builder). */
   files: string[];
   maxRetries: number;
+  /** True when `Retries:` was set on the slice (beats the yml default). */
+  maxRetriesExplicit?: boolean;
   /** Per-slice worker budget in ms (`Timeout:` trailer). */
   timeoutMs?: number;
   /** Skip without running (explicit `Skip: true` trailer or --slice filter). */

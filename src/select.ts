@@ -34,13 +34,20 @@ export function readySlices(doc: RoadmapDoc): Slice[] {
 /** True when no slice can ever become ready (deadlock beyond plain completion). */
 export function stalled(doc: RoadmapDoc): boolean {
   if (nextReady(doc)) return false;
-  // Not stalled if everything terminal; stalled only if pending work remains
-  // that is blocked by non-done, non-retryable predecessors.
-  const pending = doc.slices.filter(
-    (s) => s.status === "pending" || s.status === "blocked",
-  );
+  // Stalled only if pending work remains that no future completion can
+  // unblock: every remaining pending slice depends on a failed or
+  // blocked-env predecessor. Running/verifying slices may still complete,
+  // and done/skipped/failed/aborted are settled — none of those stall.
+  const byId = new Map(doc.slices.map((s) => [s.id, s]));
+  const pending = doc.slices.filter((s) => s.status === "pending");
   if (pending.length === 0) return false;
-  return true;
+  if (doc.slices.some((s) => s.status === "running" || s.status === "verifying")) return false;
+  return pending.every((s) =>
+    s.deps.some((d) => {
+      const dep = byId.get(d);
+      return dep !== undefined && !depSatisfied(dep) && dep.status !== "pending";
+    }),
+  );
 }
 
 export function summarize(doc: RoadmapDoc): Record<string, number> {
