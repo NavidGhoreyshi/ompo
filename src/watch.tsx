@@ -40,7 +40,7 @@ const STATUS_CHIP: Record<string, { label: string; color: string }> = {
   skipped: { label: "skip", color: "gray" },
 };
 
-interface SliceLine {
+export interface SliceLine {
   id: string;
   title: string;
   status: SliceStatus;
@@ -49,7 +49,7 @@ interface SliceLine {
   reason?: string;
 }
 
-interface DetailView {
+export interface DetailView {
   sliceId: string;
   title: string;
   status: SliceStatus;
@@ -61,7 +61,7 @@ interface DetailView {
   verdictStep?: { name: string; exit: number | null; timedOut: boolean; tail: string };
 }
 
-interface RunView {
+export interface RunView {
   runs: string[];
   runIdx: number;
   sel: number;
@@ -74,13 +74,13 @@ interface RunView {
   detail: DetailView | null;
 }
 
-function hhmmss(iso: string): string {
+export function hhmmss(iso: string): string {
   const d = new Date(iso);
   const p = (n: number) => String(n).padStart(2, "0");
   return `${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`;
 }
 
-function clip(s: string, n: number): string {
+export function clip(s: string, n: number): string {
   return s.length > n ? `${s.slice(0, n - 1)}…` : s;
 }
 
@@ -167,13 +167,8 @@ function buildDetail(project: string, runId: string, slice: SliceLine): DetailVi
   return detail;
 }
 
-function loadView(project: string, runIdx: number, sel: number): RunView | null {
-  const runs = listRuns(project);
-  if (runs.length === 0) {
-    return { runs, runIdx: 0, sel: 0, runId: "", createdAt: "", updatedAt: "", counts: { done: 0, failed: 0, skipped: 0, blockedEnv: 0, pending: 0 }, live: false, slices: [], detail: null };
-  }
-  const idx = Math.min(Math.max(runIdx, 0), runs.length - 1);
-  const runId = runs[idx]!;
+/** Full view for one concrete run id (the live run TUI pins its own run). */
+export function viewForRun(project: string, runId: string, sel: number): RunView | null {
   let cursor;
   try {
     cursor = loadRun(project, runId);
@@ -201,9 +196,10 @@ function loadView(project: string, runIdx: number, sel: number): RunView | null 
     blockedEnv: count("blocked-env"),
     pending: cursor.doc.slices.filter((x) => !["done", "failed", "skipped"].includes(x.status)).length,
   };
+  const runs = listRuns(project);
   return {
     runs,
-    runIdx: idx,
+    runIdx: Math.max(runs.indexOf(runId), 0),
     sel: selIdx,
     runId,
     createdAt: cursor.createdAt,
@@ -213,6 +209,15 @@ function loadView(project: string, runIdx: number, sel: number): RunView | null 
     slices,
     detail: selSlice ? buildDetail(project, runId, selSlice) : null,
   };
+}
+
+function loadView(project: string, runIdx: number, sel: number): RunView | null {
+  const runs = listRuns(project);
+  if (runs.length === 0) {
+    return { runs, runIdx: 0, sel: 0, runId: "", createdAt: "", updatedAt: "", counts: { done: 0, failed: 0, skipped: 0, blockedEnv: 0, pending: 0 }, live: false, slices: [], detail: null };
+  }
+  const idx = Math.min(Math.max(runIdx, 0), runs.length - 1);
+  return viewForRun(project, runs[idx]!, sel);
 }
 
 function readEventsSafe(project: string, runId: string): RunEvent[] {
@@ -244,12 +249,102 @@ function eventsTailFor(project: string, runId: string, sliceId: string): string[
 
 // ── UI ─────────────────────────────────────────────────────────────────
 /** Cursor lands on what needs eyes: failed/running first, then done, else top. */
-function preferredSel(slices: SliceLine[]): number {
+export function preferredSel(slices: SliceLine[]): number {
   const rank = (s: SliceLine) =>
     s.status === "failed" || s.status === "running" || s.status === "verifying" ? 0 : s.status === "done" ? 1 : 2;
   let best = 0;
   for (let i = 1; i < slices.length; i++) if (rank(slices[i]!) < rank(slices[best]!)) best = i;
   return best;
+}
+
+/** Compact run-progress line: "done 2 · fail 1 · pend 3" (header, both TUIs). */
+export function summaryText(view: RunView): string {
+  const { counts } = view;
+  return [
+    counts.done ? `done ${counts.done}` : null,
+    counts.failed ? `fail ${counts.failed}` : null,
+    counts.blockedEnv ? `env ${counts.blockedEnv}` : null,
+    counts.skipped ? `skip ${counts.skipped}` : null,
+    counts.pending ? `pend ${counts.pending}` : null,
+  ]
+    .filter(Boolean)
+    .join(" · ");
+}
+
+function SliceChip({ slice }: { slice: SliceLine }) {
+  const c = STATUS_CHIP[slice.status] ?? { label: slice.status.slice(0, 5), color: "gray" };
+  const label = c.label.padEnd(5);
+  const name = slice.status === "failed" ? slice.id : `${slice.id}${slice.attempts > 1 ? ` ×${slice.attempts}` : ""}`;
+  return (
+    <Text color={c.color}>
+      {`[${label}]`} <Text>{name}</Text>
+      {slice.status === "failed" && slice.reason ? <Text color="red"> {slice.reason}</Text> : null}
+    </Text>
+  );
+}
+
+/** Left pane: the slice board (shared by watch + live run TUIs). */
+export function BoardPane({ view }: { view: RunView }) {
+  return (
+    <Box flexDirection="column" width={64} borderStyle="round" borderColor="gray">
+      <Text bold color="gray"> slices </Text>
+      {view.slices.map((s, i) => (
+        <Box key={s.id}>
+          <Text color={i === view.sel ? "green" : "gray"}>{i === view.sel ? "▸ " : "  "}</Text>
+          <SliceChip slice={s} />
+        </Box>
+      ))}
+    </Box>
+  );
+}
+
+/** Right pane: attempt inspector for the selected slice (shared). */
+export function InspectorPane({ project, view }: { project: string; view: RunView }) {
+  const selSlice = view.detail;
+  return (
+    <Box flexDirection="column" borderStyle="round" borderColor={view.detail && view.detail.status === "failed" ? "red" : "gray"} flexGrow={1}>
+      {selSlice ? (
+        <>
+          <Text bold>
+            {selSlice.title} <Text color="gray">({selSlice.sliceId})</Text>
+          </Text>
+          <Text color="gray">
+            status {selSlice.status} · attempt {selSlice.attempts} {selSlice.reason ? <Text color="red">· {selSlice.reason}</Text> : null}
+          </Text>
+          {selSlice.reportSummary ? (
+            <Text wrap="wrap" color="green">
+              summary: {clip(selSlice.reportSummary, 400)}
+            </Text>
+          ) : null}
+          {selSlice.verdictStep ? (
+            <Box flexDirection="column">
+              <Text color="red">
+                ✗ gate {selSlice.verdictStep.name} exit={String(selSlice.verdictStep.exit)} timedOut={String(selSlice.verdictStep.timedOut)}
+              </Text>
+              <Text wrap="wrap" color="gray">
+                {selSlice.verdictStep.tail}
+              </Text>
+            </Box>
+          ) : null}
+          {selSlice.note ? (
+            <Text wrap="wrap" color="yellow">
+              {selSlice.note}
+            </Text>
+          ) : null}
+          <Box flexDirection="column" marginTop={1}>
+            <Text color="gray"> events (tail) </Text>
+            {eventsTailFor(project, view.runId, selSlice.sliceId).map((e, i) => (
+              <Text key={i} color="gray">
+                {"  " + e}
+              </Text>
+            ))}
+          </Box>
+        </>
+      ) : (
+        <Text color="gray">no artifacts for this slice yet</Text>
+      )}
+    </Box>
+  );
 }
 
 function WatchApp({ project, initialRun, onExit }: { project: string; initialRun?: string; onExit: () => void }) {
@@ -306,29 +401,7 @@ function WatchApp({ project, initialRun, onExit }: { project: string; initialRun
     return <Text>no runs yet — start one with `ompo run`</Text>;
   }
 
-  const { counts } = view;
-  const chip = (s: SliceLine) => {
-    const c = STATUS_CHIP[s.status] ?? { label: s.status.slice(0, 5), color: "gray" };
-    const label = c.label.padEnd(5);
-    const name = s.status === "failed" ? s.id : `${s.id}${s.attempts > 1 ? ` ×${s.attempts}` : ""}`;
-    return (
-      <Text color={c.color}>
-        {`[${label}]`} <Text>{name}</Text>
-        {s.status === "failed" && s.reason ? <Text color="red"> {s.reason}</Text> : null}
-      </Text>
-    );
-  };
-
-  const selSlice = view.detail;
-  const summary = [
-    counts.done ? `done ${counts.done}` : null,
-    counts.failed ? `fail ${counts.failed}` : null,
-    counts.blockedEnv ? `env ${counts.blockedEnv}` : null,
-    counts.skipped ? `skip ${counts.skipped}` : null,
-    counts.pending ? `pend ${counts.pending}` : null,
-  ]
-    .filter(Boolean)
-    .join(" · ");
+  const summary = summaryText(view);
 
   return (
     <Box flexDirection="column">
@@ -346,58 +419,8 @@ function WatchApp({ project, initialRun, onExit }: { project: string; initialRun
 
       {/* Two panes */}
       <Box flexDirection="row">
-        <Box flexDirection="column" width={64} borderStyle="round" borderColor="gray">
-          <Text bold color="gray"> slices </Text>
-          {view.slices.map((s, i) => (
-            <Box key={s.id}>
-              <Text color={i === view.sel ? "green" : "gray"}>{i === view.sel ? "▸ " : "  "}</Text>
-              {chip(s)}
-            </Box>
-          ))}
-        </Box>
-
-        <Box flexDirection="column" borderStyle="round" borderColor={view.detail && view.detail.status === "failed" ? "red" : "gray"} flexGrow={1}>
-          {selSlice ? (
-            <>
-              <Text bold>
-                {selSlice.title} <Text color="gray">({selSlice.sliceId})</Text>
-              </Text>
-              <Text color="gray">
-                status {selSlice.status} · attempt {selSlice.attempts} {selSlice.reason ? <Text color="red">· {selSlice.reason}</Text> : null}
-              </Text>
-              {selSlice.reportSummary ? (
-                <Text wrap="wrap" color="green">
-                  summary: {clip(selSlice.reportSummary, 400)}
-                </Text>
-              ) : null}
-              {selSlice.verdictStep ? (
-                <Box flexDirection="column">
-                  <Text color="red">
-                    ✗ gate {selSlice.verdictStep.name} exit={String(selSlice.verdictStep.exit)} timedOut={String(selSlice.verdictStep.timedOut)}
-                  </Text>
-                  <Text wrap="wrap" color="gray">
-                    {selSlice.verdictStep.tail}
-                  </Text>
-                </Box>
-              ) : null}
-              {selSlice.note ? (
-                <Text wrap="wrap" color="yellow">
-                  {selSlice.note}
-                </Text>
-              ) : null}
-              <Box flexDirection="column" marginTop={1}>
-                <Text color="gray"> events (tail) </Text>
-                {eventsTailFor(project, view.runId, selSlice.sliceId).map((e, i) => (
-                  <Text key={i} color="gray">
-                    {"  " + e}
-                  </Text>
-                ))}
-              </Box>
-            </>
-          ) : (
-            <Text color="gray">no artifacts for this slice yet</Text>
-          )}
-        </Box>
+        <BoardPane view={view} />
+        <InspectorPane project={project} view={view} />
       </Box>
 
       {/* Footer */}
