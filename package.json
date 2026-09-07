@@ -1,6 +1,6 @@
 {
   "name": "ompo",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "OMP Roadmap Orchestrator — long-horizon sequential workflow driver for stock omp (no core fork). Implements OMP_ROADMAP_ORCHESTRATOR_PLAN.md §§5–6, 11–14 out-of-core via `omp -p` workers.",
   "type": "module",
   "bin": {
@@ -9,7 +9,8 @@
   "scripts": {
     "test": "bun test",
     "check": "bunx tsc --noEmit",
-    "start": "bun src/cli.ts"
+    "start": "bun src/cli.ts",
+    "build": "bun build --compile src/cli.ts --outfile ompo"
   },
   "devDependencies": {
     "@types/bun": "^1.3.14",

@@ -28,8 +28,9 @@ import { runRoadmapLoop, type LoopOptions } from "./loop.ts";
 import { runImport, runInitPlanner, resolveInitPlan, ROADMAP_TEMPLATE, ensureProjectConfig } from "./import.ts";
 import { createTmuxRunner } from "./tmux.ts";
 import { cmdLog } from "./log.ts";
+import pkg from "../package.json";
 
-const VERSION = "0.1.0";
+const VERSION: string = pkg.version;
 function help(): string {
   return `ompo ${VERSION} — long-horizon roadmap orchestrator for stock omp
 
@@ -60,8 +61,7 @@ RUN FLAGS
   --timeout-sec N    global worker budget (beats per-slice Timeout:)
   --no-review        skip the independent post-merge review session
   --review-model M   reviewer model (default: roadmap.yml reviewModel → workerModel)
-  --no-debug         skip the debugger session on failure (straight to retry budget)
-  --no-placeholders    inject dev-only placeholders for missing env creds (default: on)
+  --no-placeholders    disable dev-only placeholders for missing env creds (default: on)
   --replan           re-run the planner even if ROADMAP.md exists (overwrite)
   --template         blank 2-slice template instead of the planner session
 
