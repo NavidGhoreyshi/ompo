@@ -298,29 +298,29 @@ export function UnifiedApp({ project, session, bus, requestAbort }: UnifiedAppPr
       <Box>
         <Text color={live ? "cyan" : "gray"}>{spinnerFrame(Date.now(), live)}</Text>
         <Text> </Text>
-        <Text bold>ompo</Text>
-        <Text color="gray"> · {phaseLabel}</Text>
-        {view ? <Text color="gray"> · {summaryText(view)}</Text> : null}
+        <Text bold color="white">ompo</Text>
+        <Text color={live ? "cyan" : "gray"} bold={live}> · {phaseLabel}</Text>
+        {view ? <Text dimColor> · {summaryText(view)}</Text> : null}
       </Box>
       <Box>
         {view
-          ? <Text color="gray">run {view.runId} · updated {hhmmss(view.updatedAt)}</Text>
-          : <Text color="gray">no run yet — roadmap first</Text>}
+          ? <Text dimColor>run {view.runId} · updated {hhmmss(view.updatedAt)}</Text>
+          : <Text dimColor>no run yet — roadmap first</Text>}
       </Box>
 
       <Box flexDirection="row">
-        <Box flexDirection="column" width={bw}>
+        <Box flexDirection="column" width={bw} flexShrink={0}>
           {view ? <BoardPane view={view} width={bw} /> : (
             <Box flexDirection="column" borderStyle="round" borderColor="gray">
-              <Text bold color="gray"> slices </Text>
-              <Text color="gray">(roadmap not ready)</Text>
+              <Text bold color="white"> slices </Text>
+              <Text dimColor>(roadmap not ready)</Text>
             </Box>
           )}
-          <AgentsPane agents={agentStates(bus.lines)} statusOf={statusOf} />
+          <AgentsPane agents={agentStates(bus.lines)} statusOf={statusOf} width={bw} />
         </Box>
         {view ? <InspectorPane view={view} /> : (
-          <Box flexDirection="column" borderStyle="round" borderColor="gray" flexGrow={1}>
-            <Text color="gray">major step logs appear here once the run starts</Text>
+          <Box flexDirection="column" borderStyle="round" borderColor="gray" flexGrow={1} marginLeft={1} paddingX={1}>
+            <Text dimColor>major step logs appear here once the run starts</Text>
           </Box>
         )}
       </Box>
@@ -334,9 +334,9 @@ export function UnifiedApp({ project, session, bus, requestAbort }: UnifiedAppPr
       />
 
       <Box marginTop={1}>
-        <Text color="gray">
-          <Text bold color="white">↑/↓</Text> select · <Text bold color="white">PgUp/PgDn</Text> scroll ·{" "}
-          <Text bold color="white">r</Text> refresh · <Text bold color="yellow">q</Text> abort (resume by re-running `ompo`)
+        <Text dimColor>
+          <Text bold color="white">↑/↓</Text> select │ <Text bold color="white">PgUp/PgDn</Text> scroll │{" "}
+          <Text bold color="white">r</Text> refresh │ <Text bold color="yellow">q</Text> abort <Text dimColor>· resume by re-running `ompo`</Text>
         </Text>
       </Box>
     </Box>

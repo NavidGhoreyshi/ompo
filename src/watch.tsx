@@ -32,8 +32,8 @@ const POLL_MS = 900;
 // hollow ○ = idle/waiting, solid ● = active work, ✓/!/– = outcome.
 const STATUS_STYLE: Record<string, { glyph: string; label: string; color: string; bold?: boolean }> = {
   pending: { glyph: "○", label: "pend", color: "gray" },
-  running: { glyph: "●", label: "run ", color: "cyan" },
-  verifying: { glyph: "●", label: "gates", color: "yellow" },
+  running: { glyph: "●", label: "run ", color: "cyan", bold: true },
+  verifying: { glyph: "●", label: "gates", color: "yellow", bold: true },
   done: { glyph: "✓", label: "done", color: "green" },
   failed: { glyph: "!", label: "FAIL", color: "red", bold: true },
   aborted: { glyph: "–", label: "stop", color: "gray" },
@@ -70,23 +70,29 @@ export function agentStates(lines: string[]): AgentRow[] {
   return [...seen.values()].slice(-8);
 }
 
-/** Operational agent summary: state glyph + slice status + last line. */
-export function AgentsPane({ agents, statusOf }: { agents: AgentRow[]; statusOf: (id: string) => SliceLine | undefined }) {
+/** Operational agent summary: identity · phase · state + last line. Two-line rows so the state chip survives narrow rails; width-aware clipping keeps every row inside the rail. */
+export function AgentsPane({ agents, statusOf, width }: { agents: AgentRow[]; statusOf: (id: string) => SliceLine | undefined; width?: number }) {
+  const w = width ?? 32;
+  const inner = Math.max(10, w - 2);
   return (
-    <Box flexDirection="column" borderStyle="round" borderColor="gray" marginTop={1}>
-      <Text bold color="gray"> agents </Text>
+    <Box flexDirection="column" borderStyle="round" borderColor="gray" marginTop={1} width={w} flexShrink={0}>
+      <Text bold color="white"> agents </Text>
       {agents.length === 0 ? (
-        <Text color="gray">(idle — no agent output yet)</Text>
+        <Text dimColor>(idle — no agent output yet)</Text>
       ) : (
         agents.map((a) => {
           const s = statusOf(a.id);
           const st = (s && STATUS_STYLE[s.status]) ?? { glyph: "○", label: "?", color: "gray" };
           return (
-            <Text key={a.id}>
-              <Text color={st.color} bold>{st.glyph}</Text> {a.id}
-              {a.tag ? <Text color="gray"> · {a.tag}</Text> : null}
-              {s ? <Text color={st.color}> {st.label.trim()}</Text> : null} — {clip(a.last || "(started)", 40)}
-            </Text>
+            <Box key={a.id} flexDirection="column">
+              <Text wrap="truncate">
+                <Text color={st.color} bold>{st.glyph}</Text> <Text bold color="white">{clip(a.id, inner - 8)}</Text>
+                {s ? <Text color={st.color}> [{st.label.trim()}]</Text> : null}
+              </Text>
+              <Text dimColor wrap="truncate">
+                {" " + clip(`${a.tag ?? "agent"} — ${a.last || "(started)"}`, inner - 2)}
+              </Text>
+            </Box>
           );
         })
       )}
@@ -363,10 +369,12 @@ function SliceChip({ slice, maxName, selected }: { slice: SliceLine; maxName: nu
   const c = STATUS_STYLE[slice.status] ?? { glyph: "○", label: slice.status.slice(0, 5), color: "gray" };
   const label = c.label.padEnd(5);
   const name = slice.status === "failed" ? slice.id : `${slice.id}${slice.attempts > 1 ? ` ×${slice.attempts}` : ""}`;
+  // Selected rows invert (black on white) so the cursor slice dominates;
+  // the status glyph keeps its semantic color so states stay distinct.
   return (
-    <Text bold={selected || c.bold} wrap="truncate">
+    <Text bold={selected || c.bold} color={selected ? "black" : undefined} wrap="truncate">
       <Text color={c.color} bold={selected || c.bold}>{`${c.glyph} [${label}]`}</Text> {clip(name, maxName)}
-      {slice.status === "failed" && slice.reason ? <Text color="red"> {clip(slice.reason, maxName)}</Text> : null}
+      {slice.status === "failed" && slice.reason ? <Text color={selected ? "black" : "red"}> {clip(slice.reason, maxName)}</Text> : null}
     </Text>
   );
 }
@@ -376,17 +384,17 @@ export function boardWidth(cols: number): number {
   return Math.max(24, Math.min(38, Math.floor(cols * 0.3)));
 }
 
-/** Left pane: the slice board (shared by watch + live run TUIs). */
+/** Left pane: the slice board (shared by watch + live run TUIs). Fixed outer width; never compresses the inspector. */
 export function BoardPane({ view, width }: { view: RunView; width?: number }) {
   const w = width ?? 32;
   const maxName = Math.max(8, w - 16);
   return (
-    <Box flexDirection="column" width={w} borderStyle="round" borderColor="gray">
-      <Text bold color="gray"> slices </Text>
+    <Box flexDirection="column" width={w} borderStyle="round" borderColor="gray" flexShrink={0}>
+      <Text bold color="white"> slices </Text>
       {view.slices.map((s, i) => (
-        <Box key={s.id}>
+        <Box key={s.id} backgroundColor={i === view.sel ? "white" : undefined}>
           <Box flexShrink={0}>
-            <Text color={i === view.sel ? "green" : "gray"}>{i === view.sel ? "▸ " : "  "}</Text>
+            <Text color={i === view.sel ? "black" : "gray"}>{i === view.sel ? "▸ " : "  "}</Text>
           </Box>
           <SliceChip slice={s} maxName={maxName} selected={i === view.sel} />
         </Box>
@@ -395,38 +403,42 @@ export function BoardPane({ view, width }: { view: RunView; width?: number }) {
   );
 }
 
+/** Subtle horizontal rule + dim label: separates inspector blocks without nested boxes. */
 function Section({ title }: { title: string }) {
   return (
-    <Text bold color="gray">
-      {" "}{title}{" "}
-    </Text>
+    <Box flexDirection="column" marginTop={1}>
+      <Box borderStyle="single" borderTop={true} borderBottom={false} borderLeft={false} borderRight={false} borderColor="gray" />
+      <Text dimColor>{title}</Text>
+    </Box>
   );
 }
 
-/** Right pane: attempt inspector for the selected slice (shared). */
+/** Right pane: attempt inspector for the selected slice (shared). Guttered off the rail; airy single-column detail. */
 export function InspectorPane({ view }: { view: RunView }) {
   const selSlice = view.detail;
   const style = (selSlice && STATUS_STYLE[selSlice.status]) ?? { glyph: "○", label: "?", color: "gray" };
+  const border = !selSlice
+    ? "gray"
+    : selSlice.status === "failed" ? "red" : selSlice.status === "running" || selSlice.status === "verifying" ? "cyan" : "gray";
   return (
-    <Box flexDirection="column" borderStyle="round" borderColor={view.detail && view.detail.status === "failed" ? "red" : "gray"} flexGrow={1}>
+    <Box flexDirection="column" borderStyle="round" borderColor={border} flexGrow={1} marginLeft={1} paddingX={1}>
       {selSlice ? (
         <>
-          <Text bold>
-            {selSlice.title} <Text color="gray">({selSlice.sliceId})</Text>
+          <Text bold color="white">
+            {selSlice.title} <Text dimColor>({selSlice.sliceId})</Text>
           </Text>
-          <Section title="STATUS" />
           <Text>
             <Text color={style.color} bold>{`${style.glyph} ${selSlice.status}`}</Text>
-            <Text color="gray"> · attempt {selSlice.attempts}</Text>
+            <Text dimColor> · attempt {selSlice.attempts}</Text>
             {selSlice.reason ? <Text color="red"> · {selSlice.reason}</Text> : null}
           </Text>
           {selSlice.status === "running" || selSlice.status === "verifying" ? (
-            <Text color="gray">Worker in progress — live output streams in activity below.</Text>
+            <Text dimColor>Worker in progress — live output streams in activity below.</Text>
           ) : null}
           {selSlice.metrics ? (
             <>
               <Section title="LAST RUN" />
-              <Text color="gray">
+              <Text dimColor>
                 {selSlice.metrics.turns} turns · {selSlice.metrics.tools} tools
                 {selSlice.metrics.durationMs !== undefined ? ` · ${formatDuration(selSlice.metrics.durationMs)}` : ""}
               </Text>
@@ -436,7 +448,7 @@ export function InspectorPane({ view }: { view: RunView }) {
             <>
               <Section title="LAST EVENT" />
               {selSlice.recentEvents.map((e, i) => (
-                <Text key={i} color={i === 0 ? undefined : "gray"}>
+                <Text key={i} color={i === 0 ? undefined : "gray"} dimColor={i !== 0}>
                   {"  " + e}
                 </Text>
               ))}
@@ -464,7 +476,7 @@ export function InspectorPane({ view }: { view: RunView }) {
             </Text>
           ) : null}
           {!selSlice.reportSummary && !selSlice.verdictStep && !selSlice.note ? (
-            <Text color="gray">
+            <Text dimColor>
               {selSlice.status === "running" || selSlice.status === "verifying"
                 ? "no output yet — waiting for worker output…"
                 : selSlice.status === "pending" || selSlice.status === "blocked" || selSlice.status === "blocked-env"
@@ -473,10 +485,10 @@ export function InspectorPane({ view }: { view: RunView }) {
             </Text>
           ) : null}
           {selSlice.history.length > 0 ? (
-            <Box flexDirection="column" marginTop={1}>
+            <Box flexDirection="column">
               <Section title="HISTORY" />
               {selSlice.history.map((e, i) => (
-                <Text key={i} color="gray">
+                <Text key={i} dimColor>
                   {"  " + e}
                 </Text>
               ))}
@@ -566,11 +578,11 @@ function WatchApp({ project, initialRun, onExit }: { project: string; initialRun
         <InspectorPane view={view} />
       </Box>
 
-      {/* Footer */}
+      {/* Footer: compact keyboard command bar */}
       <Box marginTop={1}>
-        <Text color="gray">
-          <Text bold color="white">↑/↓</Text> select · <Text bold color="white">◀/▶</Text> run ·{" "}
-          <Text bold color="white">r</Text> refresh · <Text bold color="white">q</Text> quit · polls every {POLL_MS / 1000}s
+        <Text dimColor>
+          <Text bold color="white">↑/↓</Text> select │ <Text bold color="white">◀/▶</Text> run │{" "}
+          <Text bold color="white">r</Text> refresh │ <Text bold color="white">q</Text> quit <Text dimColor>· polls {POLL_MS / 1000}s</Text>
         </Text>
       </Box>
     </Box>

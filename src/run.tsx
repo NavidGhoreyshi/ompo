@@ -162,14 +162,21 @@ export function ActivityPane({ lines, cols, logRows, scrollUp, emptyHint }: {
   const win = logWindow(texts, logRows - 1, cols, scrollUp);
   return (
     <Box flexDirection="column" borderStyle="round" borderColor="gray" marginTop={1} height={logRows + 2}>
-      <Text bold color="gray">
-        {win.offset > 0 ? ` activity ▲${win.offset} (PgDn for live) ` : " activity · live "}
+      <Text>
+        <Text bold color="white"> activity </Text>
+        {win.offset > 0
+          ? <Text color="yellow">▲{win.offset} · PgDn for live</Text>
+          : <Text color="green">● live</Text>}
       </Text>
       {win.shown.length === 0 ? (
-        <Text color="gray">{emptyHint}</Text>
+        <Text dimColor>{emptyHint}</Text>
       ) : (
         win.shown.map((row, i) => (
-          <Text key={`${win.offset}-${i}`} color={activityColor(row)}>
+          <Text
+            key={`${win.offset}-${i}`}
+            bold={row.startsWith("$ ")}
+            color={row.startsWith("$ ") ? undefined : row.startsWith("» ") ? "cyan" : activityColor(row)}
+          >
             {row}
           </Text>
         ))
@@ -323,19 +330,21 @@ export function LiveRunApp({ project, runId, bus, requestAbort }: LiveRunAppProp
       <Box>
         <Text color={view.live ? "cyan" : "gray"}>{spinnerFrame(Date.now(), view.live)}</Text>
         <Text> </Text>
-        <Text bold>ompo</Text>
-        <Text color={view.live ? undefined : "gray"}> · {view.live ? "RUNNING" : "IDLE"}</Text>
-        <Text color="gray"> · {summaryText(view)}</Text>
+        <Text bold color="white">ompo</Text>
+        {view.live
+          ? <Text bold color="green"> · RUNNING</Text>
+          : <Text dimColor> · IDLE</Text>}
+        <Text dimColor> · {summaryText(view)}</Text>
       </Box>
       <Box>
-        <Text color="gray">run {view.runId} · updated {hhmmss(view.updatedAt)}</Text>
+        <Text dimColor>run {view.runId} · updated {hhmmss(view.updatedAt)}</Text>
       </Box>
 
-      {/* Slice board + agents | attempt inspector */}
+      {/* Slice board + agents | attempt inspector (1-col gutter via inspector margin) */}
       <Box flexDirection="row">
-        <Box flexDirection="column" width={bw}>
+        <Box flexDirection="column" width={bw} flexShrink={0}>
           <BoardPane view={view} width={bw} />
-          <AgentsPane agents={agentStates(bus.lines)} statusOf={statusOf} />
+          <AgentsPane agents={agentStates(bus.lines)} statusOf={statusOf} width={bw} />
         </Box>
         <InspectorPane view={view} />
       </Box>
@@ -349,9 +358,9 @@ export function LiveRunApp({ project, runId, bus, requestAbort }: LiveRunAppProp
       />
 
       <Box marginTop={1}>
-        <Text color="gray">
-          <Text bold color="white">↑/↓</Text> select · <Text bold color="white">PgUp/PgDn</Text> scroll ·{" "}
-          <Text bold color="white">r</Text> refresh · <Text bold color="yellow">q</Text> abort (finish store write, exit 2)
+        <Text dimColor>
+          <Text bold color="white">↑/↓</Text> select │ <Text bold color="white">PgUp/PgDn</Text> scroll │{" "}
+          <Text bold color="white">r</Text> refresh │ <Text bold color="yellow">q</Text> abort <Text dimColor>· finishes store write, exit 2</Text>
         </Text>
       </Box>
     </Box>
