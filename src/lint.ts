@@ -76,7 +76,7 @@ export function lintRoadmap(markdown: string, opts: LintOptions = {}): LintResul
       warnings.push({ level: "warn", slice: s.id, code, message });
     };
 
-    if (s.verify.length === 0 && (opts.verifyDefaults ?? []).length === 0) {
+    if (!s.skip && s.verify.length === 0 && (opts.verifyDefaults ?? []).length === 0) {
       err("no-verify", "no Verify: and no verifyDefaults — gates pass vacuously and broken code lands silent; add a repeatable gate");
     }
     for (const gate of s.verify) {

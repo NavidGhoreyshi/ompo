@@ -56,6 +56,11 @@ describe("lintRoadmap", () => {
     expect(codes).toContain("skip-with-dependents");
     expect(codes).toContain("dep-on-skipped");
   });
+  test("skipped slices need no Verify (importer convention, check-env parity)", () => {
+    const r = lintRoadmap("## [a] Alpha\nDone — see qa/a/report.md for evidence.\nSkip: true\n");
+    expect(r.errors.map((e) => e.code)).not.toContain("no-verify");
+    expect(lintFailed(r)).toBe(false);
+  });
 
   test("thin bodies and escaping files warn; parse failures are errors", () => {
     const thin = lintRoadmap("## [a] A\nDo it.\nEffort: lo\nVerify: true\nFiles: /etc/passwd\n");
