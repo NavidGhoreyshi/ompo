@@ -352,7 +352,7 @@ export const storeApi = {
       extra,
     );
   },
-  verifyPassed(projectDir: string, runId: string, sliceId: string, verdictRef: string): RunCursor {
+  verifyPassed(projectDir: string, runId: string, sliceId: string, verdictRef: string, head?: string | null): RunCursor {
     let c = mutateSlice(
       projectDir,
       runId,
@@ -361,6 +361,7 @@ export const storeApi = {
       (s) => {
         s.status = "done";
         s.verdictRef = verdictRef;
+        if (head) s.verifiedHead = head;
       },
       `verdict=${verdictRef}`,
     );
@@ -388,10 +389,20 @@ export const storeApi = {
       { ...extra, reason },
     );
   },
-  retrySlice(projectDir: string, runId: string, sliceId: string): RunCursor {
+  retrySlice(projectDir: string, runId: string, sliceId: string, reason?: string): RunCursor {
     return mutateSlice(projectDir, runId, sliceId, "slice_retried", (s) => {
       s.status = "pending";
-    });
+    }, reason);
+  },
+  /**
+   * Done-trust stamp: records which base HEAD a done slice was confirmed on
+   * (merge journal, ancestry recheck, or --reverify gate pass). Status keeps
+   * its value — the event log shows the audit trail, replay ignores it.
+   */
+  reverifySlice(projectDir: string, runId: string, sliceId: string, head: string, detail?: string): RunCursor {
+    return mutateSlice(projectDir, runId, sliceId, "slice_reverified", (s) => {
+      s.verifiedHead = head;
+    }, detail ?? `head=${head}`);
   },
   terminalFail(
     projectDir: string,

@@ -91,6 +91,7 @@ RUN FLAGS
   --no-review        skip the independent post-merge review session
   --review-model M   reviewer model (default: roadmap.yml reviewModel → workerModel)
   --no-placeholders    disable dev-only placeholders for missing env creds (default: on)
+  --reverify         re-run done slices' gates on current HEAD at loop start (demotes failures)
   --check-env        probe every gate once for env blocks before spawning (fail fast, burn nothing)
   --format FMT       headless output: pretty|json|tap|github (progress bar on stderr, events on stdout,
                       deferred.md/placeholders.md as job summary; $GITHUB_STEP_SUMMARY appended when set)
@@ -153,6 +154,7 @@ interface Args {
   reviewModel?: string;
   noDebug?: boolean;
   noPlaceholders?: boolean;
+  reverify?: boolean;
   template?: boolean;
   replan?: boolean;
   follow?: boolean;
@@ -224,6 +226,7 @@ function parseArgs(argv: string[]): Args {
     else if (t === "--no-review") a.noReview = true;
     else if (t === "--no-debug") a.noDebug = true;
     else if (t === "--no-placeholders") a.noPlaceholders = true;
+    else if (t === "--reverify") a.reverify = true;
     else if (t === "--template") a.template = true;
     else if (t === "--replan") a.replan = true;
     else if (t === "--follow") a.follow = true;
@@ -468,6 +471,7 @@ async function cmdRun(a: Args): Promise<number> {
     reviewModel: a.reviewModel,
     noDebug: a.noDebug,
     noPlaceholders: a.noPlaceholders,
+    reverify: a.reverify,
     seed: a.seed,
     faults,
   };
@@ -1031,6 +1035,7 @@ async function cmdUnified(a: Args): Promise<number> {
       reviewModel: a.reviewModel,
       noDebug: a.noDebug,
       noPlaceholders: a.noPlaceholders,
+      reverify: a.reverify,
       tmux: a.tmux,
     });
     return res.exitCode;

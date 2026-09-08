@@ -14,7 +14,7 @@
  * Exit codes: 0 all done · 1 failures remain · 2 aborted · 3 resume-conflict.
  */
 
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { spawnSync } from "node:child_process";
 import {
@@ -86,6 +86,8 @@ export interface LoopOptions {
   faults?: FaultSpec;
   /** Control-intent poll interval for cross-process `ompo ctl` (default 2000ms). */
   controlPollMs?: number;
+  /** Re-run done slices' gates on current HEAD at loop start (`--reverify`). */
+  reverify?: boolean;
 }
 
 export interface LoopResult {
@@ -728,7 +730,7 @@ export async function runCommitPhase(
     if (!approved) return;
   }
 
-  storeApi.verifyPassed(projectDir, runId, sliceId, join("slices", sliceId, "verdict.json"));
+  storeApi.verifyPassed(projectDir, runId, sliceId, join("slices", sliceId, "verdict.json"), gitHead(projectDir));
   log(ctx, summarize5(claimed, `done (${mergedDetail})`, report, true));
 
   // 8. Drop the worktree after a successful merge (branch kept for audit).
@@ -780,6 +782,163 @@ export function scanRecovery(projectDir: string, runId: string): RecoveryPlan[] 
   return out;
 }
 
+export interface DoneTrust {
+  sliceId: string;
+  outcome: "confirmed" | "backfilled" | "demoted" | "unverifiable";
+  detail: string;
+}
+
+function gitIsRepo(projectDir: string): boolean {
+  try {
+    return spawnSync("git", ["-C", projectDir, "rev-parse", "--is-inside-work-tree"], { encoding: "utf8" }).status === 0;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Is the slice's merge commit still in base history?
+ * true = present · false = branch exists but rewritten away · null = unknown
+ * (no branch, or git itself failed — never proof of loss).
+ */
+function branchMerged(projectDir: string, branch: string): boolean | null {
+  try {
+    if (spawnSync("git", ["-C", projectDir, "merge-base", "--is-ancestor", branch, "HEAD"], { encoding: "utf8" }).status === 0) {
+      return true;
+    }
+    return spawnSync("git", ["-C", projectDir, "show-ref", "--verify", `refs/heads/${branch}`], { encoding: "utf8" }).status === 0
+      ? false
+      : null;
+  } catch {
+    return null;
+  }
+}
+
+/** Base HEAD recorded by the merge journal (merge-<attempt>.json), if any. */
+function mergeJournalHead(projectDir: string, runId: string, sliceId: string): string | null {
+  let files: string[];
+  try {
+    files = readdirSync(sliceDir(projectDir, runId, sliceId)).filter((f) => /^merge-\d+\.json$/.test(f)).sort();
+  } catch {
+    return null;
+  }
+  if (files.length === 0) return null;
+  try {
+    const journal = JSON.parse(readFileSync(join(sliceDir(projectDir, runId, sliceId), files[files.length - 1]!), "utf8"));
+    return typeof journal?.baseHead === "string" && journal.baseHead !== "" ? journal.baseHead : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Pure detector: are recorded done-merges still in history? Demotion needs
+ * proof of loss (a RECORDED merge gone from HEAD) — suspicion alone
+ * (missing branch, pre-journal run) only warns, never destroys done.
+ * Non-git projects have nothing to check against → empty.
+ */
+export function scanDoneTrust(projectDir: string, runId: string): DoneTrust[] {
+  const out: DoneTrust[] = [];
+  let doc;
+  try {
+    doc = loadRun(projectDir, runId).doc;
+  } catch {
+    return out;
+  }
+  if (!doc.slices.some((s) => s.status === "done")) return out;
+  if (!gitIsRepo(projectDir)) return out;
+  for (const s of doc.slices) {
+    if (s.status !== "done") continue;
+    const recorded = s.verifiedHead ?? mergeJournalHead(projectDir, runId, s.id);
+    const merged = branchMerged(projectDir, sliceBranchOf(runId, s.id));
+    if (merged === true) {
+      out.push(recorded
+        ? { sliceId: s.id, outcome: "confirmed", detail: `merge verified on ${(recorded as string).slice(0, 12)}, still in history` }
+        : { sliceId: s.id, outcome: "backfilled", detail: "branch in history but no merge record (pre-journal run) — stampable" });
+    } else if (merged === false && recorded) {
+      out.push({ sliceId: s.id, outcome: "demoted", detail: `merge verified on ${(recorded as string).slice(0, 12)} no longer in HEAD — history rewritten or merge lost` });
+    } else {
+      out.push({ sliceId: s.id, outcome: "unverifiable", detail: "no merge record and branch state unknown — cannot confirm, leaving done" });
+    }
+  }
+  return out;
+}
+
+/**
+ * Pure detector: skipped slices citing qa evidence that no longer exists.
+ * Warn-only — revalidate (not resume) is the path for distrusting the map.
+ */
+export function scanSkipEvidence(projectDir: string, runId: string): { sliceId: string; missing: string[] }[] {
+  const out: { sliceId: string; missing: string[] }[] = [];
+  let doc;
+  try {
+    doc = loadRun(projectDir, runId).doc;
+  } catch {
+    return out;
+  }
+  for (const s of doc.slices) {
+    if (!s.skip || (s.status !== "skipped" && s.status !== "done")) continue;
+    const refs = [...s.body.matchAll(/qa\/[^\s,;)"']+/g)].map((m) => m[0].replace(/[.:]+$/, ""));
+    const missing = [...new Set(refs)].filter((r) => !existsSync(join(projectDir, r)));
+    if (missing.length > 0) out.push({ sliceId: s.id, missing });
+  }
+  return out;
+}
+
+/**
+ * Gate-level reaudit of one done slice against current HEAD (--reverify).
+ * Git projects get an ephemeral detached HEAD worktree; others run in place.
+ * Pass stamps verifiedHead; env blocks park without consuming retry; genuine
+ * failures demote to pending through the standard retry path. Never throws —
+ * an errored reaudit leaves the slice done.
+ */
+async function reverifyDoneSlice(ctx: AttemptCtx, slice: Slice): Promise<void> {
+  const { projectDir, runId } = ctx;
+  const dir = sliceDir(projectDir, runId, slice.id);
+  const commands = [...(ctx.cfg.verifyDefaults ?? []), ...slice.verify];
+  const verdictRef = join("slices", slice.id, "verdict-reverify.json");
+  if (commands.length === 0) {
+    log(ctx, `◎ reverify ${slice.id}: no gates — nothing to run`);
+    return;
+  }
+  const head = gitHead(projectDir);
+  const runGates = (cwd: string): Promise<Verdict> =>
+    runVerifiers(slice.id, slice.attempts, commands, join(dir, "logs-reverify"), {
+      projectDir: cwd,
+      onProgress: progressFn(ctx, slice.id, "reverify"),
+    });
+  let verdict: Verdict;
+  if (gitIsRepo(projectDir) && head !== null) {
+    const wt = join(projectDir, ".omp", "roadmap", "worktrees", `reverify-${runId}-${slice.id}`);
+    spawnSync("git", ["-C", projectDir, "worktree", "remove", "--force", wt], { encoding: "utf8" });
+    const add = spawnSync("git", ["-C", projectDir, "worktree", "add", "--detach", wt, "HEAD"], { encoding: "utf8" });
+    if (add.status !== 0) throw new Error(`ephemeral worktree failed: ${((add.stderr ?? add.stdout ?? "") as string).slice(-500)}`);
+    try {
+      verdict = await runGates(wt);
+    } finally {
+      spawnSync("git", ["-C", projectDir, "worktree", "remove", "--force", wt], { encoding: "utf8" });
+    }
+  } else {
+    verdict = await runGates(projectDir);
+  }
+  writeFileSync(join(dir, "verdict-reverify.json"), JSON.stringify(verdict, null, 2) + "\n", "utf8");
+  if (verdict.pass) {
+    if (head !== null) storeApi.reverifySlice(projectDir, runId, slice.id, head, `reverify pass on ${head.slice(0, 12)}`);
+    log(ctx, `◎ reverify ${slice.id}: gates pass on current HEAD`);
+    return;
+  }
+  const envBlock = classifyEnvFailure(verdict.steps.map((st) => st.outputTail));
+  if (envBlock) {
+    storeApi.blockEnv(projectDir, runId, slice.id, verdictRef, envBlock.reason);
+    log(ctx, `◎ reverify ${slice.id}: environment blocked: ${envBlock.reason} (no retry consumed)`);
+    log(ctx, `  fix: ${envBlock.fix}`);
+    return;
+  }
+  storeApi.verifyFailed(projectDir, runId, slice.id, verdictRef, "reverify_failed");
+  storeApi.retrySlice(projectDir, runId, slice.id, "reverify gates failed on current HEAD");
+  log(ctx, `⚠ reverify ${slice.id}: gates failed on current HEAD — demoted to pending`);
+}
+
 export async function runRoadmapLoop(opts: LoopOptions): Promise<LoopResult> {
   const runner: WorkerRunner = opts.runner ?? runOmpWorker;
   const cfg = loadRoadmapConfig(opts.projectDir);
@@ -824,6 +983,7 @@ export async function runRoadmapLoop(opts: LoopOptions): Promise<LoopResult> {
   // a fresh worker session on already-done work. Runs before all loop paths
   // (including --slice) so every loop start heals. Replay failures never
   // throw: the slice stays queued for the normal retry path.
+  const recoveredIds = new Set<string>();
   for (const rec of scanRecovery(opts.projectDir, opts.runId)) {
     try {
       const cur = loadRun(opts.projectDir, opts.runId).doc.slices.find((s) => s.id === rec.sliceId)!;
@@ -832,8 +992,43 @@ export async function runRoadmapLoop(opts: LoopOptions): Promise<LoopResult> {
       }
       log(ctx, `↻ crash recovery: ${rec.sliceId} left a saved report (attempt ${rec.attempt}, was ${rec.status}) — replaying verify+merge+review, no new worker`);
       await runCommitPhase(ctx, rec.sliceId, rec.attempt, rec.report);
+      recoveredIds.add(rec.sliceId);
     } catch (err) {
       log(ctx, `↻ crash recovery: ${rec.sliceId} replay failed (${err instanceof Error ? err.message : String(err)}) — leaving for the normal retry path`);
+    }
+  }
+  // Done-trust recheck: recorded merges must still be in history. Demotion
+  // needs proof of loss; suspicion only warns. Backfilled slices get their
+  // record stamped so the warning fires once.
+  for (const t of scanDoneTrust(opts.projectDir, opts.runId)) {
+    if (t.outcome === "demoted") {
+      storeApi.retrySlice(opts.projectDir, opts.runId, t.sliceId, t.detail);
+      log(ctx, `⚠ done-trust: ${t.sliceId} demoted to pending — ${t.detail}`);
+    } else if (t.outcome === "backfilled") {
+      const head = gitHead(opts.projectDir);
+      if (head !== null) storeApi.reverifySlice(opts.projectDir, opts.runId, t.sliceId, head, "backfilled: branch in history, no merge journal");
+      log(ctx, `✓ done-trust: ${t.sliceId} confirmed in history (record stamped)`);
+    } else if (t.outcome === "unverifiable") {
+      log(ctx, `⚠ done-trust: ${t.sliceId} unverifiable — ${t.detail}`);
+    }
+  }
+  for (const s of scanSkipEvidence(opts.projectDir, opts.runId)) {
+    log(ctx, `⚠ done-trust: ${s.sliceId} cites missing evidence: ${s.missing.join(", ")}`);
+  }
+  // Opt-in reaudit (--reverify): re-run done slices' gates on current HEAD.
+  // Slices just recovered above already ran fresh gates — skip them.
+  if (opts.reverify) {
+    const dones = loadRun(opts.projectDir, opts.runId).doc.slices.filter(
+      (s) => s.status === "done" && !s.skip && !recoveredIds.has(s.id),
+    );
+    if (dones.length > 0) log(ctx, `◎ reverify: re-running gates for ${dones.length} done slice(s) on current HEAD…`);
+    for (const s of dones) {
+      if (opts.signal?.aborted) break;
+      try {
+        await reverifyDoneSlice(ctx, s);
+      } catch (err) {
+        log(ctx, `◎ reverify ${s.id} errored (${err instanceof Error ? err.message : String(err)}) — leaving done`);
+      }
     }
   }
   if (faultsArmed(faults)) {

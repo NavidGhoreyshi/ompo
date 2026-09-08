@@ -90,6 +90,7 @@ export interface UnifiedOptions {
   reviewModel?: string;
   noDebug?: boolean;
   noPlaceholders?: boolean;
+  reverify?: boolean;
   tmux?: boolean;
   /** Test seams (default: the real planner + loop). */
   planner?: typeof runInitPlanner;
@@ -252,6 +253,7 @@ export async function driveUnifiedFlow(
       reviewModel: o.reviewModel,
       noDebug: o.noDebug,
       noPlaceholders: o.noPlaceholders,
+      reverify: o.reverify,
       signal,
       onEvent: log,
     });

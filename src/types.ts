@@ -51,6 +51,8 @@ export interface Slice {
   attempts: number;
   reportRef?: string;
   verdictRef?: string;
+  /** Base HEAD the slice was merged + verified on (crash-trust anchor). */
+  verifiedHead?: string;
   updatedAt: string;
 }
 
@@ -69,6 +71,7 @@ export type RunEventType =
   | "verify_failed"
   | "slice_retried"
   | "slice_done"
+  | "slice_reverified"
   | "slice_failed_terminal"
   | "slice_blocked_env"
   | "slice_skipped"
