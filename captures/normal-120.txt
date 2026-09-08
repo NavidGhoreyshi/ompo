@@ -1,0 +1,19 @@
+# normal-120.txt
+# FIXTURE COMPOSITION — not a real terminal render.
+# Composed from the TUI pure helpers (layoutRects/dagDepths/forensicsLayout/…);
+# Ink borders, colors, and wrapping are approximated in ASCII.
+# STRUCTURAL MODEL ONLY — VISUAL QUALITY NOT VERIFIED.
+watch — mixed run (120×30)
+══════════════════════════════════════════════════════════════════════════════════════════════════════════════
+board rail w=36 gutter=1 | inspector takes the rest
+  ✓ [done ] s1-scaffold
+  ✓ [done ] s2-api ×2
+▸ ● [running] s3-ui
+  ● [verifying] s4-gates ×3
+  ○ [pending] s5-deploy
+
+inspector [Output] s3-ui — Title s3-ui (s3-ui)
+● running · attempt 1
+worker tail: [s3-ui] turn 4…  [s3-ui] tool bash: bun test
+
+activity rows=9: … s3-ui still running (2m elapsed, 4 turns, 12 tools)

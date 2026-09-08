@@ -38,6 +38,14 @@ function branchOf(runId: string, sliceId: string): string {
   return `ompo/${runId}/${sliceId}`;
 }
 
+/**
+ * Branch a slice pipeline commits to (the merge source). Exported for the
+ * pre-merge secret scan's branch-delta candidate sweep. Pure.
+ */
+export function sliceBranchOf(runId: string, sliceId: string): string {
+  return branchOf(runId, sliceId);
+}
+
 function pathOf(projectDir: string, runId: string, sliceId: string): string {
   return join(projectDir, ".omp", "roadmap", "worktrees", `${runId}-${sliceId}`);
 }

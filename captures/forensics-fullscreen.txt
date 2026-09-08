@@ -1,0 +1,18 @@
+# forensics-fullscreen.txt
+# FIXTURE COMPOSITION — not a real terminal render.
+# Composed from the TUI pure helpers (layoutRects/dagDepths/forensicsLayout/…);
+# Ink borders, colors, and wrapping are approximated in ASCII.
+# STRUCTURAL MODEL ONLY — VISUAL QUALITY NOT VERIFIED.
+forensics · Title s4-gates (s4-gates)
+dir: .omp/roadmap/runs/<run>/slices/s4-gates · branch: ompo/<run>/s4-gates
+log: worker-3.log · gates: 1/2 pass · review: rejected
+cw=114 bodyH=18 offset=0
+[s4-gates] worker line 53: some output with detail xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
+[s4-gates] worker line 54: some output with detail xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
+[s4-gates] worker line 55: some output with detail xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
+[s4-gates] worker line 56: some output with detail xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
+[s4-gates] worker line 57: some output with detail xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
+[s4-gates] worker line 58: some output with detail xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
+[s4-gates] worker line 59: some output with detail xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
+[s4-gates] worker line 60: some output with detail xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
+↑/↓ PgUp/PgDn scroll ● live │ y yank path │ Esc/Enter close

@@ -13,6 +13,7 @@ ompo                 # unified TUI: plan (if needed) → run → done
 # …or step by step:
 ompo init            # planner session surveys docs → ROADMAP.md (+ .omp/roadmap.yml)
 # review ROADMAP.md — one ## [id] section per slice (--template for blank, --replan to redo)
+ompo plan             # preview: slices, gates, deps + lint (exit 1 when blocked)
 ompo run --dry-run   # parse + dependency order, spawns nothing
 ompo run             # live TUI: board + inspector + scrollable log panel (PgUp/PgDn)
 ompo status          # read-only progress dump
@@ -231,6 +232,18 @@ Removed ids drop (artifacts stay on disk). Refuses live runs (exit 3) and
 runs whose in-flight slices changed spec — finish, kill, or revert those
 sections first.
 
+## Planner preview (`ompo plan`, unified gate)
+
+Execution is more mature than planning, so the plan shows itself before
+spending model calls. `ompo plan` prints slice ids/titles, Effort, gate
+counts, Depends, and the same lint findings `ompo lint` reports — exit 1
+when blocking errors (unknown deps, cycles, missing gates) exist. No
+forecasts: no ETA, cost, or success estimates, only computable structure.
+
+The unified TUI (`ompo`) gates on the same preview: `y` accepts, `e`
+reloads ROADMAP.md from disk after you edit it elsewhere, `q` aborts.
+Blocked plans cannot be accepted — fix the roadmap and reload.
+
 ## Gates: chains, preflight, lint
 
 - One `Verify:` line may chain gates with `&&` — each runs as a separately
@@ -240,11 +253,20 @@ sections first.
   state-sharing chains quoted). `||` never splits.
 - `ompo run --check-env` probes every unique gate once against the base
   tree before spawning: infrastructure blocks fail fast with a fix hint
-  (nothing burned); pre-slice code failures are ignored.
 - `ompo lint` validates the roadmap statically (exit 1 on errors):
   vacuous gates, state-only split gates, `||` fallbacks, >60m timeouts,
   heavy retries, unknown agents, skips with dependents. `run --dry-run`
   prints the same findings alongside the dependency order.
+- Pre-merge secret scan: after verify passes and before the branch merges,
+  a deterministic scanner sweeps the slice's merge candidates (branch delta
+  + uncommitted worktree files; declared/reported files on non-git projects).
+  High-confidence classes only — AWS keys, GitHub/Slack/Stripe/OpenAI/Google
+  tokens, PEM private-key blocks, named-secret assignments. Findings refuse
+  the merge through the normal retry path (`secret_found`, redacted
+  `file:line (kind)` in `secret-scan-<n>.json` + verdict tail — values never
+  printed). Scanner breakage refuses too (`secret_scan_error`), never counts
+  as clean. This is a backstop, not complete protection: exotic formats and
+  obfuscated secrets still rely on the reviewer's judgment.
 
 ## Chaos drills (`--fault-inject`, `--seed`)
 

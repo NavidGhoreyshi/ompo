@@ -1,0 +1,8 @@
+# concurrent-agents.txt
+# FIXTURE COMPOSITION — not a real terminal render.
+# Composed from the TUI pure helpers (layoutRects/dagDepths/forensicsLayout/…);
+# Ink borders, colors, and wrapping are approximated in ASCII.
+# STRUCTURAL MODEL ONLY — VISUAL QUALITY NOT VERIFIED.
+agents · 🔒 s4-gates
+L0 ● s3-ui [run ] — agent — turn 4…
+L1 ● s4-gates [gates] — verify — verify: $ bun lint

@@ -1,0 +1,12 @@
+# dag-100.txt
+# FIXTURE COMPOSITION — not a real terminal render.
+# Composed from the TUI pure helpers (layoutRects/dagDepths/forensicsLayout/…);
+# Ink borders, colors, and wrapping are approximated in ASCII.
+# STRUCTURAL MODEL ONLY — VISUAL QUALITY NOT VERIFIED.
+watch — DAG board (g) (100×30)
+════════════════════════════════════════════════════════════════════════════════════════════════════
+  ✓ [done ] s1-scaffold
+  ✓ [done ]   └─ s2-api ×2 ← s1-scaffold
+  ● [running]     └─ s3-ui ← s2-api
+  ● [verifying]     └─ s4-gates ×3 ← s2-api
+▸ ○ [pending]       └─ s5-deploy ← s3-ui,s4-gates

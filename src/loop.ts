@@ -14,24 +14,39 @@
  * Exit codes: 0 all done · 1 failures remain · 2 aborted · 3 resume-conflict.
  */
 
-import { spawnSync } from "node:child_process";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { loadRoadmapConfig, type RoadmapConfig } from "./config.ts";
+import {
+  depSummaries,
+  failAttempt,
+  formatTimeout,
+  log,
+  maxRetriesFor,
+  newProgressTracker,
+  preserveIncompleteWork,
+  progressFn,
+  summarize5,
+  type AttemptCtx,
+  type ProgressTracker,
+} from "./attempt.ts";
+import { loadRoadmapConfig } from "./config.ts";
 import { depSatisfied, readySlices } from "./select.ts";
 import { buildWorkerSpec } from "./spec.ts";
-import { sliceDir, storeApi, loadRun, RUNS_DIR } from "./store.ts";
+import { sliceDir, storeApi, loadRun } from "./store.ts";
 import type { CompletionReport, RoadmapDoc, Slice, Verdict } from "./types.ts";
 import { applyIntent, drainIntents, latestSeq } from "./control.ts";
 import { EMPTY_FAULTS, faultsArmed, mulberry32, shouldAbortAttempt, shouldCrashAfter, shouldFailVerify, type FaultSpec } from "./faults.ts";
-import { extractHarnessFix, extractReportFromOutput, validateCompletionReport, type HarnessFix } from "./report.ts";
+import { extractHarnessFix, extractReportFromOutput, validateCompletionReport } from "./report.ts";
 import { buildDebugPrompt, classifyEnvFailure, DEFAULT_DEBUG_TIMEOUT_MS, validateHarnessFix } from "./debug.ts";
-import { buildReviewPrompt, buildReviewFixPrompt, extractReviewFromOutput, formatReviewFindings, validateReviewVerdict } from "./review.ts";
+import { applyHarnessFix, headFileSet } from "./harnessFix.ts";
 import { runVerifiers } from "./verify.ts";
+import { reportDeferred, reportPlaceholders } from "./runReports.ts";
+import { runReview } from "./reviewLane.ts";
 import { buildModelChain, displayModel, resolveWorkerModel, runOmpWorker, runWithModelFallbacks, type WorkerRunner } from "./worker.ts";
 import { createMutex, type Mutex } from "./mutex.ts";
-import { worktreeOpsFor, type WorktreeOps } from "./worktree.ts";
-import { extractMissingVar, isDeploySlice, loadPlaceholders, placeholderFor, placeholdersDocRef, recordPlaceholder } from "./placeholders.ts";
+import { worktreeOpsFor, sliceBranchOf, type WorktreeOps } from "./worktree.ts";
+import { extractMissingVar, loadPlaceholders, placeholderFor, placeholdersDocRef, recordPlaceholder } from "./placeholders.ts";
+import { preMergeSecretGate } from "./secrets.ts";
 
 export interface LoopOptions {
   projectDir: string;
@@ -81,508 +96,6 @@ export interface LoopResult {
   blockedEnv: number;
 }
 
-interface AttemptCtx {
-  projectDir: string;
-  runId: string;
-  runner: WorkerRunner;
-  cfg: RoadmapConfig;
-  commit: Mutex;
-  wt: WorktreeOps;
-  reviewer: WorkerRunner;
-  noReview: boolean;
-  reviewModel?: string;
-  reviewTimeoutMs?: number;
-  noDebug: boolean;
-  debugTimeoutMs?: number;
-  noPlaceholders: boolean;
-  maxRetriesOverride?: number;
-  timeoutMsOverride?: number;
-  signal?: AbortSignal;
-  onEvent?: (msg: string) => void;
-  heartbeatMs: number;
-  /** Live operator controls: jobs holder (set-jobs scales the claim loop). */
-  jobs: { value: number };
-  /** Claim loop paused (pause intent): in-flight finish, nothing new claims. */
-  paused: boolean;
-  /** Chaos faults + seeded RNG (abort draws). Inactive unless armed. */
-  faults: FaultSpec;
-  rng: () => number;
-  controlOffset: number;
-  controlPollMs: number;
-  /** Shared live-progress state per in-flight slice (for heartbeat detail). */
-  trackers: Map<string, ProgressTracker>;
-}
-
-function log(opts: { onEvent?: (msg: string) => void }, msg: string): void {
-  (opts.onEvent ?? ((m) => console.log(m)))(msg);
-}
-
-/** Live-progress counters for one in-flight attempt (heartbeat + summaries). */
-export interface ProgressTracker {
-  turns: number;
-  tools: number;
-  lines: number;
-  lastLine: string;
-  lastAt: number;
-}
-
-export function newProgressTracker(): ProgressTracker {
-  return { turns: 0, tools: 0, lines: 0, lastLine: "", lastAt: Date.now() };
-}
-
-function noteProgress(t: ProgressTracker, line: string): void {
-  t.lines += 1;
-  t.lastLine = line;
-  t.lastAt = Date.now();
-  if (line.startsWith("turn ")) t.turns += 1;
-  else if (line.startsWith("tool ")) t.tools += 1;
-}
-
-/** Build an onProgress sink that logs prefixed lines and feeds the heartbeat. */
-function progressFn(ctx: AttemptCtx, sliceId: string, tag?: string): (line: string) => void {
-  const prefix = tag ? `  [${sliceId} ${tag}]` : `  [${sliceId}]`;
-  return (line) => {
-    let t = ctx.trackers.get(sliceId);
-    if (!t) {
-      t = newProgressTracker();
-      ctx.trackers.set(sliceId, t);
-    }
-    noteProgress(t, line);
-    log(ctx, `${prefix} ${line}`);
-  };
-}
-
-function formatTimeout(ms: number | undefined): string {
-  if (ms === undefined) return "default";
-  const m = Math.round(ms / 60000);
-  return m >= 1 ? `${m}m` : `${Math.round(ms / 1000)}s`;
-}
-
-function depSummaries(projectDir: string, runId: string, slice: Slice): Map<string, string> {
-  const out = new Map<string, string>();
-  for (const dep of slice.deps) {
-    const reportPath = join(sliceDir(projectDir, runId, dep), "report.json");
-    try {
-      if (existsSync(reportPath)) {
-        const r = JSON.parse(readFileSync(reportPath, "utf8")) as CompletionReport;
-        if (r.summary) out.set(dep, r.summary);
-      }
-    } catch {
-      /* missing/unreadable → spec notes "(no summary recorded)" */
-    }
-  }
-  return out;
-}
-
-function maxRetriesFor(slice: Slice, opts: { maxRetriesOverride?: number; cfg?: { maxRetries?: number } }): number {
-  // Precedence: CLI flag > explicit `Retries:` trailer > yml default > parser default.
-  if (opts.maxRetriesOverride !== undefined) return opts.maxRetriesOverride;
-  if (slice.maxRetriesExplicit) return slice.maxRetries;
-  return opts.cfg?.maxRetries ?? slice.maxRetries;
-}
-
-function summarize5(
-  slice: Slice,
-  outcome: string,
-  report?: CompletionReport,
-  verdictPass?: boolean,
-): string {
-  const lines = [
-    `— slice ${slice.id}: ${outcome}`,
-    `  title: ${slice.title}`,
-    `  attempt: ${slice.attempts}`,
-  ];
-  if (report) lines.push(`  summary: ${report.summary.slice(0, 200)}`);
-  if (verdictPass !== undefined) lines.push(`  verify: ${verdictPass ? "pass" : "FAIL"}`);
-  return lines.join("\n");
-}
-
-/** Map a failure ref (file path) to a short machine-readable class. */
-function classifyFailure(ref: string): string {
-  if (ref.includes("worktree-")) return "worktree_failed";
-  if (ref.includes("report-") && ref.endsWith(".invalid.json")) return "report_missing";
-  if (ref.includes("worker-")) return "worker_failed";
-  if (ref.includes("review-")) return "review_rejected";
-  if (ref.includes("merge-")) return "merge_conflict";
-  if (ref.includes("unexpected-")) return "unexpected";
-  return "failed";
-}
-
-/**
- * Retry-or-terminal shared by worker/spawn/report failures. The terminal
- * events carry a short `reason` class (+ process exit/timing when known) so
- * run logs explain a failure in one line instead of pointing at a file.
- */
-function failAttempt(
-  ctx: AttemptCtx,
-  sliceId: string,
-  claimed: Slice,
-  ref: string,
-  meta?: { cause?: string; exit?: number | null; timedOut?: boolean; durationMs?: number },
-): void {
-  const maxRetries = maxRetriesFor(claimed, ctx);
-  const attempt = claimed.attempts;
-  const cause = meta?.cause ?? classifyFailure(ref);
-  const extra = {
-    exit: meta?.exit ?? null,
-    timedOut: meta?.timedOut ?? false,
-    durationMs: meta?.durationMs,
-  };
-  if (attempt <= maxRetries) {
-    storeApi.retrySlice(ctx.projectDir, ctx.runId, sliceId);
-    log(ctx, `  retrying (${attempt}/${maxRetries} retries used)`);
-  } else {
-    storeApi.verifyFailed(ctx.projectDir, ctx.runId, sliceId, ref, cause, extra);
-    storeApi.terminalFail(ctx.projectDir, ctx.runId, sliceId, cause, extra);
-    log(ctx, `  terminal failure (retries exhausted): ${cause}`);
-  }
-}
-/** Repo-relative tracked paths at the base checkout's HEAD (harness-fix rail). */
-function headFileSet(projectDir: string): Set<string> {
-  const r = spawnSync("git", ["-C", projectDir, "ls-tree", "-r", "--name-only", "HEAD"], { encoding: "utf8" });
-  return new Set((r.stdout ?? "").split("\n").map((l) => l.trim()).filter((l) => l.length > 0));
-}
-
-/**
- * Apply a rail-validated harness fix (HARP-1). The diff goes into the slice
- * worktree — the gate's cwd — via `git apply --3way`, then the patched paths
- * are staged. Deliberately NOT applied to the base checkout here: a base-side
- * edit would be overwritten-and-refused by the worktree branch's own merge
- * minutes later (git merge aborts on local changes to files it updates), and
- * the sanctioned commit path is exactly that merge — commitWork includes
- * harness files, so the fix lands on base HEAD when the slice merges. Throws
- * on any failure (base dirt on the patched paths, apply/add errors).
- */
-function applyHarnessFix(projectDir: string, wtPath: string, hf: HarnessFix): void {
-  // Rail: never clobber real uncommitted work in the base checkout on the
-  // patched paths (a later merge of these same files would refuse anyway).
-  const status = spawnSync(
-    "git",
-    ["-C", projectDir, "status", "--porcelain", "--", ...hf.filesPatched],
-    { encoding: "utf8" },
-  );
-  if (status.status !== 0) {
-    throw new Error(`cannot check base checkout status (git exit ${status.status})`);
-  }
-  const dirty = (status.stdout ?? "").trim();
-  if (dirty) {
-    throw new Error(`base checkout has uncommitted changes to patched files — refusing: ${dirty.split("\n").join("; ")}`);
-  }
-  // The debugger verifies its fix by editing the file in the worktree, so the
-  // patched paths may already carry that exact change. Reset them to HEAD so
-  // the emitted diff applies cleanly (filesPatched are never slice-owned, so
-  // this discards only the debugger's own harness edit, never slice work).
-  const reset = spawnSync("git", ["-C", wtPath, "checkout", "--", ...hf.filesPatched], { encoding: "utf8" });
-  if (reset.status !== 0) {
-    throw new Error(`git checkout failed in worktree: ${`${reset.stderr ?? ""}${reset.stdout ?? ""}`.trim().slice(-2000)}`);
-  }
-  const applied = spawnSync("git", ["-C", wtPath, "apply", "--3way", "--"], {
-    input: hf.diff,
-    encoding: "utf8",
-  });
-  if (applied.status !== 0) {
-    throw new Error(`git apply failed in worktree: ${`${applied.stderr ?? ""}${applied.stdout ?? ""}`.trim().slice(-2000)}`);
-  }
-  const add = spawnSync("git", ["-C", wtPath, "add", "-A", "--", ...hf.filesPatched], { encoding: "utf8" });
-  if (add.status !== 0) {
-    throw new Error(`git add failed in worktree: ${`${add.stderr ?? ""}${add.stdout ?? ""}`.trim().slice(-2000)}`);
-  }
-}
-
-/** Best-effort: commit in-flight work to the slice branch so retries/resume keep it. */
-function preserveIncompleteWork(ctx: AttemptCtx, sliceId: string, attempt: number, reason: string): void {
-  try {
-    const c = ctx.wt.commitWork(ctx.projectDir, ctx.runId, sliceId, attempt, `incomplete: ${reason}`);
-    log(ctx, `  preserved incomplete work: ${c.detail}`);
-  } catch (err) {
-    log(ctx, `  work-preservation warning: ${err instanceof Error ? err.message : String(err)}`);
-  }
-}
-/**
- * Independent review: fresh reviewer session audits the merged slice.
- * Returns true on approval. Rejection/invalid/timeout flow through the
- * standard retry-or-terminal path with findings saved for the next attempt.
- * Minor rejections earn one bounded fix session + re-verify + re-merge +
- * re-review inside the same attempt (`attemptFix`, one shot via a marker
- * file); anything else falls through like a major rejection.
- */
-async function runReview(
-  ctx: AttemptCtx,
-  sliceId: string,
-  attempt: number,
-  claimed: Slice,
-  report: CompletionReport,
-  verifyCommands: string[],
-  wtPath: string,
-  env?: Record<string, string>,
-  attemptFix = true,
-): Promise<boolean> {
-  const { projectDir, runId } = ctx;
-  const dir = sliceDir(projectDir, runId, sliceId);
-  const reviewPrimary = ctx.reviewModel ?? ctx.cfg.reviewModel ?? ctx.cfg.workerModel;
-  // Review audits through the same fallback chain (no retry consumed on a
-  // model outage — the audit just moves to the next model).
-  const reviewChain = buildModelChain(reviewPrimary, ctx.cfg.modelFallbacks);
-  // Review budgets like the worker that produced the slice: same chain, with
-  // an explicit review override on top. The audit re-runs gate commands, so it
-  // must not be capped tighter than the work it checks.
-  const reviewBudgetMs = ctx.reviewTimeoutMs ?? ctx.timeoutMsOverride ?? claimed.timeoutMs
-    ?? (ctx.cfg.workerTimeoutSec ? ctx.cfg.workerTimeoutSec * 1000 : undefined);
-  log(ctx, `◈ review ${sliceId} — independent audit (attempt ${attempt})`);
-
-  if (ctx.signal?.aborted) {
-    storeApi.abortSlice(projectDir, runId, sliceId);
-    return false;
-  }
-
-  const prompt = buildReviewPrompt(claimed, report, verifyCommands);
-  writeFileSync(join(dir, `review-prompt-${attempt}.md`), prompt, "utf8");
-  const onProgress = progressFn(ctx, sliceId, "review");
-  let reviewOut = "";
-  let reviewStdout = "";
-  try {
-    const res = await runWithModelFallbacks(
-      ctx.reviewer,
-      { prompt, sliceId, attempt, label: `${sliceId} review` },
-      { projectDir, timeoutMs: reviewBudgetMs, signal: ctx.signal, sessionDir: dir, onProgress, env },
-      reviewChain,
-      {
-        accept: (stdout) => extractReviewFromOutput(stdout) !== undefined,
-        onModelAttempt: (model, i) => {
-          const where = i === 0 ? `budget: ${formatTimeout(reviewBudgetMs)}` : `fallback ${i + 1}/${reviewChain.length} (no retry consumed)`;
-          log(ctx, `  model: ${displayModel(model)} ${where}`);
-        },
-        onFallback: (from, to) => {
-          log(ctx, `  model ${displayModel(from)} unavailable — falling back to ${displayModel(to)} (no retry consumed)`);
-        },
-      },
-    );
-    if (res.fellBack) {
-      writeFileSync(join(dir, `review-${attempt}.models.json`), JSON.stringify({ tried: res.tried, accepted: displayModel(res.model) }, null, 2) + "\n", "utf8");
-    }
-    reviewStdout = res.stdout;
-    reviewOut = `exit=${res.exit} timedOut=${res.timedOut} durationMs=${res.durationMs}\n--- stdout ---\n${res.stdout}\n--- stderr ---\n${res.stderr}\n`;
-    if (res.eventsJsonl) {
-      try {
-        writeFileSync(join(dir, `review-${attempt}.events.jsonl`), res.eventsJsonl, "utf8");
-      } catch {
-        /* forensics are best-effort */
-      }
-    }
-    if (res.timedOut) throw new Error(`reviewer timed out`);
-    if (res.exit !== 0) {
-      const maybe = extractReviewFromOutput(res.stdout);
-      if (maybe === undefined) throw new Error(`reviewer exited ${res.exit} with no verdict`);
-    }
-  } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err);
-    writeFileSync(join(dir, `review-${attempt}.log`), reviewOut + `\nREVIEW ERROR: ${msg}\n`, "utf8");
-    if (ctx.signal?.aborted) {
-      storeApi.abortSlice(projectDir, runId, sliceId);
-      log(ctx, summarize5(claimed, `aborted during review (no retry consumed)`));
-      return false;
-    }
-    log(ctx, summarize5(claimed, `review failure: ${msg}`));
-    failAttempt(ctx, sliceId, claimed, join("slices", sliceId, `review-${attempt}.log`));
-    return false;
-  }
-  const extracted = extractReviewFromOutput(reviewStdout);
-  // Artifact the failure refs: review.json once a verdict parsed, else the
-  // invalid-output record.
-  let verdictRef = join("slices", sliceId, `review-${attempt}.invalid.json`);
-  try {
-    if (extracted === undefined) throw new Error("no <<<OMPO_REVIEW>>> block found in reviewer output");
-    const verdict = validateReviewVerdict(extracted, sliceId);
-    writeFileSync(join(dir, "review.json"), JSON.stringify(verdict, null, 2) + "\n", "utf8");
-    verdictRef = join("slices", sliceId, "review.json");
-    if (!verdict.approved) {
-      // Minor lane: the shape is right, only polish is missing. One bounded
-      // fix session + re-verify + re-merge + re-review inside this attempt
-      // (marker file bounds it to one shot); a major rejection, a disabled
-      // debugger lane, or a second minor all spend budget like any failure.
-      if (verdict.severity === "minor" && attemptFix && !ctx.noDebug && !existsSync(join(dir, `review-minor-${attempt}.applied`))) {
-        writeFileSync(join(dir, `review-${attempt}.rejected.json`), JSON.stringify(verdict, null, 2) + "\n", "utf8");
-        const lane = await runReviewFix(ctx, sliceId, attempt, claimed, verdict, verifyCommands, wtPath, env);
-        if (lane === "approved") return true;
-        if (lane === "settled") return false;
-      }
-      throw new Error(`reviewer rejected (${verdict.severity}): ${verdict.findings.join("; ").slice(0, 300)}`);
-    }
-    log(ctx, summarize5(claimed, `review approved — ${verdict.notes.slice(0, 200)}`, report, true));
-    return true;
-  } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err);
-    writeFileSync(
-      join(dir, `review-${attempt}.invalid.json`),
-      JSON.stringify({ error: msg, raw: extracted === undefined ? null : extracted }, null, 2),
-      "utf8",
-    );
-    log(ctx, summarize5(claimed, `review rejected: ${msg}`));
-    // Findings feed the next attempt's prompt (see reviewNotes at spec build).
-    // Normalize via formatReviewFindings so structured {file, behavior, spec}
-    // objects still render as readable lines instead of [object Object].
-    try {
-      const notes = extracted !== undefined
-        ? (extracted as { findings?: unknown; notes?: unknown })
-        : null;
-      const findings = formatReviewFindings(notes?.findings) ?? [];
-      const reviewerNotes = typeof notes?.notes === "string" && notes.notes.trim() ? notes.notes.trim() : "";
-      const lines = [
-        ...findings.map((f) => `- ${f}`),
-        reviewerNotes ? `\nReviewer notes: ${reviewerNotes}` : "",
-      ].filter(Boolean).join("\n");
-      if (lines) writeFileSync(join(dir, "review-notes.md"), lines + "\n", "utf8");
-    } catch {
-      /* notes are advisory; the retry proceeds regardless */
-    }
-    failAttempt(ctx, sliceId, claimed, verdictRef);
-    return false;
-  }
-}
-
-/**
- * Minor-fix lane: one bounded fresh worker addresses ONLY the reviewer's
- * polish findings in the slice worktree, then the gate re-runs and the
- * branch re-merges under the commit mutex, then exactly one re-review
- * decides. Outcomes: "approved" (done — the caller returns true),
- * "settled" (the outcome is already recorded: abort, kill, or a terminal
- * merge conflict — the caller returns false WITHOUT spending budget), or
- * "retry" (nothing conclusive — the caller falls through to the standard
- * retry-or-terminal path, which records it). One shot per attempt via the
- * `review-minor-<attempt>.applied` marker; never recursive (the re-review
- * runs with attemptFix=false); never consumes a retry itself.
- */
-async function runReviewFix(
-  ctx: AttemptCtx,
-  sliceId: string,
-  attempt: number,
-  claimed: Slice,
-  verdict: { findings: string[] },
-  verifyCommands: string[],
-  wtPath: string,
-  env?: Record<string, string>,
-): Promise<"approved" | "settled" | "retry"> {
-  const { projectDir, runId } = ctx;
-  const dir = sliceDir(projectDir, runId, sliceId);
-  const fixChain = buildModelChain(resolveWorkerModel(claimed.workerAgent, ctx.cfg), ctx.cfg.modelFallbacks);
-  const fixBudgetMs = ctx.debugTimeoutMs ?? DEFAULT_DEBUG_TIMEOUT_MS;
-  log(ctx, `  review-fix ${sliceId} — minor polish session (attempt ${attempt}, budget ${formatTimeout(fixBudgetMs)})`);
-
-  if (ctx.signal?.aborted) {
-    storeApi.abortSlice(projectDir, runId, sliceId);
-    return "settled";
-  }
-
-  const prompt = buildReviewFixPrompt(claimed, verdict.findings, attempt);
-  writeFileSync(join(dir, `review-fix-prompt-${attempt}.md`), prompt, "utf8");
-  const onProgress = progressFn(ctx, sliceId, "review-fix");
-  let fixStdout = "";
-  try {
-    const res = await runWithModelFallbacks(
-      ctx.runner,
-      { prompt, sliceId, attempt, label: `${sliceId} review-fix` },
-      { projectDir: wtPath, timeoutMs: fixBudgetMs, signal: ctx.signal, sessionDir: dir, onProgress, env },
-      fixChain,
-      {
-        accept: (stdout) => extractReportFromOutput(stdout) !== undefined,
-        preserve: () => preserveIncompleteWork(ctx, sliceId, attempt, "review-fix model unavailable, falling back"),
-        onModelAttempt: (model, i) => {
-          if (i > 0) log(ctx, `  review-fix model: ${displayModel(model)} (fallback ${i + 1}/${fixChain.length}, no retry consumed)`);
-        },
-        onFallback: (from, to) => {
-          log(ctx, `  review-fix model ${displayModel(from)} unavailable — falling back to ${displayModel(to)} (no retry consumed)`);
-        },
-      },
-    );
-    if (res.fellBack) {
-      writeFileSync(join(dir, `review-fix-${attempt}.models.json`), JSON.stringify({ tried: res.tried, accepted: displayModel(res.model) }, null, 2) + "\n", "utf8");
-    }
-    fixStdout = res.stdout;
-    writeFileSync(join(dir, `review-fix-${attempt}.log`), `exit=${res.exit} timedOut=${res.timedOut} durationMs=${res.durationMs}\n--- stdout ---\n${res.stdout}\n--- stderr ---\n${res.stderr}\n`, "utf8");
-    if (res.eventsJsonl) {
-      try {
-        writeFileSync(join(dir, `review-fix-${attempt}.events.jsonl`), res.eventsJsonl, "utf8");
-      } catch {
-        /* forensics are best-effort */
-      }
-    }
-    if (ctx.signal?.aborted) {
-      preserveIncompleteWork(ctx, sliceId, attempt, "abort");
-      storeApi.abortSlice(projectDir, runId, sliceId);
-      return "settled";
-    }
-    if (res.timedOut) {
-      preserveIncompleteWork(ctx, sliceId, attempt, "review-fix timeout");
-      log(ctx, summarize5(claimed, `review-fix timed out (no retry consumed)`));
-      return "retry";
-    }
-    if (res.exit !== 0 && extractReportFromOutput(res.stdout) === undefined) {
-      throw new Error(`review-fix exited ${res.exit} with no report`);
-    }
-  } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err);
-    log(ctx, summarize5(claimed, `review-fix failure: ${msg} (no retry consumed)`));
-    return "retry";
-  }
-
-  const extracted = extractReportFromOutput(fixStdout);
-  try {
-    if (extracted === undefined) throw new Error("no <<<OMPO_REPORT>>> block in review-fix output");
-    const freport = validateCompletionReport(extracted, sliceId);
-    if (!freport.done) throw new Error(`review-fix gave up: ${freport.verificationNotes.slice(0, 300)}`);
-  } catch (err) {
-    log(ctx, summarize5(claimed, `review-fix inconclusive: ${err instanceof Error ? err.message : String(err)} (falling back to retry budget)`));
-    return "retry";
-  }
-  writeFileSync(join(dir, `review-minor-${attempt}.applied`), JSON.stringify({ at: new Date().toISOString(), findings: verdict.findings.length }, null, 2) + "\n", "utf8");
-
-  // A kill that landed during the fix session drops out before re-verify.
-  try {
-    if (loadRun(projectDir, runId).doc.slices.find((s) => s.id === sliceId)?.status === "aborted") {
-      preserveIncompleteWork(ctx, sliceId, attempt, "operator kill");
-      log(ctx, summarize5(claimed, `killed by operator — review-fix output discarded (no retry consumed)`));
-      return "settled";
-    }
-  } catch {
-    /* store unreadable — proceed; the gate below will surface it */
-  }
-
-  // Re-verify + re-merge under the commit mutex (same order guarantee as
-  // the first pass), then exactly one re-review with the lane closed.
-  const release = await ctx.commit.acquire();
-  try {
-    log(ctx, `  review-fix: re-running ${verifyCommands.length} gate(s) in ${wtPath}`);
-    const verdict2 = await runVerifiers(sliceId, attempt, verifyCommands, join(dir, "logs"), {
-      projectDir: wtPath,
-      onProgress: progressFn(ctx, sliceId, "review-fix"),
-      env,
-    });
-    writeFileSync(join(dir, "verdict.json"), JSON.stringify(verdict2, null, 2) + "\n", "utf8");
-    if (!verdict2.pass) {
-      const reason = `review-fix gate still red: ${verdict2.steps.filter((s) => s.exit !== 0).map((s) => s.command).join("; ").slice(0, 300)}`;
-      log(ctx, summarize5(claimed, `${reason} (falling back to retry budget)`));
-      return "retry";
-    }
-    const m = ctx.wt.merge(projectDir, runId, sliceId, attempt);
-    if (!m.merged) {
-      const conflictFile = join("slices", sliceId, `merge-${attempt}.conflict.txt`);
-      writeFileSync(join(dir, `merge-${attempt}.conflict.txt`), m.detail, "utf8");
-      storeApi.verifyFailed(projectDir, runId, sliceId, conflictFile, "merge_conflict");
-      storeApi.terminalFail(projectDir, runId, sliceId, "merge_conflict");
-      log(ctx, summarize5(claimed, `review-fix merge conflict — terminal. ${m.detail}`, undefined, true));
-      return "settled";
-    }
-    log(ctx, `  review-fix merged (${m.detail}) — one re-review decides`);
-  } finally {
-    release();
-  }
-
-  // Exact report objects are internal to runAttempt; re-read the current
-  // one from disk (the fix session never rewrites report.json).
-  const rereport: CompletionReport = JSON.parse(readFileSync(join(dir, "report.json"), "utf8")) as CompletionReport;
-  const reapproved = await runReview(ctx, sliceId, attempt, claimed, rereport, verifyCommands, wtPath, env, false);
-  return reapproved ? "approved" : "settled";
-}
 
 /**
  * Debugger session: one bounded fresh worker that diagnoses a genuine
@@ -785,67 +298,6 @@ async function recoverWithPlaceholders(
   };
 }
 
-/**
- * End-of-run swap report: var names (never values — those live in the doc)
- * plus the deploy-gate call to action when only deployment slices remain.
- */
-function reportPlaceholders(opts: { projectDir: string; runId: string; onEvent?: (msg: string) => void }): void {
-  const all = loadPlaceholders(opts.projectDir, opts.runId);
-  const names = Object.keys(all);
-  if (names.length === 0) return;
-  const ref = placeholdersDocRef(opts.runId);
-  log(opts, `placeholders: ${names.length} dev-only value(s) — ${names.join(", ")} (see ${ref})`);
-  const doc = loadRun(opts.projectDir, opts.runId).doc;
-  const remaining = doc.slices.filter((s) => !["done", "failed", "skipped"].includes(s.status));
-  if (remaining.length > 0 && remaining.every((s) => isDeploySlice(s.id, s.title))) {
-    log(opts, `only deployment slice(s) left (${remaining.map((s) => s.id).join(", ")}) — swap real values, exercise the UI/UX, then deploy`);
-  } else {
-    log(opts, `swap real values before the deploy slice / final UI-UX pass`);
-  }
-}
-
-/**
- * End-of-run deferred manifest (never-block rule): every done slice's
- * report.json `deferred` list lands in one checklist with the values needed
- * plus the manual check, so the operator's post-run pass is a single doc.
- * Best-effort: unreadable reports are skipped, never fatal.
- */
-function reportDeferred(opts: { projectDir: string; runId: string; onEvent?: (msg: string) => void }): void {
-  let doc: RoadmapDoc;
-  try {
-    doc = loadRun(opts.projectDir, opts.runId).doc;
-  } catch {
-    return;
-  }
-  const sections: string[] = [];
-  let items = 0;
-  for (const s of doc.slices) {
-    if (s.status !== "done") continue;
-    let deferred: unknown;
-    try {
-      deferred = (JSON.parse(readFileSync(join(sliceDir(opts.projectDir, opts.runId, s.id), "report.json"), "utf8")) as CompletionReport).deferred;
-    } catch {
-      continue;
-    }
-    if (!Array.isArray(deferred)) continue;
-    const lines = deferred.filter((d): d is string => typeof d === "string" && d.trim() !== "");
-    if (lines.length === 0) continue;
-    items += lines.length;
-    sections.push(`## ${s.id} — ${s.title}\n${lines.map((d) => `- ${d}`).join("\n")}`);
-  }
-  if (sections.length === 0) return;
-  try {
-    mkdirSync(join(opts.projectDir, RUNS_DIR, opts.runId), { recursive: true });
-    writeFileSync(
-      join(opts.projectDir, RUNS_DIR, opts.runId, "deferred.md"),
-      `# Deferred live values — run ${opts.runId}\n\nFill these with real values after the run, then run each manual check.\n\n${sections.join("\n\n")}\n`,
-      "utf8",
-    );
-  } catch {
-    return;
-  }
-  log(opts, `deferred: ${items} live check(s) across ${sections.length} slice(s) (see ${join(RUNS_DIR, opts.runId, "deferred.md")})`);
-}
 /**
  * One attempt of one slice: worktree → spec → worker → report →
  * verify → merge → review → done. Total: never rejects; all failures land
@@ -1160,6 +612,19 @@ async function runAttempt(ctx: AttemptCtx, sliceId: string): Promise<void> {
         storeApi.terminalFail(projectDir, runId, sliceId, "verify_failed");
         log(ctx, summarize5(claimed, `${reason} — terminal (retries exhausted)`, report, false));
       }
+      return;
+    }
+
+    // Deterministic pre-merge secret scan: reviewer secret judgment is
+    // heuristic; this gate is exact. Findings refuse the merge through the
+    // standard retry-or-terminal path with no debugger session (model
+    // sessions are never pointed at secrets). Runs inside the commit mutex
+    // so nothing merges between the scan and the merge below.
+    if (!preMergeSecretGate({
+      projectDir, runId, slice: claimed, attempt, dir, wtPath,
+      branch: sliceBranchOf(runId, sliceId), verdict, report,
+      maxRetries, log: (m) => log(ctx, m),
+    })) {
       return;
     }
 

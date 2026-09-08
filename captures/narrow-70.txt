@@ -1,0 +1,15 @@
+# narrow-70.txt
+# FIXTURE COMPOSITION — not a real terminal render.
+# Composed from the TUI pure helpers (layoutRects/dagDepths/forensicsLayout/…);
+# Ink borders, colors, and wrapping are approximated in ASCII.
+# STRUCTURAL MODEL ONLY — VISUAL QUALITY NOT VERIFIED.
+watch — narrow stacked (70×30)
+══════════════════════════════════════════════════════════════════════
+narrow=true board w=68 (stacked, no gutter)
+  ✓ [done ] s1-scaffold
+  ✓ [done ] s2-api ×2
+▸ ● [running] s3-ui
+  ● [verifying] s4-gates ×3
+  ○ [pending] s5-deploy
+--- inspector (stacked below) ---
+inspector [Verify] s4-gates · gates: 1/2 pass

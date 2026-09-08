@@ -1,0 +1,17 @@
+# failure-state.txt
+# FIXTURE COMPOSITION — not a real terminal render.
+# Composed from the TUI pure helpers (layoutRects/dagDepths/forensicsLayout/…);
+# Ink borders, colors, and wrapping are approximated in ASCII.
+# STRUCTURAL MODEL ONLY — VISUAL QUALITY NOT VERIFIED.
+watch — failures (F filters) (120×30)
+══════════════════════════════════════════════════════════════════════════════════════════════════════════════
+all:
+  ✓ [done ] s1-scaffold
+▸ ! [failed] s2-api ×2
+  ○ [blocked-env] s3-ui
+  ! [failed] s4-gates ×4
+
+failures-only (F):
+▸ ! [failed] s2-api ×2
+  ○ [blocked-env] s3-ui
+  ! [failed] s4-gates ×4

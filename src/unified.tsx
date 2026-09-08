@@ -20,7 +20,17 @@ import {
   resolveInitPlan,
   runInitPlanner,
 } from "./import.ts";
+import { loadRoadmapConfig } from "./config.ts";
 import { parseRoadmap, sha256Hex } from "./parse.ts";
+import {
+  buildPlanPreview,
+  defaultPreviewDecision,
+  formatPreviewSummary,
+  renderPreviewLines,
+  type PlanPreview,
+  type PreviewDecision,
+  type PreviewHandler,
+} from "./planPreview.ts";
 import {
   acquireLock,
   createRun,
@@ -61,9 +71,6 @@ import {
   type RunView,
 } from "./watch.tsx";
 import { queueControl } from "./control.ts";
-
-const POLL_MS = 900;
-
 export interface UnifiedOptions {
   projectDir: string;
   roadmapPath?: string;
@@ -82,16 +89,25 @@ export interface UnifiedOptions {
   /** Test seams (default: the real planner + loop). */
   planner?: typeof runInitPlanner;
   looper?: (opts: LoopOptions) => Promise<LoopResult>;
+  /**
+   * Preview approval (default: accept valid plans, refuse blocked ones).
+   * The TUI passes an interactive accept/edit/abort resolver; headless mode
+   * and tests use the default or a fake. An "accept" for a blocked plan
+   * always throws — invalid roadmaps never silently proceed.
+   */
+  preview?: PreviewHandler;
 }
 
 export interface UnifiedSession {
-  phase: "planning" | "ready" | "running" | "done";
+  phase: "planning" | "preview" | "ready" | "running" | "done";
   runId: string | null;
   note: string;
 }
 
 export type { AgentRow } from "./watch.tsx";
 export { agentStates } from "./watch.tsx";
+
+const POLL_MS = 900;
 
 function abortedResult(): LoopResult {
   return { exitCode: 2, done: 0, failed: 0, skipped: 0, pending: 0, blockedEnv: 0 };
@@ -154,7 +170,33 @@ export async function driveUnifiedFlow(
     session.note = "aborted during planning";
     return abortedResult();
   }
-  const markdown = readFileSync(roadmapPath, "utf8");
+  let markdown = readFileSync(roadmapPath, "utf8");
+  // Preview gate: slice ids/titles/effort/gates/deps + lint findings surface
+  // before anything runs. Accept proceeds, abort stops, edit re-reads the
+  // file (edited externally) and revalidates — same parser, same lint, no
+  // second representation. Blocked plans can never be accepted.
+  session.phase = "preview";
+  const cfg = loadRoadmapConfig(o.projectDir);
+  for (;;) {
+    const preview = buildPlanPreview(markdown, { verifyDefaults: cfg.verifyDefaults, agentModels: cfg.agentModels });
+    log(formatPreviewSummary(preview));
+    for (const line of renderPreviewLines(preview)) log(line);
+    const decision = await (o.preview ?? defaultPreviewDecision)(preview);
+    if (decision === "abort") {
+      session.phase = "done";
+      session.note = "preview aborted by operator";
+      return abortedResult();
+    }
+    if (decision === "edit") {
+      log(`reloading ${roadmapPath} after external edit…`);
+      markdown = readFileSync(roadmapPath, "utf8");
+      continue;
+    }
+    if (preview.status === "blocked") {
+      throw new Error(`cannot accept: roadmap has ${preview.errors.length} blocking error(s) — fix ${roadmapPath} and re-run`);
+    }
+    break;
+  }
   const validated = parseRoadmap(markdown);
   log(`roadmap OK: ${validated.slices.length} slices (${validated.slices.map((s) => s.id).join(", ")})`);
 
@@ -217,6 +259,16 @@ export async function driveUnifiedFlow(
 }
 
 // ── UI ─────────────────────────────────────────────────────────────────
+/**
+ * Mutable cell shared by the preview handler (writer, inside
+ * driveUnifiedFlow) and the TUI (reader/resolver, via useInput). Fields are
+ * replaced per preview round (accept/edit/abort clears them).
+ */
+export interface PreviewBridge {
+  preview: PlanPreview | null;
+  resolve: ((d: PreviewDecision) => void) | null;
+}
+
 interface UnifiedAppProps {
   project: string;
   session: UnifiedSession;
@@ -224,9 +276,33 @@ interface UnifiedAppProps {
   requestAbort: () => void;
   /** Claim-loop width at loop start (mirrors jobs; +/- sends absolute values). */
   initialJobs?: number;
+  /** Planner-preview gate state (set while session.phase === "preview"). */
+  bridge?: PreviewBridge;
+  /** Roadmap path shown in the preview pane (defaults to <project>/ROADMAP.md). */
+  roadmapPath?: string;
 }
 
-export function UnifiedApp({ project, session, bus, requestAbort, initialJobs }: UnifiedAppProps): React.JSX.Element {
+export function PlanPreviewPane({ preview, roadmapPath }: { preview: PlanPreview; roadmapPath?: string }): React.JSX.Element {
+  const color = preview.status === "blocked" ? "red" : preview.status === "warnings" ? "yellow" : "green";
+  return (
+    <Box flexDirection="column" borderStyle="round" borderColor={color} paddingX={1}>
+      <Text bold color="white"> plan preview <Text color={color}>· {preview.status}</Text> </Text>
+      {preview.rows.length === 0
+        ? <Text dimColor>(unparseable — see errors below)</Text>
+        : renderPreviewLines(preview).map((l, i) => (
+          <Text key={i} dimColor={l.startsWith("  warn") || l.startsWith("  error")} wrap="truncate">{l}</Text>
+        ))}
+      <Box marginTop={1}>
+        <Text dimColor>
+          <Text bold color="white">y</Text> accept │ <Text bold color="white">e</Text> reload {roadmapPath ?? "ROADMAP.md"} after editing │{" "}
+          <Text bold color="white">q</Text> abort{preview.status === "blocked" ? <Text color="red"> · blocked plans cannot be accepted</Text> : null}
+        </Text>
+      </Box>
+    </Box>
+  );
+}
+
+export function UnifiedApp({ project, session, bus, requestAbort, initialJobs, bridge, roadmapPath }: UnifiedAppProps): React.JSX.Element {
   const [view, setView] = useState<RunView | null>(null);
   const viewRef = useRef(view);
   viewRef.current = view;
@@ -264,17 +340,40 @@ export function UnifiedApp({ project, session, bus, requestAbort, initialJobs }:
     }, POLL_MS);
     return () => clearInterval(t);
   }, [project, session]);
-
-  // Bell when a new failure lands (poll discovery, not on every render).
-  useEffect(() => {
-    if (!view || view.slices.length === 0) return;
-    const cur = view.slices.filter((s) => isFailureStatus(s.status)).map((s) => s.id);
-    const fresh = newFailures(failedRef.current, cur);
-    failedRef.current = cur;
-    if (fresh.length > 0 && !fullscreen) bell();
-  }, [view, fullscreen]);
-
   useInput((input, key) => {
+    // Planner preview gate (swallows everything except help + decisions so
+    // a blocked plan cannot be run by accident).
+    const pv = session.phase === "preview" ? bridge?.preview : null;
+    const presolve = session.phase === "preview" ? bridge?.resolve : null;
+    if (pv && presolve) {
+      if (input === "?") {
+        setShowHelp((h) => !h);
+        return;
+      }
+      if (key.escape) {
+        if (showHelp) setShowHelp(false);
+        return;
+      }
+      if (showHelp) return;
+      if (input === "y" || key.return) {
+        if (pv.status === "blocked") {
+          bus.push("plan is blocked — edit ROADMAP.md externally, press e to reload, or q to abort");
+          return;
+        }
+        presolve("accept");
+        return;
+      }
+      if (input === "e" || input === "E") {
+        bus.push("reloading ROADMAP.md from disk — edit the file in another shell first, then press e again if needed");
+        presolve("edit");
+        return;
+      }
+      if (input === "q") {
+        presolve("abort");
+        return;
+      }
+      return;
+    }
     if (input === "q") {
       requestAbort();
       return;
@@ -410,12 +509,14 @@ export function UnifiedApp({ project, session, bus, requestAbort, initialJobs }:
   const logRows = activityRows(rows);
   const phaseLabel = session.phase === "planning"
     ? "planning — surveying project docs…"
-    : session.phase === "ready"
-      ? "ready — starting run…"
-      : session.phase === "running"
-        ? view && view.live ? "RUNNING" : "running"
-        : `done ${session.note}`;
-  const live = session.phase === "planning" || session.phase === "ready" || (session.phase === "running" && (!view || view.live));
+    : session.phase === "preview"
+      ? `preview — ${bridge?.preview?.status ?? "loading"} (y accept · e reload · q abort)`
+      : session.phase === "ready"
+        ? "ready — starting run…"
+        : session.phase === "running"
+          ? view && view.live ? "RUNNING" : "running"
+          : `done ${session.note}`;
+  const live = session.phase === "planning" || session.phase === "preview" || session.phase === "ready" || (session.phase === "running" && (!view || view.live));
   const bw = narrow ? Math.max(24, cols - 2) : boardWidth(cols);
   const statusOf = (id: string) => view?.slices.find((s) => s.id === id);
 
@@ -441,8 +542,9 @@ export function UnifiedApp({ project, session, bus, requestAbort, initialJobs }:
           ? <Text dimColor>run {view.runId} · updated {hhmmss(view.updatedAt)}</Text>
           : <Text dimColor>no run yet — roadmap first</Text>}
       </Box>
-
-      {narrow ? (
+      {session.phase === "preview" && bridge?.preview ? (
+        <PlanPreviewPane preview={bridge.preview} roadmapPath={roadmapPath ?? join(project, "ROADMAP.md")} />
+      ) : narrow ? (
         <Box flexDirection="column">
           {view ? <BoardPane view={view} width={bw} mode={boardMode} failuresOnly={failuresOnly} /> : (
             <Box flexDirection="column" borderStyle="round" borderColor="gray">
@@ -488,14 +590,20 @@ export function UnifiedApp({ project, session, bus, requestAbort, initialJobs }:
         scrollUp={scrollUp}
         emptyHint="(no activity yet — planner/worker lines stream here live)"
       />
-
       <Box marginTop={1}>
-        <Text dimColor>
-          <Text bold color="white">↑/↓</Text> select │ <Text bold color="white">n/p</Text> failure │ <Text bold color="white">g</Text> dag │{" "}
-          <Text bold color="white">1-6</Text> tabs │ <Text bold color="white">Enter</Text> forensics │ <Text bold color="white">?</Text> help │{" "}
-          <Text bold color="white">R/S/B/K</Text> ctl · <Text bold color="white">+/-</Text> jobs{pausedMirror ? <Text color="yellow"> · PAUSED</Text> : null} │{" "}
-          <Text bold color="yellow">q</Text> abort <Text dimColor>· resume by re-running `ompo`</Text>
-        </Text>
+        {session.phase === "preview" && bridge?.preview ? (
+          <Text dimColor>
+            <Text bold color="white">y</Text> accept │ <Text bold color="white">e</Text> reload after editing │{" "}
+            <Text bold color="white">q</Text> abort │ <Text bold color="white">?</Text> help
+          </Text>
+        ) : (
+          <Text dimColor>
+            <Text bold color="white">↑/↓</Text> select │ <Text bold color="white">n/p</Text> failure │ <Text bold color="white">g</Text> dag │{" "}
+            <Text bold color="white">1-6</Text> tabs │ <Text bold color="white">Enter</Text> forensics │ <Text bold color="white">?</Text> help │{" "}
+            <Text bold color="white">R/S/B/K</Text> ctl · <Text bold color="white">+/-</Text> jobs{pausedMirror ? <Text color="yellow"> · PAUSED</Text> : null} │{" "}
+            <Text bold color="yellow">q</Text> abort <Text dimColor>· resume by re-running `ompo`</Text>
+          </Text>
+        )}
       </Box>
     </Box>
   );
@@ -530,12 +638,37 @@ export async function runUnified(opts: UnifiedOptions): Promise<LoopResult> {
   const bus = createLogBus();
   const ctrl = new AbortController();
   const session: UnifiedSession = { phase: "planning", runId: null, note: "" };
+  // Preview bridge: the flow's preview handler parks the plan here and waits
+  // for a y/e/q keypress; Ctrl-C aborts the wait like any other phase.
+  const bridge: PreviewBridge = { preview: null, resolve: null };
+  const preview: PreviewHandler = (p) => new Promise<PreviewDecision>((resolve) => {
+    const onAbort = (): void => {
+      bridge.preview = null;
+      bridge.resolve = null;
+      resolve("abort");
+    };
+    if (ctrl.signal.aborted) {
+      onAbort();
+      return;
+    }
+    bridge.preview = p;
+    bus.push(`plan preview: ${p.rows.length} slice(s) — ${p.status} — y accept · e reload after editing · q abort`);
+    ctrl.signal.addEventListener("abort", onAbort, { once: true });
+    bridge.resolve = (d) => {
+      ctrl.signal.removeEventListener("abort", onAbort);
+      bridge.preview = null;
+      bridge.resolve = null;
+      resolve(d);
+    };
+  });
   const instance = render(
     <UnifiedApp
       project={opts.projectDir}
       session={session}
       bus={bus}
       initialJobs={opts.jobs}
+      bridge={bridge}
+      roadmapPath={opts.roadmapPath ?? join(opts.projectDir, "ROADMAP.md")}
       requestAbort={() => {
         bus.push("abort requested — finishing the in-flight store write, then exiting (re-run `ompo` to resume)");
         ctrl.abort();
@@ -550,9 +683,8 @@ export async function runUnified(opts: UnifiedOptions): Promise<LoopResult> {
   process.on("SIGINT", onSignal);
   process.on("SIGTERM", onSignal);
   try {
-    const result = await driveUnifiedFlow(opts, (m) => bus.push(m), session, ctrl.signal);
+    const result = await driveUnifiedFlow({ ...opts, preview: opts.preview ?? preview }, (m) => bus.push(m), session, ctrl.signal);
     instance.unmount();
-    await instance.waitUntilExit().catch(() => {});
     if (result.exitCode === 2) {
       console.log(`\naborted — re-run \`ompo\` to resume`);
     } else {

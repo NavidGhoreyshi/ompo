@@ -1,0 +1,7 @@
+# preview-blocked.txt
+# FIXTURE COMPOSITION — not a real terminal render.
+# Composed from the TUI pure helpers (layoutRects/dagDepths/forensicsLayout/…);
+# Ink borders, colors, and wrapping are approximated in ASCII.
+# STRUCTURAL MODEL ONLY — VISUAL QUALITY NOT VERIFIED.
+  error [parse] slice "s1": unknown dependency "nope"
+plan preview: 0 slice(s) — blocked (1 error(s))

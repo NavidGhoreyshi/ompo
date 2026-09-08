@@ -61,7 +61,7 @@ USAGE
                                             jobs --jobs N, pause, resume (queued on live runs, applied now otherwise)
   ompo replan [--run ID] [--project DIR]    adopt an edited ROADMAP.md into a quiescent run (keeps done,
                                             resets changed slices, refuses live runs and changed in-flight slices)
-  ompo lint [--project DIR] [--roadmap PATH] validate the roadmap (gates, budgets, agents, skips); exit 1 on errors
+  ompo plan [--project DIR] [--roadmap PATH]  preview the plan: slices, gates, deps + lint (exit 1 when blocked)
   ompo show <id> [--run ID]                inspector tabs for scripts (report, verdict, review, prompt, models, timing)
   ompo diff <id> [--run ID]                slice branch vs merge-base (stat + hunks, or "in-place run, no branch")
   ompo shell <id> [--run ID]               $SHELL with cwd=slice worktree (or project dir in-place)
@@ -657,7 +657,20 @@ async function cmdLint(a: Args): Promise<number> {
   console.log(`lint: ${res.errors.length} error(s), ${res.warnings.length} warning(s)`);
   return lintFailed(res) ? 1 : 0;
 }
-function needRun(project: string, run?: string): string | null {
+
+async function cmdPlan(a: Args): Promise<number> {
+  if (!existsSync(a.roadmap)) {
+    console.error(`roadmap not found: ${a.roadmap}\nrun \`ompo init --project ${a.project}\` first`);
+    return 1;
+  }
+  const { buildPlanPreview, formatPreviewSummary, renderPreviewLines } = await import("./planPreview.ts");
+  const cfg = loadRoadmapConfig(a.project);
+  const preview = buildPlanPreview(readFileSync(a.roadmap, "utf8"), { verifyDefaults: cfg.verifyDefaults, agentModels: cfg.agentModels });
+  for (const line of renderPreviewLines(preview)) console.log(line);
+  console.log(formatPreviewSummary(preview));
+  return preview.status === "blocked" ? 1 : 0;
+}
+ function needRun(project: string, run?: string): string | null {
   const runId = run ?? latestRun(project);
   if (!runId || !listRuns(project).includes(runId)) return null;
   return runId;
@@ -1054,8 +1067,8 @@ async function main(): Promise<number> {
       return cmdStatus(a);
     case "ctl":
       return cmdCtl(a);
-    case "replan":
-      return cmdReplan(a);
+    case "plan":
+      return cmdPlan(a);
     case "lint":
       return cmdLint(a);
     case "show":

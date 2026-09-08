@@ -1,0 +1,8 @@
+# preview-ready.txt
+# FIXTURE COMPOSITION — not a real terminal render.
+# Composed from the TUI pure helpers (layoutRects/dagDepths/forensicsLayout/…);
+# Ink borders, colors, and wrapping are approximated in ASCII.
+# STRUCTURAL MODEL ONLY — VISUAL QUALITY NOT VERIFIED.
+  s1 — First slice work item here [lo] 1 gate(s)
+  s2 — Second work item here [med] 1 gate(s) ← s1
+plan preview: 2 slice(s) — ready

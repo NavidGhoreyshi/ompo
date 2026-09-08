@@ -1,0 +1,18 @@
+# inspector-populated.txt
+# FIXTURE COMPOSITION — not a real terminal render.
+# Composed from the TUI pure helpers (layoutRects/dagDepths/forensicsLayout/…);
+# Ink borders, colors, and wrapping are approximated in ASCII.
+# STRUCTURAL MODEL ONLY — VISUAL QUALITY NOT VERIFIED.
+inspector tabs: 1:Output 2:Diff 3:Verify 4:Review 5:Prompt 6:Events
+--- [Output] ---
+report: did s4-gates · worker exited in 96s (3 turns, 8 tools)
+--- [Diff] ---
+filesChanged: src/gates.ts (+120/-8)
+--- [Verify] ---
+✓ bun test (4.2s) · FAIL bun lint exit=1
+--- [Review] ---
+rejected (minor): rename helper; missing edge test
+--- [Prompt] ---
+prompt-3.md tail (30 lines)…
+--- [Events] ---
+12:00:01 verify_failed s4-gates · 12:00:02 slice_retried s4-gates

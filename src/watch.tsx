@@ -619,6 +619,22 @@ export function boardWidth(cols: number): number {
   return Math.max(24, Math.min(38, Math.floor(cols * 0.3)));
 }
 
+/**
+ * Layout rails shared by watch/run/unified: board width + gutter rule.
+ * Wide terminals place the board beside the inspector with a 1-col gutter;
+ * narrow ones (<80) stack full-width panes with no gutter. Pure — the
+ * structural tests pin this contract instead of rendered pixels.
+ */
+export function layoutRects(cols: number): { narrow: boolean; board: number; gutter: number } {
+  const narrow = isNarrow(cols);
+  return { narrow, board: narrow ? Math.max(24, cols - 2) : boardWidth(cols), gutter: narrow ? 0 : 1 };
+}
+
+/** DAG row indent prefix for a dep depth (caps at 4 — matches DagChip). Pure. */
+export function dagIndent(depth: number): string {
+  return depth > 0 ? `${"  ".repeat(Math.min(depth, 4))}└─ ` : "";
+}
+
 export interface BoardOpts {
   view: RunView;
   width?: number;
@@ -649,7 +665,7 @@ function SliceChip({ slice, maxName, selected, spin, elapsed }: { slice: SliceLi
 /** DAG row: depth indent + status chip + `← dep` suffix. Pure structure, same selection model. */
 function DagChip({ slice, maxName, selected, depth, spin, elapsed }: { slice: SliceLine; maxName: number; selected: boolean; depth: number; spin?: string; elapsed?: string }) {
   const deps = slice.deps ?? [];
-  const indent = depth > 0 ? `${"  ".repeat(Math.min(depth, 4))}└─ ` : "";
+  const indent = dagIndent(depth);
   const suffix = deps.length > 0 ? ` ← ${deps.join(",")}` : "";
   const c = STATUS_STYLE[slice.status] ?? { glyph: "○", label: slice.status.slice(0, 5), color: "gray" };
   const label = c.label.padEnd(5);
@@ -1000,6 +1016,32 @@ export interface ForensicsProps {
   yanked: string | null;
 }
 
+export interface ForensicsLayout {
+  /** Content width after pane chrome (matches the pager's clip). */
+  cw: number;
+  /** Visible body rows after the header/footer chrome. */
+  bodyH: number;
+  maxScroll: number;
+  /** Clamped scroll margin actually applied. */
+  offset: number;
+  shown: string[];
+}
+
+/**
+ * Fullscreen pager window over worker-tail lines: clip to the content width,
+ * clamp the scroll margin, slice the visible tail window. Pure — ForensicsPane
+ * renders exactly this, so the structural tests pin the math, not pixels.
+ */
+export function forensicsLayout(tailLines: string[], height: number, width: number, scrollUp: number): ForensicsLayout {
+  const cw = Math.max(20, width - 6);
+  const visual = tailLines.map((line) => (line.length > cw ? line.slice(0, cw) : line));
+  const bodyH = Math.max(4, height - 12);
+  const maxScroll = Math.max(0, visual.length - bodyH);
+  const offset = Math.max(0, Math.min(scrollUp, maxScroll));
+  const end = visual.length - offset;
+  return { cw, bodyH, maxScroll, offset, shown: visual.slice(Math.max(0, end - bodyH), end) };
+}
+
 /**
  * Fullscreen slice forensics: worker tail pager + verdict/review/prompt
  * pointers + copyable artifact paths. Scroll with ↑/↓ PgUp/PgDn, `y` yanks
@@ -1009,17 +1051,7 @@ export interface ForensicsProps {
 export function ForensicsPane({ project, runId, detail: d, scrollUp, height, width, yanked }: ForensicsProps) {
   const { dir, branch } = forensicsPaths(project, runId, d.sliceId);
   const tailLines = (d.workerTail ?? "").split("\n").filter((l) => l.trim());
-  const cw = Math.max(20, width - 6);
-  const visual: string[] = [];
-  for (const line of tailLines) {
-    const t = line.length > cw ? line.slice(0, cw) : line;
-    visual.push(t);
-  }
-  const bodyH = Math.max(4, height - 12);
-  const maxScroll = Math.max(0, visual.length - bodyH);
-  const offset = Math.max(0, Math.min(scrollUp, maxScroll));
-  const end = visual.length - offset;
-  const shown = visual.slice(Math.max(0, end - bodyH), end);
+  const { offset, shown } = forensicsLayout(tailLines, height, width, scrollUp);
   return (
     <Box flexDirection="column" borderStyle="round" borderColor="yellow" paddingX={1}>
       <Text bold color="white">
