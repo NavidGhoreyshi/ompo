@@ -26,7 +26,7 @@ import { extractHarnessFix, extractReportFromOutput, validateCompletionReport, t
 import { buildDebugPrompt, classifyEnvFailure, DEFAULT_DEBUG_TIMEOUT_MS, validateHarnessFix } from "./debug.ts";
 import { buildReviewPrompt, extractReviewFromOutput, formatReviewFindings, validateReviewVerdict } from "./review.ts";
 import { runVerifiers } from "./verify.ts";
-import { resolveWorkerModel, runOmpWorker, type WorkerRunner } from "./worker.ts";
+import { buildModelChain, displayModel, resolveWorkerModel, runOmpWorker, runWithModelFallbacks, type WorkerRunner } from "./worker.ts";
 import { createMutex, type Mutex } from "./mutex.ts";
 import { worktreeOpsFor, type WorktreeOps } from "./worktree.ts";
 import { extractMissingVar, isDeploySlice, loadPlaceholders, placeholderFor, placeholdersDocRef, recordPlaceholder } from "./placeholders.ts";
@@ -297,14 +297,16 @@ async function runReview(
 ): Promise<boolean> {
   const { projectDir, runId } = ctx;
   const dir = sliceDir(projectDir, runId, sliceId);
-  const reviewModel = ctx.reviewModel ?? ctx.cfg.reviewModel ?? ctx.cfg.workerModel;
+  const reviewPrimary = ctx.reviewModel ?? ctx.cfg.reviewModel ?? ctx.cfg.workerModel;
+  // Review audits through the same fallback chain (no retry consumed on a
+  // model outage — the audit just moves to the next model).
+  const reviewChain = buildModelChain(reviewPrimary, ctx.cfg.modelFallbacks);
   // Review budgets like the worker that produced the slice: same chain, with
   // an explicit review override on top. The audit re-runs gate commands, so it
   // must not be capped tighter than the work it checks.
   const reviewBudgetMs = ctx.reviewTimeoutMs ?? ctx.timeoutMsOverride ?? claimed.timeoutMs
     ?? (ctx.cfg.workerTimeoutSec ? ctx.cfg.workerTimeoutSec * 1000 : undefined);
   log(ctx, `◈ review ${sliceId} — independent audit (attempt ${attempt})`);
-  log(ctx, `  model: ${reviewModel ?? "(default)"} budget: ${formatTimeout(reviewBudgetMs)}`);
 
   if (ctx.signal?.aborted) {
     storeApi.abortSlice(projectDir, runId, sliceId);
@@ -317,10 +319,25 @@ async function runReview(
   let reviewOut = "";
   let reviewStdout = "";
   try {
-    const res = await ctx.reviewer(
+    const res = await runWithModelFallbacks(
+      ctx.reviewer,
       { prompt, sliceId, attempt, label: `${sliceId} review` },
-      { projectDir, workerModel: reviewModel, timeoutMs: reviewBudgetMs, signal: ctx.signal, sessionDir: dir, onProgress, env },
+      { projectDir, timeoutMs: reviewBudgetMs, signal: ctx.signal, sessionDir: dir, onProgress, env },
+      reviewChain,
+      {
+        accept: (stdout) => extractReviewFromOutput(stdout) !== undefined,
+        onModelAttempt: (model, i) => {
+          const where = i === 0 ? `budget: ${formatTimeout(reviewBudgetMs)}` : `fallback ${i + 1}/${reviewChain.length} (no retry consumed)`;
+          log(ctx, `  model: ${displayModel(model)} ${where}`);
+        },
+        onFallback: (from, to) => {
+          log(ctx, `  model ${displayModel(from)} unavailable — falling back to ${displayModel(to)} (no retry consumed)`);
+        },
+      },
     );
+    if (res.fellBack) {
+      writeFileSync(join(dir, `review-${attempt}.models.json`), JSON.stringify({ tried: res.tried, accepted: displayModel(res.model) }, null, 2) + "\n", "utf8");
+    }
     reviewStdout = res.stdout;
     reviewOut = `exit=${res.exit} timedOut=${res.timedOut} durationMs=${res.durationMs}\n--- stdout ---\n${res.stdout}\n--- stderr ---\n${res.stderr}\n`;
     if (res.eventsJsonl) {
@@ -416,7 +433,9 @@ async function runDebugger(
   const tail = (failedStep?.outputTail ?? "").trim().slice(-3000);
   const prompt = buildDebugPrompt(claimed, { verifyCommands, failingTail: tail, worktree: wtPath, attempt });
   writeFileSync(join(dir, `debug-prompt-${attempt}.md`), prompt, "utf8");
-  const workerModel = resolveWorkerModel(claimed.workerAgent, ctx.cfg);
+  // Debugger runs through the same fallback chain: a model outage must not
+  // eat the one debug session (no retry consumed, partial fix preserved).
+  const debugChain = buildModelChain(resolveWorkerModel(claimed.workerAgent, ctx.cfg), ctx.cfg.modelFallbacks);
   const debugBudgetMs = ctx.debugTimeoutMs ?? DEFAULT_DEBUG_TIMEOUT_MS;
   log(ctx, `  debug ${sliceId} — diagnosis session (attempt ${attempt}, budget ${formatTimeout(debugBudgetMs)})`);
 
@@ -429,10 +448,25 @@ async function runDebugger(
   let debugOut = "";
   let debugStdout = "";
   try {
-    const res = await ctx.runner(
+    const res = await runWithModelFallbacks(
+      ctx.runner,
       { prompt, sliceId, attempt, label: `${sliceId} debug` },
-      { projectDir: wtPath, workerModel, timeoutMs: debugBudgetMs, signal: ctx.signal, sessionDir: dir, onProgress, env },
+      { projectDir: wtPath, timeoutMs: debugBudgetMs, signal: ctx.signal, sessionDir: dir, onProgress, env },
+      debugChain,
+      {
+        accept: (stdout) => extractReportFromOutput(stdout) !== undefined,
+        preserve: () => preserveIncompleteWork(ctx, sliceId, attempt, "debug model unavailable, falling back"),
+        onModelAttempt: (model, i) => {
+          if (i > 0) log(ctx, `  debug model: ${displayModel(model)} (fallback ${i + 1}/${debugChain.length}, no retry consumed)`);
+        },
+        onFallback: (from, to) => {
+          log(ctx, `  debug model ${displayModel(from)} unavailable — falling back to ${displayModel(to)} (no retry consumed)`);
+        },
+      },
     );
+    if (res.fellBack) {
+      writeFileSync(join(dir, `debug-${attempt}.models.json`), JSON.stringify({ tried: res.tried, accepted: displayModel(res.model) }, null, 2) + "\n", "utf8");
+    }
     debugStdout = res.stdout;
     debugOut = `exit=${res.exit} timedOut=${res.timedOut} durationMs=${res.durationMs}\n--- stdout ---\n${res.stdout}\n--- stderr ---\n${res.stderr}\n`;
     writeFileSync(join(dir, `debug-${attempt}.log`), debugOut, "utf8");
@@ -688,10 +722,12 @@ async function runAttempt(ctx: AttemptCtx, sliceId: string): Promise<void> {
   // 3. Spawn worker (clean context: fresh `omp -p` process, spec only).
   // Progress streams live via --mode json events (turns, tool calls,
   // assistant snippets) prefixed with the slice id.
-  const workerModel = resolveWorkerModel(claimed.workerAgent, ctx.cfg);
+  // Model fallback chain: primary, then modelFallbacks, then omp default.
+  // A model that is unavailable (rate limit, unknown id) is skipped within
+  // the same attempt — no retry consumed, partial work preserved on the branch.
+  const workerChain = buildModelChain(resolveWorkerModel(claimed.workerAgent, ctx.cfg), ctx.cfg.modelFallbacks);
   const workerTimeoutMs = ctx.timeoutMsOverride ?? claimed.timeoutMs
     ?? (ctx.cfg.workerTimeoutSec ? ctx.cfg.workerTimeoutSec * 1000 : undefined);
-  log(ctx, `  model: ${workerModel ?? "(default)"} worktree: ${wtPath} budget: ${formatTimeout(workerTimeoutMs)}`);
   const onProgress = progressFn(ctx, sliceId);
   let workerOut = "";
   let workerStdout = "";
@@ -699,10 +735,28 @@ async function runAttempt(ctx: AttemptCtx, sliceId: string): Promise<void> {
   // exit/timing enrichment even though the result was scoped to the try.
   let workerMeta: { exit: number | null; timedOut: boolean; durationMs: number } | undefined;
   try {
-    const res = await ctx.runner(
+    const res = await runWithModelFallbacks(
+      ctx.runner,
       { prompt: spec.prompt, sliceId, attempt },
-      { projectDir: wtPath, workerModel, timeoutMs: workerTimeoutMs, signal: ctx.signal, sessionDir: dir, onProgress },
+      { projectDir: wtPath, timeoutMs: workerTimeoutMs, signal: ctx.signal, sessionDir: dir, onProgress },
+      workerChain,
+      {
+        accept: (stdout) => extractReportFromOutput(stdout) !== undefined,
+        preserve: () => preserveIncompleteWork(ctx, sliceId, attempt, "model unavailable, falling back"),
+        onModelAttempt: (model, i) => {
+          const where = i === 0
+            ? `worktree: ${wtPath} budget: ${formatTimeout(workerTimeoutMs)}`
+            : `fallback ${i + 1}/${workerChain.length} (no retry consumed)`;
+          log(ctx, `  model: ${displayModel(model)} ${where}`);
+        },
+        onFallback: (from, to) => {
+          log(ctx, `  model ${displayModel(from)} unavailable — falling back to ${displayModel(to)} (no retry consumed)`);
+        },
+      },
     );
+    if (res.fellBack) {
+      writeFileSync(join(dir, `worker-${attempt}.models.json`), JSON.stringify({ tried: res.tried, accepted: displayModel(res.model) }, null, 2) + "\n", "utf8");
+    }
     workerMeta = { exit: res.exit, timedOut: res.timedOut, durationMs: res.durationMs };
     workerStdout = res.stdout;
     workerOut = `exit=${res.exit} timedOut=${res.timedOut} durationMs=${res.durationMs}\n--- stdout ---\n${res.stdout}\n--- stderr ---\n${res.stderr}\n`;

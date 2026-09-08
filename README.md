@@ -83,7 +83,7 @@ your console as it happens — no waiting blind until exit:
 
 ```
 ▸ slice 02-feature — First feature (attempt 1)
-  model: muse-spark-1.3-contributor-free worktree: .omp/worktrees/<run>/02-feature budget: 15m
+  model: opencode-go/muse-spark-1.3-contributor worktree: .omp/worktrees/<run>/02-feature budget: 15m
   [02-feature] turn 1…
   [02-feature] tool read: src/index.ts
   [02-feature] tool bash: bun test
@@ -166,13 +166,30 @@ live values exist; the worker defers what it cannot prove.
 | Role         | Where            | Default                          |
 |--------------|------------------|----------------------------------|
 | Orchestrator | your `omp` shell | your configured default model    |
-| Worker       | `.omp/roadmap.yml `workerModel`` | `muse-spark-1.3-contributor-free` (free tier) |
+| Worker       | `.omp/roadmap.yml `workerModel`` | `opencode-go/muse-spark-1.3-contributor` (paid pool) |
 | Reviewer     | `.omp/roadmap.yml `reviewModel`` | `workerModel` (same matrix)      |
 | Hard slice   | `Agent:` trailer + `agentModels:` map | per-slice override |
 
 A slice `Agent:` that already looks like a model pattern (`a/b`, `x:y`)
 passes straight through to `omp --model`. Prewalk stays off: workers are
 one-shot `omp -p` processes, so no mid-run model swap is possible.
+
+## Model fallback chain (never stops on 429)
+
+Every spawn — worker, reviewer, debugger — walks an ordered chain within the
+same attempt: `workerModel` (or the slice/review override), then each
+`modelFallbacks` entry, then omp's configured default model as the last
+resort. A model is skipped only when the spawn fails *as that model* (rate
+limit / free-tier exhaustion / unknown id, read off the `--mode json`
+events) **and** produced no report block. Genuine work failures and timeouts
+stop the chain immediately — no fallback burns on broken code. Skipped
+models cost no retry and preserve partial work to the slice branch
+(`worker-<n>.models.json` records which models were tried).
+
+Default chain (also stamped into new projects by `init`/`import`):
+`opencode-go/muse-spark-1.3-contributor` → `opencode-go/mimo-v2.5` →
+`muse-spark-1.3-contributor-free` (zen) → `deepseek-v4-flash-free` (zen) →
+omp default. Tune via `modelFallbacks:` (dedupe is automatic).
 
 ## Recovery runbook (plan §14)
 

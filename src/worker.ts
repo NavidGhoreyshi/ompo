@@ -327,3 +327,114 @@ export function resolveWorkerModel(
   if (sliceAgent && /[/:._-]/.test(sliceAgent)) return sliceAgent;
   return defaults.workerModel;
 }
+
+/** Display name for a chain entry (undefined = omp's configured default). */
+export function displayModel(model: string | undefined): string {
+  return model ?? "(omp default)";
+}
+
+/**
+ * Ordered model chain for one spawn: primary first, then configured
+ * fallbacks, then omp's default model as the last resort. Deduped
+ * (first occurrence wins), so a chain that already names the default
+ * never tries it twice. Pure — unit-tested.
+ */
+export function buildModelChain(
+  primary: string | undefined,
+  fallbacks: readonly string[] = [],
+): (string | undefined)[] {
+  const chain: (string | undefined)[] = [];
+  const push = (m: string | undefined): void => {
+    const v = m?.trim() ? m!.trim() : undefined;
+    if (!chain.includes(v)) chain.push(v);
+  };
+  push(primary);
+  for (const f of fallbacks) push(f);
+  push(undefined);
+  return chain;
+}
+
+export interface SpawnProbe {
+  exit: number | null;
+  timedOut: boolean;
+  stdout: string;
+  stderr: string;
+  eventsJsonl?: string;
+}
+
+/**
+ * True when a spawn failed because the MODEL was unavailable — rate limit,
+ * free-tier exhaustion, unknown model id — rather than because of the work.
+ * Consult only when no valid report/review block was produced: a spawn that
+ * yielded a block used a working model by definition. Timeouts are budgets,
+ * not availability signals. Pure — unit-tested.
+ */
+export function isModelUnavailable(res: SpawnProbe): boolean {
+  if (res.timedOut) return false;
+  const out = `${res.stdout ?? ""}\n${res.stderr ?? ""}`;
+  const events = res.eventsJsonl ?? "";
+  if (/"errorStatus"\s*:\s*429/.test(events)) return true;
+  if (/FreeUsageLimitError/.test(events)) return true;
+  if (/429\s+Rate limit exceeded/i.test(events)) return true;
+  if (/exceeds retry\.maxDelayMs/.test(events)) return true;
+  if (/"auto_retry_end"[\s\S]{0,400}?"success"\s*:\s*false/.test(events)) return true;
+  if (/unknown model|model .* not found|model not found|MODEL_NOT_FOUND/i.test(out)) return true;
+  return false;
+}
+
+export interface FallbackOutcome extends WorkerResult {
+  /** Model that produced the returned result. */
+  model: string | undefined;
+  /** Every model tried, in order (display names). */
+  tried: string[];
+  /** True when at least one fallback engaged. */
+  fellBack: boolean;
+}
+
+/**
+ * Spawn through the model chain: try each model in order until one's output
+ * is accepted. A model counts as failed only when its output is rejected AND
+ * {@link isModelUnavailable} blames the model — genuine work failures stop
+ * the chain immediately so no fallback burns on broken code. Timeouts also
+ * stop the chain (budgets, not availability). The caller owns forensics and
+ * logging; per-iteration progress flows through `onModelAttempt` /
+ * `onFallback`, partial-work preservation through `preserve`.
+ */
+export async function runWithModelFallbacks(
+  runner: WorkerRunner,
+  call: WorkerCall,
+  base: Omit<WorkerContext, "workerModel">,
+  chain: (string | undefined)[],
+  opts: {
+    /** Accept this stdout as the spawn's answer (e.g. block extraction). */
+    accept: (stdout: string) => boolean;
+    /** Commit partial work before moving to the next model. */
+    preserve?: () => void;
+    /** Observe each attempt (logging). */
+    onModelAttempt?: (model: string | undefined, index: number, total: number) => void;
+    /** Observe each fallback (logging). */
+    onFallback?: (from: string | undefined, to: string | undefined) => void;
+  },
+): Promise<FallbackOutcome> {
+  const tried: string[] = [];
+  let last: WorkerResult | undefined;
+  for (let i = 0; i < chain.length; i++) {
+    const model = chain[i]!;
+    opts.onModelAttempt?.(model, i, chain.length);
+    const res = await runner(call, { ...base, workerModel: model });
+    tried.push(displayModel(model));
+    last = res;
+    if (!res.timedOut && opts.accept(res.stdout)) {
+      return { ...res, model, tried, fellBack: i > 0 };
+    }
+    const more = i < chain.length - 1;
+    if (!res.timedOut && more && isModelUnavailable(res)) {
+      opts.preserve?.();
+      opts.onFallback?.(model, chain[i + 1]!);
+      continue;
+    }
+    return { ...res, model, tried, fellBack: i > 0 };
+  }
+  // Unreachable (chain always non-empty) — satisfies the type checker.
+  throw new Error("empty model chain");
+}

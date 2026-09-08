@@ -6,12 +6,15 @@
  * Supported keys:
  *   workerModel: <model pattern for omp --model>
  *   reviewModel: <independent reviewer model (defaults to workerModel)>
+ *   modelFallbacks: <ordered fallback models tried when the primary is unavailable>
  *   maxRetries: <int default override>
  *   specBudget: <int chars>
  *   workerTimeoutSec: <int>
  *   debugTimeoutSec: <int worker-debug session budget, default 600>
  *   agentModels:
  *     <agent-name>: <model pattern>
+ *   modelFallbacks:
+ *     - <model pattern>
  *   verifyDefaults:
  *     - <command>
  */
@@ -31,6 +34,8 @@ export interface RoadmapConfig {
   /** Auto-inject dev-only placeholders for missing env creds (default true). */
   placeholders?: boolean;
   agentModels?: Record<string, string>;
+  /** Ordered fallback models: tried in order when the primary is unavailable (rate limit, unknown id). No retry consumed. Omp's default model is the implicit last resort. */
+  modelFallbacks?: string[];
   verifyDefaults?: string[];
 }
 
@@ -73,11 +78,11 @@ function parseConfigBool(raw: string, key: string): boolean {
   if (["true", "yes", "1", "on"].includes(t)) return true;
   if (["false", "no", "0", "off"].includes(t)) return false;
   throw new Error(`.omp/roadmap.yml: ${key} must be true/false (got "${raw.trim()}")`);
-}
 
+}
  export function parseRoadmapYml(text: string): RoadmapConfig {
+  let section: "root" | "agentModels" | "modelFallbacks" | "verifyDefaults" = "root";
   const cfg: RoadmapConfig = {};
-  let section: "root" | "agentModels" | "verifyDefaults" = "root";
   for (const raw of text.split("\n")) {
     const line = stripComment(raw).replace(/\r$/, "");
     if (!line.trim()) continue;
@@ -92,7 +97,18 @@ function parseConfigBool(raw: string, key: string): boolean {
       const key = m[1]!;
       const val = unquote(m[2] ?? "");
       if (key === "agentModels") section = "agentModels";
-      else if (key === "verifyDefaults") {
+      else if (key === "modelFallbacks") {
+        section = "modelFallbacks";
+        cfg.modelFallbacks = [];
+        if (val.startsWith("[")) {
+          cfg.modelFallbacks = val
+            .slice(1, val.endsWith("]") ? -1 : undefined)
+            .split(",")
+            .map((s) => unquote(s))
+            .filter(Boolean);
+          section = "root";
+        }
+      } else if (key === "verifyDefaults") {
         section = "verifyDefaults";
         cfg.verifyDefaults = [];
         if (val.startsWith("[")) {
@@ -119,6 +135,9 @@ function parseConfigBool(raw: string, key: string): boolean {
         cfg.agentModels ??= {};
         cfg.agentModels[m[1]!.trim()] = unquote(m[2]!);
       }
+    } else if (section === "modelFallbacks") {
+      const m = trimmed.match(/^-\s+(.+)$/);
+      if (m) cfg.modelFallbacks!.push(unquote(m[1]!));
     } else if (section === "verifyDefaults") {
       const m = trimmed.match(/^-\s+(.+)$/);
       if (m) cfg.verifyDefaults!.push(unquote(m[1]!));

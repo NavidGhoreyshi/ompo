@@ -7,11 +7,15 @@ import { parseRoadmapYml } from "../src/config.ts";
 import { extractReportFromOutput, REPORT_CLOSE, REPORT_OPEN, validateCompletionReport } from "../src/report.ts";
 import { buildWorkerSpec } from "../src/spec.ts";
 import {
+  buildModelChain,
+  isModelUnavailable,
   progressLineForEvent,
   relativize,
   resolveWorkerModel,
   runOmpWorker,
+  runWithModelFallbacks,
   summarizeToolArgs,
+  type WorkerRunner,
 } from "../src/worker.ts";
 
 describe("report", () => {
@@ -99,6 +103,14 @@ describe("config", () => {
     expect(cfg.maxRetries).toBe(2);
     expect(cfg.agentModels).toEqual({ task: "opus" });
     expect(cfg.verifyDefaults).toEqual(["bun test", "tsc --noEmit"]);
+  });
+  test("parses modelFallbacks as list or inline", () => {
+    const dash = parseRoadmapYml(`workerModel: m1\nmodelFallbacks:\n  - m2\n  - m3\nverifyDefaults:\n  - bun test\n`);
+    expect(dash.modelFallbacks).toEqual(["m2", "m3"]);
+    expect(dash.verifyDefaults).toEqual(["bun test"]);
+    const inline = parseRoadmapYml(`workerModel: m1\nmodelFallbacks: [m2, m3]\n`);
+    expect(inline.modelFallbacks).toEqual(["m2", "m3"]);
+    expect(parseRoadmapYml(`workerModel: m1\n`).modelFallbacks).toBeUndefined();
   });
 });
 
@@ -247,5 +259,106 @@ describe("worker json progress", () => {
     } finally {
       process.env.PATH = prevPath;
     }
+  });
+});
+
+describe("model fallback chain", () => {
+  test("orders primary, fallbacks, then omp default; dedupes", () => {
+    expect(buildModelChain("a", ["b", "c"])).toEqual(["a", "b", "c", undefined]);
+    expect(buildModelChain("a", ["a", "b"])).toEqual(["a", "b", undefined]);
+    expect(buildModelChain("a", [])).toEqual(["a", undefined]);
+    expect(buildModelChain(undefined, [])).toEqual([undefined]);
+  });
+
+  test("detects model outages, not work failures", () => {
+    const base = { exit: 0, timedOut: false, stdout: "", stderr: "" };
+    const limited429 = {
+      ...base,
+      eventsJsonl:
+        '{"type":"message_end"}\n{"type":"auto_retry_end","success":false,"attempt":1,"finalError":"Provider requested 41722000ms wait, exceeds retry.maxDelayMs (300000ms). Original error: 429 Rate limit exceeded. retry-after-ms=41722000"}\n{"errorStatus":429,"errorMessage":"429 Rate limit exceeded (type=FreeUsageLimitError)"}',
+    };
+    expect(isModelUnavailable(limited429)).toBe(true);
+    expect(isModelUnavailable({ ...base, stderr: "unknown model 'nope-9'" })).toBe(true);
+    // Prose that merely mentions a 429 is not a provider outage.
+    expect(isModelUnavailable({ ...base, stdout: "got 429 rows back from the query" })).toBe(false);
+    // Genuine work failure: red exit, no provider signature.
+    expect(isModelUnavailable({ ...base, exit: 1, stderr: "tests failed: 3 red" })).toBe(false);
+    // Timeouts are budgets, not availability signals.
+    expect(isModelUnavailable({ ...limited429, timedOut: true })).toBe(false);
+  });
+
+  test("falls back on outage, preserves partial work", async () => {
+    const seen: (string | undefined)[] = [];
+    let preserved = 0;
+    const runner: WorkerRunner = async (_call, ctx) => {
+      seen.push(ctx.workerModel);
+      if (ctx.workerModel === "m1") {
+        return {
+          exit: 0,
+          timedOut: false,
+          stdout: "",
+          stderr: "",
+          durationMs: 9,
+          eventsJsonl: '{"errorStatus":429,"errorMessage":"429 Rate limit exceeded (type=FreeUsageLimitError)"}',
+        };
+      }
+      return { exit: 0, timedOut: false, stdout: "DONE-BLOCK", stderr: "", durationMs: 9 };
+    };
+    const out = await runWithModelFallbacks(
+      runner,
+      { prompt: "p", sliceId: "s", attempt: 1 },
+      { projectDir: "/tmp" },
+      ["m1", "m2"],
+      { accept: (s) => s.includes("DONE-BLOCK"), preserve: () => { preserved += 1; } },
+    );
+    expect(out.model).toBe("m2");
+    expect(out.fellBack).toBe(true);
+    expect(seen).toEqual(["m1", "m2"]);
+    expect(out.tried).toEqual(["m1", "m2"]);
+    expect(preserved).toBe(1);
+  });
+
+  test("stops the chain on genuine work failure", async () => {
+    const seen: (string | undefined)[] = [];
+    let preserved = 0;
+    const runner: WorkerRunner = async (_call, ctx) => {
+      seen.push(ctx.workerModel);
+      return { exit: 1, timedOut: false, stdout: "broken code", stderr: "tests failed", durationMs: 9 };
+    };
+    const out = await runWithModelFallbacks(
+      runner,
+      { prompt: "p", sliceId: "s", attempt: 1 },
+      { projectDir: "/tmp" },
+      ["m1", "m2"],
+      { accept: (s) => s.includes("DONE-BLOCK"), preserve: () => { preserved += 1; } },
+    );
+    expect(seen).toEqual(["m1"]);
+    expect(out.fellBack).toBe(false);
+    expect(preserved).toBe(0);
+  });
+
+  test("exhausts the chain through the omp default last", async () => {
+    const seen: (string | undefined)[] = [];
+    const outage = {
+      exit: 0,
+      timedOut: false,
+      stdout: "",
+      stderr: "",
+      durationMs: 9,
+      eventsJsonl: '{"errorStatus":429}',
+    };
+    const runner: WorkerRunner = async (_call, ctx) => {
+      seen.push(ctx.workerModel);
+      return { ...outage };
+    };
+    const out = await runWithModelFallbacks(
+      runner,
+      { prompt: "p", sliceId: "s", attempt: 1 },
+      { projectDir: "/tmp" },
+      buildModelChain("m1", ["m2"]),
+      { accept: (s) => s.includes("DONE-BLOCK") },
+    );
+    expect(seen).toEqual(["m1", "m2", undefined]);
+    expect(out.fellBack).toBe(true);
   });
 });

@@ -442,15 +442,23 @@ Retries: 1
 
 export const YML_TEMPLATE = `# ompo project-local config — all keys optional.
 # workerModel: model pattern passed to \`omp --model\` for every slice worker.
-#   Omit to use your configured default model. Cheap default recommended
-#   (this template pins a free-tier model; override hard slices via Agent:).
-workerModel: muse-spark-1.3-contributor-free
+#   Omit to use your configured default model. Paid opencode-go model pinned
+#   so workers share the subscription pool (override hard slices via Agent:).
+workerModel: opencode-go/muse-spark-1.3-contributor
+# modelFallbacks: ordered fallback models when the primary is unavailable
+#   (rate limit, unknown id). Tried in order within the same attempt — no
+#   retry consumed, partial work preserved. Omp's default model is the
+#   implicit last resort after these.
+modelFallbacks:
+  - opencode-go/mimo-v2.5
+  - muse-spark-1.3-contributor-free
+  - deepseek-v4-flash-free
 maxRetries: 1
 specBudget: 12000
 workerTimeoutSec: 900
 # agentModels: per-slice Agent: name → model pattern.
 agentModels:
-  task: muse-spark-1.3-contributor-free
+  task: opencode-go/muse-spark-1.3-contributor
 # verifyDefaults: commands prepended before every slice's \`Verify:\` steps.
 verifyDefaults: []
 `;
