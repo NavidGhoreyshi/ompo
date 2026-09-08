@@ -46,6 +46,7 @@ import { runRoadmapLoop, type LoopOptions, type LoopResult } from "./loop.ts";
 import { createTmuxRunner } from "./tmux.ts";
 import { ActivityPane, activityRows, createLogBus, type LogBus } from "./run.tsx";
 import {
+  activityH,
   AgentsPane,
   agentStates,
   bell,
@@ -58,15 +59,19 @@ import {
   InspectorPane,
   isFailureStatus,
   isNarrow,
+  middleRows,
   moveSel,
   mutexHolders,
+  narrowSplit,
   newFailures,
   nextFailure,
   preferredSel,
   prevFailure,
+  railSplit,
   spinnerFrame,
   summaryText,
   viewForRun,
+  visibleIndices,
   yankSlicePath,
   type RunView,
 } from "./watch.tsx";
@@ -282,18 +287,21 @@ interface UnifiedAppProps {
   roadmapPath?: string;
 }
 
-export function PlanPreviewPane({ preview, roadmapPath }: { preview: PlanPreview; roadmapPath?: string }): React.JSX.Element {
+export function PlanPreviewPane({ preview, roadmapPath, maxRows }: { preview: PlanPreview; roadmapPath?: string; maxRows?: number }): React.JSX.Element {
   const color = preview.status === "blocked" ? "red" : preview.status === "warnings" ? "yellow" : "green";
+  const lines = renderPreviewLines(preview);
+  const shown = maxRows === undefined ? lines : lines.slice(0, Math.max(0, maxRows));
+  const more = lines.length - shown.length;
   return (
     <Box flexDirection="column" borderStyle="round" borderColor={color} paddingX={1}>
-      <Text bold color="white"> plan preview <Text color={color}>· {preview.status}</Text> </Text>
+      <Text bold color="white" wrap="truncate"> plan preview <Text color={color}>· {preview.status}</Text>{more > 0 ? <Text dimColor> · +{more} more (see ROADMAP.md)</Text> : null} </Text>
       {preview.rows.length === 0
         ? <Text dimColor>(unparseable — see errors below)</Text>
-        : renderPreviewLines(preview).map((l, i) => (
+        : shown.map((l, i) => (
           <Text key={i} dimColor={l.startsWith("  warn") || l.startsWith("  error")} wrap="truncate">{l}</Text>
         ))}
       <Box marginTop={1}>
-        <Text dimColor>
+        <Text dimColor wrap="truncate">
           <Text bold color="white">y</Text> accept │ <Text bold color="white">e</Text> reload {roadmapPath ?? "ROADMAP.md"} after editing │{" "}
           <Text bold color="white">q</Text> abort{preview.status === "blocked" ? <Text color="red"> · blocked plans cannot be accepted</Text> : null}
         </Text>
@@ -505,8 +513,11 @@ export function UnifiedApp({ project, session, bus, requestAbort, initialJobs, b
   const cols = process.stdout.columns ?? 80;
   const rows = process.stdout.rows ?? 24;
   const narrow = isNarrow(cols);
-  // Header (2) + panes + footer (1) leave the rest for the activity pane.
+  // Fixed frame: header (2) + middle band + activity + footer (2) == rows,
+  // so the frame never spills under the screen; panes window/clip inside it.
   const logRows = activityRows(rows);
+  const actH = activityH(logRows);
+  const mid = middleRows(rows, actH);
   const phaseLabel = session.phase === "planning"
     ? "planning — surveying project docs…"
     : session.phase === "preview"
@@ -519,85 +530,99 @@ export function UnifiedApp({ project, session, bus, requestAbort, initialJobs, b
   const live = session.phase === "planning" || session.phase === "preview" || session.phase === "ready" || (session.phase === "running" && (!view || view.live));
   const bw = narrow ? Math.max(24, cols - 2) : boardWidth(cols);
   const statusOf = (id: string) => view?.slices.find((s) => s.id === id);
+  const agents = agentStates(bus.lines);
+  const locks = view ? mutexHolders(view.slices) : [];
+  const visibleCount = view ? visibleIndices(view.slices, failuresOnly).length : 0;
+  const rail = railSplit(mid, visibleCount, agents.length);
+  const nsplit = narrowSplit(mid, visibleCount, agents.length);
+  const previewing = session.phase === "preview" && bridge?.preview != null;
+  // Preview chrome inside the middle band: borders + title + hint ≈ 5 rows.
+  const previewRows = Math.max(1, mid - 5);
 
   if (fullscreen && view?.detail) {
     return (
-      <Box flexDirection="column">
+      <Box flexDirection="column" height={rows} overflow="hidden">
         <ForensicsPane project={project} runId={view.runId} detail={view.detail} scrollUp={forensicScroll} height={rows} width={cols} yanked={yanked} />
       </Box>
     );
   }
 
   return (
-    <Box flexDirection="column">
+    <Box flexDirection="column" height={rows} overflowY="hidden">
       <Box>
         <Text color={live ? "cyan" : "gray"}>{spinnerFrame(Date.now(), live)}</Text>
         <Text> </Text>
         <Text bold color="white">ompo</Text>
-        <Text color={live ? "cyan" : "gray"} bold={live}> · {phaseLabel}</Text>
-        {view ? <Text dimColor> · {summaryText(view)}</Text> : null}
+        <Text color={live ? "cyan" : "gray"} bold={live} wrap="truncate"> · {phaseLabel}</Text>
+        {view ? <Text dimColor wrap="truncate"> · {summaryText(view)}</Text> : null}
       </Box>
       <Box>
         {view
-          ? <Text dimColor>run {view.runId} · updated {hhmmss(view.updatedAt)}</Text>
+          ? <Text dimColor wrap="truncate">run {view.runId} · updated {hhmmss(view.updatedAt)}</Text>
           : <Text dimColor>no run yet — roadmap first</Text>}
       </Box>
-      {session.phase === "preview" && bridge?.preview ? (
-        <PlanPreviewPane preview={bridge.preview} roadmapPath={roadmapPath ?? join(project, "ROADMAP.md")} />
+      {showHelp ? (
+        <Box flexDirection="column" height={mid + actH} overflowY="hidden">
+          <HelpOverlay controls />
+        </Box>
+      ) : previewing ? (
+        <Box flexDirection="column" height={mid} overflowY="hidden">
+          <PlanPreviewPane preview={bridge!.preview!} roadmapPath={roadmapPath ?? join(project, "ROADMAP.md")} maxRows={previewRows} />
+        </Box>
       ) : narrow ? (
-        <Box flexDirection="column">
-          {view ? <BoardPane view={view} width={bw} mode={boardMode} failuresOnly={failuresOnly} /> : (
+        <Box flexDirection="column" height={mid} overflowY="hidden">
+          {view ? <BoardPane view={view} width={bw} mode={boardMode} failuresOnly={failuresOnly} maxRows={nsplit.boardRows} /> : (
             <Box flexDirection="column" borderStyle="round" borderColor="gray">
               <Text bold color="white"> slices </Text>
               <Text dimColor>(roadmap not ready)</Text>
             </Box>
           )}
           {view ? (
-            <Box marginTop={1}>
-              <InspectorPane view={view} tab={tab} gutter={false} />
+            <Box marginTop={1} height={nsplit.inspectorH} overflowY="hidden">
+              <InspectorPane view={view} tab={tab} gutter={false} height={nsplit.inspectorH} />
             </Box>
           ) : (
-            <Box flexDirection="column" borderStyle="round" borderColor="gray" flexGrow={1} marginTop={1} paddingX={1}>
+            <Box flexDirection="column" borderStyle="round" borderColor="gray" marginTop={1} paddingX={1} height={nsplit.inspectorH} overflowY="hidden">
               <Text dimColor>major step logs appear here once the run starts</Text>
             </Box>
           )}
-          <AgentsPane agents={agentStates(bus.lines)} statusOf={statusOf} width={bw} verifyingIds={view ? mutexHolders(view.slices) : []} />
+          <AgentsPane agents={agents} statusOf={statusOf} width={bw} verifyingIds={locks} max={nsplit.agentsShown} />
         </Box>
       ) : (
-        <Box flexDirection="row">
+        <Box flexDirection="row" height={mid} overflowY="hidden">
           <Box flexDirection="column" width={bw} flexShrink={0}>
-            {view ? <BoardPane view={view} width={bw} mode={boardMode} failuresOnly={failuresOnly} /> : (
+            {view ? <BoardPane view={view} width={bw} mode={boardMode} failuresOnly={failuresOnly} maxRows={rail.boardRows} /> : (
               <Box flexDirection="column" borderStyle="round" borderColor="gray">
                 <Text bold color="white"> slices </Text>
                 <Text dimColor>(roadmap not ready)</Text>
               </Box>
             )}
-            <AgentsPane agents={agentStates(bus.lines)} statusOf={statusOf} width={bw} verifyingIds={view ? mutexHolders(view.slices) : []} />
+            <AgentsPane agents={agents} statusOf={statusOf} width={bw} verifyingIds={locks} max={rail.agentsShown} />
           </Box>
-          {view ? <InspectorPane view={view} tab={tab} /> : (
-            <Box flexDirection="column" borderStyle="round" borderColor="gray" flexGrow={1} marginLeft={1} paddingX={1}>
+          {view ? <InspectorPane view={view} tab={tab} height={mid} /> : (
+            <Box flexDirection="column" borderStyle="round" borderColor="gray" marginLeft={1} paddingX={1} height={mid} overflowY="hidden">
               <Text dimColor>major step logs appear here once the run starts</Text>
             </Box>
           )}
         </Box>
       )}
-      {showHelp ? <HelpOverlay controls /> : null}
-
-      <ActivityPane
-        lines={bus.lines}
-        cols={cols}
-        logRows={logRows}
-        scrollUp={scrollUp}
-        emptyHint="(no activity yet — planner/worker lines stream here live)"
-      />
+      {!showHelp ? (
+        <ActivityPane
+          lines={bus.lines}
+          cols={cols}
+          logRows={logRows}
+          scrollUp={scrollUp}
+          emptyHint="(no activity yet — planner/worker lines stream here live)"
+        />
+      ) : null}
       <Box marginTop={1}>
-        {session.phase === "preview" && bridge?.preview ? (
-          <Text dimColor>
+        {previewing ? (
+          <Text dimColor wrap="truncate">
             <Text bold color="white">y</Text> accept │ <Text bold color="white">e</Text> reload after editing │{" "}
             <Text bold color="white">q</Text> abort │ <Text bold color="white">?</Text> help
           </Text>
         ) : (
-          <Text dimColor>
+          <Text dimColor wrap="truncate">
             <Text bold color="white">↑/↓</Text> select │ <Text bold color="white">n/p</Text> failure │ <Text bold color="white">g</Text> dag │{" "}
             <Text bold color="white">1-6</Text> tabs │ <Text bold color="white">Enter</Text> forensics │ <Text bold color="white">?</Text> help │{" "}
             <Text bold color="white">R/S/B/K</Text> ctl · <Text bold color="white">+/-</Text> jobs{pausedMirror ? <Text color="yellow"> · PAUSED</Text> : null} │{" "}
@@ -608,7 +633,6 @@ export function UnifiedApp({ project, session, bus, requestAbort, initialJobs, b
     </Box>
   );
 }
-
 // ── entry ──────────────────────────────────────────────────────────────
 export type UnifiedRunOptions = UnifiedOptions;
 

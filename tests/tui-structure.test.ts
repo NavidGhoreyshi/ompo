@@ -21,6 +21,10 @@ import {
   wrapLogLine,
 } from "../src/run.tsx";
 import {
+  activityH,
+  agentsH,
+  boardH,
+  boardWindow,
   boardWidth,
   clampTab,
   dagDepths,
@@ -31,12 +35,15 @@ import {
   isFailureStatus,
   isNarrow,
   layoutRects,
+  middleRows,
   moveSel,
   mutexHolders,
+  narrowSplit,
   newFailures,
   nextFailure,
   preferredSel,
   prevFailure,
+  railSplit,
   spinnerFrame,
   visibleIndices,
   type DetailView,
@@ -297,5 +304,74 @@ describe("layout geometry never overlaps or goes negative", () => {
     expect(spinnerFrame(0, true)).toBe(spinnerFrame(899, true));
     expect(spinnerFrame(0, true)).not.toBe(spinnerFrame(900, true));
     expect(spinnerFrame(0, true)).toBe(spinnerFrame(3600, true));
+  });
+});
+
+// ── frame height budgets: the whole TUI fits the terminal ────────────────
+
+describe("frame height never exceeds terminal rows", () => {
+  test("header + middle + activity + footer == rows on usable terminals", () => {
+    for (const rows of [16, 24, 30, 40, 50]) {
+      const logRows = activityRows(rows);
+      const actH = activityH(logRows);
+      const mid = middleRows(rows, actH);
+      expect(2 + mid + actH + 2).toBe(rows);
+    }
+    // Degenerate heights floor instead of going negative.
+    expect(middleRows(10, activityH(activityRows(10)))).toBeGreaterThanOrEqual(3);
+  });
+
+  test("watch frame (no activity pane) fits: 2 + mid + 2 == rows", () => {
+    for (const rows of [16, 24, 30, 50]) {
+      expect(2 + middleRows(rows, 0) + 2).toBe(rows);
+    }
+  });
+
+  test("boardWindow keeps the cursor visible and accounts every row", () => {
+    for (const count of [1, 5, 20]) {
+      for (const budget of [1, 2, 3, 9]) {
+        for (const sel of [0, Math.floor(count / 2), count - 1]) {
+          const w = boardWindow(count, sel, budget);
+          expect(w.start).toBeGreaterThanOrEqual(0);
+          expect(w.end).toBeLessThanOrEqual(count);
+          expect(w.end - w.start).toBeLessThanOrEqual(Math.max(1, Math.min(count, budget)));
+          expect(w.start).toBeLessThanOrEqual(sel);
+          expect(sel).toBeLessThan(w.end);
+          expect(w.top + (w.end - w.start) + w.bottom).toBe(count);
+        }
+      }
+    }
+    // No clipping, no markers when everything fits.
+    expect(boardWindow(4, 2, 9)).toEqual({ start: 0, end: 4, top: 0, bottom: 0 });
+  });
+
+  test("railSplit: board + agents fit the wide middle band", () => {
+    for (const middle of [4, 8, 11, 14, 20, 30]) {
+      for (const slices of [0, 1, 6, 20]) {
+        for (const agents of [0, 1, 4, 8]) {
+          const { boardRows, agentsShown } = railSplit(middle, slices, agents);
+          const bh = slices === 0 ? 4 : boardH(boardRows);
+          expect(bh + agentsH(agentsShown, agents === 0)).toBeLessThanOrEqual(middle);
+          expect(agentsShown).toBeLessThanOrEqual(Math.min(agents === 0 ? 1 : agents, 3));
+          if (slices > 0) expect(boardRows).toBeGreaterThanOrEqual(1);
+          else expect(boardRows).toBe(0);
+        }
+      }
+    }
+  });
+
+  test("narrowSplit: board + inspector + agents sum to the middle band", () => {
+    for (const middle of [8, 11, 16, 20, 30]) {
+      for (const slices of [0, 2, 9]) {
+        for (const agents of [0, 3]) {
+          const n = narrowSplit(middle, slices, agents);
+          const bh = slices === 0 ? 4 : boardH(n.boardRows);
+          expect(n.boardRows).toBeLessThanOrEqual(3);
+          expect(n.agentsShown).toBeLessThanOrEqual(1);
+          expect(n.inspectorH).toBeGreaterThanOrEqual(3);
+          expect(bh + agentsH(n.agentsShown, agents === 0) + 1 + n.inspectorH).toBe(middle);
+        }
+      }
+    }
   });
 });

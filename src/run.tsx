@@ -23,6 +23,7 @@ import React, { useEffect, useReducer, useRef, useState } from "react";
 import { Box, Text, useInput } from "ink";
 import { runRoadmapLoop, type LoopOptions, type LoopResult } from "./loop.ts";
 import {
+  activityH,
   AgentsPane,
   agentStates,
   bell,
@@ -36,15 +37,19 @@ import {
   InspectorPane,
   isFailureStatus,
   isNarrow,
+  middleRows,
   moveSel,
   mutexHolders,
+  narrowSplit,
   newFailures,
   nextFailure,
   preferredSel,
   prevFailure,
+  railSplit,
   spinnerFrame,
   summaryText,
   viewForRun,
+  visibleIndices,
   yankSlicePath,
   type RunView,
 } from "./watch.tsx";
@@ -442,21 +447,29 @@ export function LiveRunApp({ project, runId, bus, requestAbort, initialJobs }: L
   const cols = process.stdout.columns ?? 80;
   const rows = process.stdout.rows ?? 24;
   const narrow = isNarrow(cols);
-  // Header (2) + panes + footer (1) leave the rest for the activity pane.
+  // Fixed frame: header (2) + middle band + activity + footer (2) == rows,
+  // so the frame never spills under the screen; panes window/clip inside it.
   const logRows = activityRows(rows);
+  const actH = activityH(logRows);
+  const mid = middleRows(rows, actH);
   const bw = narrow ? Math.max(24, cols - 2) : boardWidth(cols);
   const statusOf = (id: string) => view.slices.find((s) => s.id === id);
+  const agents = agentStates(bus.lines);
+  const locks = mutexHolders(view.slices);
+  const visibleCount = visibleIndices(view.slices, failuresOnly).length;
+  const rail = railSplit(mid, visibleCount, agents.length);
+  const nsplit = narrowSplit(mid, visibleCount, agents.length);
 
   if (fullscreen && view.detail) {
     return (
-      <Box flexDirection="column">
+      <Box flexDirection="column" height={rows} overflow="hidden">
         <ForensicsPane project={project} runId={view.runId} detail={view.detail} scrollUp={forensicScroll} height={rows} width={cols} yanked={yanked} />
       </Box>
     );
   }
 
   return (
-    <Box flexDirection="column">
+    <Box flexDirection="column" height={rows} overflowY="hidden">
       <Box>
         <Text color={view.live ? "cyan" : "gray"}>{spinnerFrame(Date.now(), view.live)}</Text>
         <Text> </Text>
@@ -464,42 +477,45 @@ export function LiveRunApp({ project, runId, bus, requestAbort, initialJobs }: L
         {view.live
           ? <Text bold color="green"> · RUNNING</Text>
           : <Text dimColor> · IDLE</Text>}
-        <Text dimColor> · {summaryText(view)}</Text>
+        <Text dimColor wrap="truncate"> · {summaryText(view)}</Text>
       </Box>
       <Box>
-        <Text dimColor>run {view.runId} · updated {hhmmss(view.updatedAt)}</Text>
+        <Text dimColor wrap="truncate">run {view.runId} · updated {hhmmss(view.updatedAt)}</Text>
       </Box>
 
-      {/* Slice board + agents | attempt inspector (1-col gutter via inspector margin) */}
-      {narrow ? (
-        <Box flexDirection="column">
-          <BoardPane view={view} width={bw} mode={boardMode} failuresOnly={failuresOnly} />
-          <Box marginTop={1}>
-            <InspectorPane view={view} tab={tab} gutter={false} />
+      {showHelp ? (
+        <Box flexDirection="column" height={mid + actH} overflowY="hidden">
+          <HelpOverlay controls />
+        </Box>
+      ) : narrow ? (
+        <Box flexDirection="column" height={mid} overflowY="hidden">
+          <BoardPane view={view} width={bw} mode={boardMode} failuresOnly={failuresOnly} maxRows={nsplit.boardRows} />
+          <Box marginTop={1} height={nsplit.inspectorH} overflowY="hidden">
+            <InspectorPane view={view} tab={tab} gutter={false} height={nsplit.inspectorH} />
           </Box>
-          <AgentsPane agents={agentStates(bus.lines)} statusOf={statusOf} width={bw} verifyingIds={mutexHolders(view.slices)} />
+          <AgentsPane agents={agents} statusOf={statusOf} width={bw} verifyingIds={locks} max={nsplit.agentsShown} />
         </Box>
       ) : (
-        <Box flexDirection="row">
+        <Box flexDirection="row" height={mid} overflowY="hidden">
           <Box flexDirection="column" width={bw} flexShrink={0}>
-            <BoardPane view={view} width={bw} mode={boardMode} failuresOnly={failuresOnly} />
-            <AgentsPane agents={agentStates(bus.lines)} statusOf={statusOf} width={bw} verifyingIds={mutexHolders(view.slices)} />
+            <BoardPane view={view} width={bw} mode={boardMode} failuresOnly={failuresOnly} maxRows={rail.boardRows} />
+            <AgentsPane agents={agents} statusOf={statusOf} width={bw} verifyingIds={locks} max={rail.agentsShown} />
           </Box>
-          <InspectorPane view={view} tab={tab} />
+          <InspectorPane view={view} tab={tab} height={mid} />
         </Box>
       )}
-      {showHelp ? <HelpOverlay controls /> : null}
-
-      <ActivityPane
-        lines={bus.lines}
-        cols={cols}
-        logRows={logRows}
-        scrollUp={scrollUp}
-        emptyHint="(no activity yet — worker lines stream here live)"
-      />
+      {!showHelp ? (
+        <ActivityPane
+          lines={bus.lines}
+          cols={cols}
+          logRows={logRows}
+          scrollUp={scrollUp}
+          emptyHint="(no activity yet — worker lines stream here live)"
+        />
+      ) : null}
 
       <Box marginTop={1}>
-        <Text dimColor>
+        <Text dimColor wrap="truncate">
           <Text bold color="white">↑/↓</Text> select │ <Text bold color="white">n/p</Text> failure │ <Text bold color="white">g</Text> dag │{" "}
           <Text bold color="white">1-6</Text> tabs │ <Text bold color="white">Enter</Text> forensics │ <Text bold color="white">?</Text> help │{" "}
           <Text bold color="white">R/S/B/K</Text> ctl · <Text bold color="white">+/-</Text> jobs{pausedMirror ? <Text color="yellow"> · PAUSED</Text> : null} │{" "}

@@ -76,20 +76,26 @@ export interface AgentsOpts {
   width?: number;
   /** Ids holding the verify+merge mutex (from mutexHolders). Shown as 🔒 in the header. */
   verifyingIds?: string[];
+  /** Max agent rows to render (newest win, +N more in the header); 0 hides the pane. Default all. */
+  max?: number;
 }
 
 /** Operational agent summary: identity · phase · state + last line. Two-line rows so the state chip survives narrow rails; width-aware clipping keeps every row inside the rail. */
-export function AgentsPane({ agents, statusOf, width, verifyingIds }: AgentsOpts) {
+export function AgentsPane({ agents, statusOf, width, verifyingIds, max }: AgentsOpts) {
   const w = width ?? 32;
   const inner = Math.max(10, w - 2);
   const locks = (verifyingIds ?? []).filter((id) => id.trim());
+  const shown = max === undefined ? agents : agents.slice(Math.max(0, agents.length - Math.max(0, max)));
+  const more = agents.length - shown.length;
+  if (max !== undefined && max <= 0) return null;
   return (
     <Box flexDirection="column" borderStyle="round" borderColor="gray" marginTop={1} width={w} flexShrink={0}>
-      <Text bold color="white"> agents{locks.length > 0 ? <Text color="yellow"> · 🔒 {locks.join(",")}</Text> : null} </Text>
+      <Text bold color="white" wrap="truncate"> agents{locks.length > 0 ? <Text color="yellow"> · 🔒 {locks.join(",")}</Text> : null}{more > 0 ? <Text dimColor> · +{more} more</Text> : null} </Text>
       {agents.length === 0 ? (
         <Text dimColor>(idle — no agent output yet)</Text>
       ) : (
-        agents.map((a, lane) => {
+        shown.map((a) => {
+          const lane = agents.indexOf(a);
           const s = statusOf(a.id);
           const st = (s && STATUS_STYLE[s.status]) ?? { glyph: "○", label: "?", color: "gray" };
           return (
@@ -629,6 +635,75 @@ export function layoutRects(cols: number): { narrow: boolean; board: number; gut
   const narrow = isNarrow(cols);
   return { narrow, board: narrow ? Math.max(24, cols - 2) : boardWidth(cols), gutter: narrow ? 0 : 1 };
 }
+/** Fixed chrome rows around the middle band: header (2) + footer (margin 1 + 1 truncated line). Pure. */
+export const FRAME_HEADER = 2;
+export const FRAME_FOOTER = 2;
+/**
+ * Rows left for the board/inspector band once the fixed chrome and the
+ * activity pane are placed. Callers without an activity pane (watch)
+ * pass 0. Pure — budget tests pin header + middle + activity + footer.
+ */
+export function middleRows(totalRows: number, activityH: number): number {
+  return Math.max(3, totalRows - FRAME_HEADER - activityH - FRAME_FOOTER);
+}
+
+/** Height of the activity pane including its top margin. Pure. */
+export function activityH(logRows: number): number {
+  return logRows + 3;
+}
+
+/**
+ * Window [0, count) into `budget` rows around `sel` (a position, not an id).
+ * The cursor row stays visible; overflow counts feed the ▲/▼ markers so
+ * clipped slices are discoverable, not silently gone. Pure.
+ */
+export function boardWindow(count: number, sel: number, budget: number): { start: number; end: number; top: number; bottom: number } {
+  const b = Math.max(1, Math.min(count, budget));
+  if (count <= b) return { start: 0, end: count, top: 0, bottom: 0 };
+  const start = Math.min(Math.max(0, sel - Math.floor(b / 2)), count - b);
+  return { start, end: start + b, top: start, bottom: count - (start + b) };
+}
+
+/** Rendered height of the board box showing `rows` slice rows (borders + title). Pure. */
+export function boardH(rows: number): number {
+  return 3 + Math.max(1, rows);
+}
+
+/** Rendered height of the agents box showing `shown` agents (incl. top margin; 0 = hidden). Pure. */
+export function agentsH(shown: number, empty: boolean): number {
+  if (shown === 0) return 0;
+  return 1 + 3 + (empty ? 1 : 2 * shown);
+}
+
+/**
+ * Split a wide-mode rail (`middle` rows) between board slice rows and shown
+ * agents so boardH + agentsH <= middle. Board rows win over agent rows:
+ * agents cap down first, the board windows to the remainder (min 1 row).
+ * agentsShown=0 hides the pane (height 0). Pure.
+ */
+export function railSplit(middle: number, sliceCount: number, agentCount: number): { boardRows: number; agentsShown: number } {
+  const emptyBoard = sliceCount === 0;
+  const emptyAgents = agentCount === 0;
+  let cap = middle >= 18 ? 3 : middle >= 11 ? 2 : middle >= 8 ? 1 : 0;
+  if (emptyAgents && cap > 1) cap = 1; // the idle line never needs more than its single slot
+  for (let a = Math.min(emptyAgents ? 1 : agentCount, cap); a >= 0; a--) {
+    const ah = a === 0 ? 0 : agentsH(a, emptyAgents);
+    const budget = middle - ah;
+    const b = emptyBoard ? 1 : Math.max(1, Math.min(sliceCount, budget - 3));
+    if ((emptyBoard ? 4 : boardH(b)) + ah <= middle) {
+      return { boardRows: emptyBoard ? 0 : b, agentsShown: a };
+    }
+  }
+  return { boardRows: emptyBoard ? 0 : 1, agentsShown: 0 };
+}
+export function narrowSplit(middle: number, sliceCount: number, agentCount: number): { boardRows: number; agentsShown: number; inspectorH: number } {
+  const agentsShown = middle >= 16 ? Math.min(agentCount, 1) : 0;
+  const ah = agentsH(agentsShown, agentCount === 0);
+  const boardBudget = middle - 1 - 3 - ah; // inspector margin + min inspector height
+  const boardRows = sliceCount === 0 ? 0 : Math.max(1, Math.min(sliceCount, 3, boardBudget - 3));
+  const bh = sliceCount === 0 ? 4 : boardH(boardRows);
+  return { boardRows, agentsShown, inspectorH: Math.max(3, middle - bh - ah - 1) };
+}
 
 /** DAG row indent prefix for a dep depth (caps at 4 — matches DagChip). Pure. */
 export function dagIndent(depth: number): string {
@@ -644,6 +719,8 @@ export interface BoardOpts {
   failuresOnly?: boolean;
   /** Wall-clock for the running-row spinner + elapsed ticker. Default Date.now(). */
   nowMs?: number;
+  /** Max slice rows to render; excess windows around the cursor with ▲/▼ counts. Default all. */
+  maxRows?: number;
 }
 
 function SliceChip({ slice, maxName, selected, spin, elapsed }: { slice: SliceLine; maxName: number; selected: boolean; spin?: string; elapsed?: string }) {
@@ -681,7 +758,7 @@ function DagChip({ slice, maxName, selected, depth, spin, elapsed }: { slice: Sl
 }
 
 /** Left pane: the slice board (shared by watch + live run TUIs). Fixed outer width; never compresses the inspector. */
-export function BoardPane({ view, width, mode, failuresOnly, nowMs }: BoardOpts) {
+export function BoardPane({ view, width, mode, failuresOnly, nowMs, maxRows }: BoardOpts) {
   const w = width ?? 32;
   const dag = mode === "dag";
   const filter = failuresOnly === true;
@@ -690,13 +767,16 @@ export function BoardPane({ view, width, mode, failuresOnly, nowMs }: BoardOpts)
   const rows = visibleIndices(view.slices, filter);
   const depths = dag ? dagDepths(view.slices) : null;
   const live = (s: SliceLine): boolean => s.status === "running" || s.status === "verifying";
+  const pos = Math.max(0, rows.indexOf(view.sel));
+  const win = maxRows === undefined ? { start: 0, end: rows.length, top: 0, bottom: 0 } : boardWindow(rows.length, pos, maxRows);
+  const shown = rows.slice(win.start, win.end);
   return (
     <Box flexDirection="column" width={w} borderStyle="round" borderColor="gray" flexShrink={0}>
-      <Text bold color="white"> slices{dag ? " · dag" : ""}{filter ? " · failures" : ""} </Text>
+      <Text bold color="white" wrap="truncate"> slices{dag ? " · dag" : ""}{filter ? " · failures" : ""}{win.top > 0 ? ` · ▲${win.top}` : ""}{win.bottom > 0 ? ` · ▼${win.bottom}` : ""} </Text>
       {rows.length === 0 ? (
         <Text dimColor>{filter ? "(no failures — F shows all)" : "(no slices)"}</Text>
       ) : (
-        rows.map((i) => {
+        shown.map((i) => {
           const s = view.slices[i]!;
           const active = live(s);
           const spin = active ? spinnerFrame(now, true) : undefined;
@@ -735,6 +815,8 @@ export interface InspectorOpts {
   tab?: number;
   /** Gutter off the board rail; false stacks flush in narrow terminals. Default true. */
   gutter?: boolean;
+  /** Fixed pane height; excess tab content clips (header + tab bar stay visible). Default natural. */
+  height?: number;
 }
 
 function InspectorTabBar({ tab }: { tab: number }) {
@@ -939,9 +1021,7 @@ function EventsTab({ d }: { d: DetailView }) {
     </Box>
   );
 }
-
-/** Right pane: attempt inspector for the selected slice (shared). Guttered off the rail; airy single-column detail. */
-export function InspectorPane({ view, tab, gutter }: InspectorOpts) {
+export function InspectorPane({ view, tab, gutter, height }: InspectorOpts) {
   const selSlice = view.detail;
   const activeTab = clampTab(tab ?? 0);
   const style = (selSlice && STATUS_STYLE[selSlice.status]) ?? { glyph: "○", label: "?", color: "gray" };
@@ -949,7 +1029,7 @@ export function InspectorPane({ view, tab, gutter }: InspectorOpts) {
     ? "gray"
     : selSlice.status === "failed" ? "red" : selSlice.status === "running" || selSlice.status === "verifying" ? "cyan" : "gray";
   return (
-    <Box flexDirection="column" borderStyle="round" borderColor={border} flexGrow={1} marginLeft={gutter === false ? 0 : 1} paddingX={1}>
+    <Box flexDirection="column" borderStyle="round" borderColor={border} flexGrow={height === undefined ? 1 : 0} height={height} overflowY="hidden" marginLeft={gutter === false ? 0 : 1} paddingX={1}>
       {selSlice ? (
         <>
           <Text bold color="white">
@@ -1220,49 +1300,58 @@ function WatchApp({ project, initialRun, onExit }: { project: string; initialRun
   const rows = process.stdout.rows ?? 24;
   const narrow = isNarrow(cols);
   const bw = narrow ? Math.max(24, cols - 2) : boardWidth(cols);
+  // Fixed frame: header (2) + middle band + footer (2) == rows — the board
+  // windows around the cursor and the inspector clips, so a long slice
+  // list never pushes the footer under the screen.
+  const mid = middleRows(rows, 0);
+  const visibleCount = visibleIndices(view.slices, failuresOnly).length;
+  const boardRows = Math.max(1, Math.min(visibleCount, mid - 3));
+  const nsplit = narrowSplit(mid, visibleCount, 0);
 
   if (fullscreen && view.detail) {
     return (
-      <Box flexDirection="column">
+      <Box flexDirection="column" height={rows} overflow="hidden">
         <ForensicsPane project={project} runId={view.runId} detail={view.detail} scrollUp={forensicScroll} height={rows} width={cols} yanked={yanked} />
       </Box>
     );
   }
 
   return (
-    <Box flexDirection="column">
+    <Box flexDirection="column" height={rows} overflowY="hidden">
       {/* Header: run picker */}
       <Box>
         <Text color="cyan">{view.live ? "●" : "○"}</Text>
         <Text> </Text>
         <Text bold>{view.runId}</Text>
-        <Text color="gray"> · {summary}</Text>
-        {locks.length > 0 ? <Text color="yellow"> · 🔒 {locks.join(",")}</Text> : null}
+        <Text color="gray" wrap="truncate"> · {summary}</Text>
+        {locks.length > 0 ? <Text color="yellow" wrap="truncate"> · 🔒 {locks.join(",")}</Text> : null}
         <Text color="gray"> · runs {view.runIdx + 1}/{view.runs.length} (◀ ▶)</Text>
       </Box>
       <Box>
         <Text color="gray">updated {hhmmss(view.updatedAt)} · created {view.createdAt.slice(0, 10)}</Text>
       </Box>
 
-      {/* Two panes (stacked when narrow) */}
-      {narrow ? (
-        <Box flexDirection="column">
-          <BoardPane view={view} width={bw} mode={boardMode} failuresOnly={failuresOnly} />
-          <Box marginTop={1}>
-            <InspectorPane view={view} tab={tab} gutter={false} />
+      {showHelp ? (
+        <Box flexDirection="column" height={mid} overflowY="hidden">
+          <HelpOverlay />
+        </Box>
+      ) : narrow ? (
+        <Box flexDirection="column" height={mid} overflowY="hidden">
+          <BoardPane view={view} width={bw} mode={boardMode} failuresOnly={failuresOnly} maxRows={nsplit.boardRows} />
+          <Box marginTop={1} height={nsplit.inspectorH} overflowY="hidden">
+            <InspectorPane view={view} tab={tab} gutter={false} height={nsplit.inspectorH} />
           </Box>
         </Box>
       ) : (
-        <Box flexDirection="row">
-          <BoardPane view={view} width={bw} mode={boardMode} failuresOnly={failuresOnly} />
-          <InspectorPane view={view} tab={tab} />
+        <Box flexDirection="row" height={mid} overflowY="hidden">
+          <BoardPane view={view} width={bw} mode={boardMode} failuresOnly={failuresOnly} maxRows={boardRows} />
+          <InspectorPane view={view} tab={tab} height={mid} />
         </Box>
       )}
-      {showHelp ? <HelpOverlay /> : null}
 
       {/* Footer: compact keyboard command bar */}
       <Box marginTop={1}>
-        <Text dimColor>
+        <Text dimColor wrap="truncate">
           <Text bold color="white">↑/↓</Text> select │ <Text bold color="white">n/p</Text> failure │ <Text bold color="white">F</Text> filter │{" "}
           <Text bold color="white">g</Text> dag │ <Text bold color="white">1-6</Text> tabs │ <Text bold color="white">Enter</Text> forensics │{" "}
           <Text bold color="white">?</Text> help │ <Text bold color="white">q</Text> quit <Text dimColor>· polls {POLL_MS / 1000}s</Text>
