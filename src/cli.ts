@@ -15,15 +15,24 @@ import { parseRoadmap, sha256Hex } from "./parse.ts";
 import { nextReady, summarize } from "./select.ts";
 import {
   acquireLock,
+  appendEvent,
   createRun,
   generateRunId,
   listRuns,
   loadRun,
+  lockHeld,
   readEvents,
   releaseLock,
+  saveRunDoc,
   storeApi,
   StoreLockedError,
 } from "./store.ts";
+import { applyIntent, drainIntents, latestSeq, requestControl, validateIntent, type ControlIntent } from "./control.ts";
+import { mergeRoadmap, replanGuards } from "./replan.ts";
+import { formatFinding, lintFailed, lintRoadmap } from "./lint.ts";
+import { parseFaultSpec, seedSuffix } from "./faults.ts";
+import { loadRoadmapConfig } from "./config.ts";
+import { preflightEnv } from "./verify.ts";
 import { runRoadmapLoop, type LoopOptions } from "./loop.ts";
 import { runImport, runInitPlanner, resolveInitPlan, ROADMAP_TEMPLATE, ensureProjectConfig } from "./import.ts";
 import { createTmuxRunner } from "./tmux.ts";
@@ -43,6 +52,11 @@ USAGE
   ompo run [FLAGS]                          run roadmap — live TUI (board + logs) in a terminal,
                                             line logs when piped
   ompo resume [FLAGS]                       resume latest run (alias: run --resume)
+  ompo ctl ACTION [--run ID] [--slice ID]   live control: retry|skip|park|kill [--slice ID] [--reason R],
+                                            jobs --jobs N, pause, resume (queued on live runs, applied now otherwise)
+  ompo replan [--run ID] [--project DIR]    adopt an edited ROADMAP.md into a quiescent run (keeps done,
+                                            resets changed slices, refuses live runs and changed in-flight slices)
+  ompo lint [--project DIR] [--roadmap PATH] validate the roadmap (gates, budgets, agents, skips); exit 1 on errors
   ompo status [--run ID] [--project DIR]    read-only store dump
   ompo list [--project DIR]                 list runs
   ompo log [--run ID] [--follow] [--json]   render a run's event stream (pretty | follow | raw)
@@ -54,14 +68,12 @@ RUN FLAGS
   --run ID           run id (create with this id, or resume this run)
   --resume           resume existing run instead of creating one
   --slice ID         run only one slice (must be ready)
-  --dry-run          parse + print ready order, spawn nothing
-  --max-retries N    override per-slice retries
-  --tmux             live omp TUI per worker pane in this window (needs $TMUX_PANE)
-  --jobs N           max concurrent slices (default 1; git worktree isolation)
-  --timeout-sec N    global worker budget (beats per-slice Timeout:)
   --no-review        skip the independent post-merge review session
   --review-model M   reviewer model (default: roadmap.yml reviewModel → workerModel)
   --no-placeholders    disable dev-only placeholders for missing env creds (default: on)
+  --check-env        probe every gate once for env blocks before spawning (fail fast, burn nothing)
+  --seed N           deterministic RNG seed for chaos draws (suffixes fresh run ids -sN)
+  --fault-inject SPEC chaos, CLI-only: fail-verify=a+b,abort-attempt=0.25,crash-after=5
   --replan           re-run the planner even if ROADMAP.md exists (overwrite)
   --template         blank 2-slice template instead of the planner session
 
@@ -90,6 +102,8 @@ EXAMPLES
 
 interface Args {
   cmd: string;
+  /** First positional after the command (`ctl` action). */
+  sub?: string;
   project: string;
   roadmap: string;
   run?: string;
@@ -112,6 +126,14 @@ interface Args {
   replan?: boolean;
   follow?: boolean;
   logJson?: boolean;
+  /** `ctl park` / `ctl retry` reason. */
+  reason?: string;
+  /** `run --check-env`: probe gates for env blocks before spawning. */
+  checkEnv?: boolean;
+  /** Deterministic RNG seed (chaos abort draws; suffixes fresh run ids). */
+  seed?: number;
+  /** Chaos spec `fail-verify=..,abort-attempt=..,crash-after=..`. */
+  faultInject?: string;
 }
 
 function splitIds(v?: string): string[] | undefined {
@@ -164,12 +186,16 @@ function parseArgs(argv: string[]): Args {
     else if (t === "--review-model" && argv[i + 1]) a.reviewModel = argv[++i]!;
     else if (t === "--help" || t === "-h") a.cmd = "--help";
     else if (t === "--tmux") a.tmux = true;
+    else if (t === "--reason" && argv[i + 1]) a.reason = argv[++i]!;
+    else if (t === "--check-env") a.checkEnv = true;
+    else if (t === "--seed" && argv[i + 1]) a.seed = parseNonNegativeInt(argv[++i]!, "--seed", 2147483647);
+    else if (t === "--fault-inject" && argv[i + 1]) a.faultInject = argv[++i]!;
+    else if (!t.startsWith("-") && a.sub === undefined) a.sub = t;
     else throw new Error(`unknown flag ${t}`);
   }
   if (!a.roadmap) a.roadmap = join(a.project, "ROADMAP.md");
   return a;
 }
-
 
 async function cmdInit(a: Args): Promise<number> {
   ensureProjectConfig(a.project, (m) => console.log(m));
@@ -224,6 +250,7 @@ async function cmdRun(a: Args): Promise<number> {
   }
   const markdown = readFileSync(a.roadmap, "utf8");
   const parsed = parseRoadmap(markdown);
+  const cfg = loadRoadmapConfig(a.project);
 
   // Dry-run never creates a run dir: simulate purely from the parsed doc so
   // "latest run" (resume/status/log/watch) keeps pointing at the last real run.
@@ -243,7 +270,45 @@ async function cmdRun(a: Args): Promise<number> {
     console.log(`first ready: ${first ? first.id : "(none)"}`);
     console.log(`dependency order: ${order.join(" → ")}`);
     if (a.slice) console.log(`--slice ${a.slice}: ${parsed.slices.some((s) => s.id === a.slice) ? "exists" : "UNKNOWN ID"}`);
-    return 0;
+    const lint = lintRoadmap(markdown, { verifyDefaults: cfg.verifyDefaults, agentModels: cfg.agentModels });
+    for (const f of lint.errors) console.error(formatFinding(f));
+    for (const f of lint.warnings) console.log(formatFinding(f));
+    console.log(`lint: ${lint.errors.length} error(s), ${lint.warnings.length} warning(s)`);
+    return lintFailed(lint) ? 1 : 0;
+  }
+
+  // Env preflight: every unique gate once against the base tree BEFORE any
+  // worker spawns. Only infrastructure signatures block (a dead DB or a
+  // squatted port); pre-slice code failures are the slices' job, not ours.
+  if (a.checkEnv) {
+    const gates = [...new Set([...(cfg.verifyDefaults ?? []), ...parsed.slices.filter((s) => !s.skip).flatMap((s) => s.verify)])];
+    if (gates.length === 0) {
+      console.log("check-env: no gates to probe");
+    } else {
+      const probes = await preflightEnv(a.project, gates, { onProgress: (m) => console.log(m) });
+      const blocked = probes.filter((p) => p.envBlocked);
+      if (blocked.length > 0) {
+        for (const p of blocked) {
+          console.error(`env blocked: ${p.command} — ${p.reason}`);
+          if (p.fix) console.error(`  fix: ${p.fix}`);
+        }
+        console.error(`check-env: ${blocked.length}/${probes.length} gate(s) env-blocked — fix the environment, spawn nothing (no model burned)`);
+        return 1;
+      }
+      console.log(`check-env: ${probes.length} gate(s) probed, no environment blocks`);
+    }
+  }
+
+  // Fail fast on a bad chaos spec: parsing here keeps a typo from creating
+  // a stray run (or resuming one) before the loop ever validates it.
+  let faults;
+  if (a.faultInject !== undefined) {
+    try {
+      faults = parseFaultSpec(a.faultInject);
+    } catch (err) {
+      console.error(`bad --fault-inject: ${String((err as Error).message)}`);
+      return 1;
+    }
   }
 
   let runId: string;
@@ -258,14 +323,14 @@ async function cmdRun(a: Args): Promise<number> {
     if (cursor.doc.sourceHash !== sha256Hex(markdown)) {
       console.error(
         `roadmap source changed since run ${runId} started (hash mismatch).\n` +
-          `Refusing to resume with a different roadmap. Finish or abandon this run first.`,
+          `Refusing to resume with a different roadmap. Adopt it first: \`ompo replan --run ${runId}\`, then resume.`,
       );
       return 1;
     }
     storeApi.resumeRun(a.project, runId);
     console.log(`resumed run ${runId}`);
   } else {
-    runId = a.run ?? generateRunId();
+    runId = a.run ?? `${generateRunId()}${seedSuffix(a.seed)}`;
     if (a.maxRetries !== undefined) {
       for (const s of parsed.slices) s.maxRetries = a.maxRetries;
     }
@@ -303,6 +368,8 @@ async function cmdRun(a: Args): Promise<number> {
     reviewModel: a.reviewModel,
     noDebug: a.noDebug,
     noPlaceholders: a.noPlaceholders,
+    seed: a.seed,
+    faults,
   };
 
   try {
@@ -350,6 +417,127 @@ async function cmdStatus(a: Args): Promise<number> {
     console.log(`  [${s.status.padEnd(8)}] ${s.id} — ${s.title}${extra}`);
   }
   return 0;
+}
+
+async function cmdCtl(a: Args): Promise<number> {
+  const runId = a.run ?? latestRun(a.project);
+  if (!runId || !listRuns(a.project).includes(runId)) {
+    console.error(`unknown run ${JSON.stringify(a.run ?? "(none)")} — use ompo list`);
+    return 1;
+  }
+  const action = a.sub;
+  let intent: ControlIntent;
+  switch (action) {
+    case "retry":
+    case "skip":
+    case "park":
+    case "kill":
+      if (!a.slice) {
+        console.error(`ompo ctl ${action} needs --slice ID`);
+        return 1;
+      }
+      intent = { kind: action, sliceId: a.slice, reason: a.reason };
+      break;
+    case "jobs":
+      if (a.jobs === undefined) {
+        console.error("ompo ctl jobs needs --jobs N");
+        return 1;
+      }
+      intent = { kind: "set-jobs", jobs: a.jobs };
+      break;
+    case "pause":
+      intent = { kind: "pause" };
+      break;
+    case "resume":
+      intent = { kind: "resume" };
+      break;
+    default:
+      console.error(`unknown ctl action ${JSON.stringify(action)} (want retry|skip|park|kill|jobs|pause|resume)`);
+      return 1;
+  }
+  const bad = validateIntent(intent);
+  if (bad) {
+    console.error(bad);
+    return 1;
+  }
+  const loopLocal = intent.kind === "set-jobs" || intent.kind === "pause" || intent.kind === "resume";
+  try {
+    if (!lockHeld(a.project, runId)) {
+      if (loopLocal) {
+        console.error(`${intent.kind} needs a live loop (no lock on run ${runId})`);
+        return 1;
+      }
+      // Quiescent run: no drain will come, so validate + apply immediately
+      // through the same machinery (requested → applied/rejected audit).
+      const before = latestSeq(a.project, runId);
+      requestControl(a.project, runId, intent);
+      const { intents } = drainIntents(a.project, runId, before);
+      for (const queued of intents) {
+        const res = applyIntent(a.project, runId, queued, { jobs: { value: 0 }, paused: false });
+        console.log(res.ok ? `control ${queued.kind}${queued.sliceId ? ` ${queued.sliceId}` : ""}: ${res.message}` : `control rejected: ${res.message}`);
+        return res.ok ? 0 : 1;
+      }
+      return 0;
+    }
+    requestControl(a.project, runId, intent);
+    console.log(`queued ${intent.kind}${intent.sliceId ? ` ${intent.sliceId}` : ""} on live run ${runId} — loop applies within ~2s (watch \`ompo log --run ${runId} --follow\`)`);
+    return 0;
+  } catch (err) {
+    console.error(`control failed: ${String((err as Error).message)}`);
+    return 1;
+  }
+}
+
+async function cmdReplan(a: Args): Promise<number> {
+  const runId = a.run ?? latestRun(a.project);
+  if (!runId || !listRuns(a.project).includes(runId)) {
+    console.error(`unknown run ${JSON.stringify(a.run ?? "(none)")} — use ompo list`);
+    return 1;
+  }
+  if (!existsSync(a.roadmap)) {
+    console.error(`roadmap not found: ${a.roadmap}`);
+    return 1;
+  }
+  let parsed;
+  try {
+    parsed = parseRoadmap(readFileSync(a.roadmap, "utf8"));
+  } catch (err) {
+    console.error(`roadmap parse: ${String((err as Error).message)}`);
+    return 1;
+  }
+  const cursor = loadRun(a.project, runId);
+  const locked = lockHeld(a.project, runId);
+  const refusal = replanGuards(cursor.doc, parsed, locked);
+  if (refusal) {
+    console.error(`cannot replan run ${runId}: ${refusal}`);
+    return locked ? 3 : 1;
+  }
+  const m = mergeRoadmap(cursor.doc, parsed);
+  saveRunDoc(a.project, runId, m.doc);
+  appendEvent(a.project, runId, "roadmap_replanned", undefined, `kept=${m.kept.length} reset=${m.reset.length} added=${m.added.length} dropped=${m.dropped.length}`);
+  const show = (label: string, ids: string[]): void => {
+    if (ids.length > 0) console.log(`  ${label}: ${ids.join(", ")}`);
+  };
+  console.log(`replanned run ${runId} (sourceHash updated — resume accepts it)`);
+  show("kept (status preserved)", m.kept);
+  show("reset to pending (spec changed)", m.reset);
+  show("added", m.added);
+  show("dropped (artifacts kept on disk)", m.dropped);
+  console.log(`next: \`ompo resume --run ${runId}\``);
+  return 0;
+}
+
+async function cmdLint(a: Args): Promise<number> {
+  if (!existsSync(a.roadmap)) {
+    console.error(`roadmap not found: ${a.roadmap}\nrun \`ompo init --project ${a.project}\` first`);
+    return 1;
+  }
+  const cfg = loadRoadmapConfig(a.project);
+  const res = lintRoadmap(readFileSync(a.roadmap, "utf8"), { verifyDefaults: cfg.verifyDefaults, agentModels: cfg.agentModels });
+  for (const f of res.errors) console.error(formatFinding(f));
+  for (const f of res.warnings) console.log(formatFinding(f));
+  console.log(`lint: ${res.errors.length} error(s), ${res.warnings.length} warning(s)`);
+  return lintFailed(res) ? 1 : 0;
 }
 
 async function cmdImport(a: Args): Promise<number> {
@@ -429,6 +617,12 @@ async function main(): Promise<number> {
       return cmdRun(a);
     case "status":
       return cmdStatus(a);
+    case "ctl":
+      return cmdCtl(a);
+    case "replan":
+      return cmdReplan(a);
+    case "lint":
+      return cmdLint(a);
     case "list":
       console.log(listRuns(a.project).join("\n") || "(no runs)");
       return 0;

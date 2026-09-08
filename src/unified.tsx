@@ -60,6 +60,7 @@ import {
   yankSlicePath,
   type RunView,
 } from "./watch.tsx";
+import { queueControl } from "./control.ts";
 
 const POLL_MS = 900;
 
@@ -221,10 +222,11 @@ interface UnifiedAppProps {
   session: UnifiedSession;
   bus: LogBus;
   requestAbort: () => void;
+  /** Claim-loop width at loop start (mirrors jobs; +/- sends absolute values). */
+  initialJobs?: number;
 }
 
-
-export function UnifiedApp({ project, session, bus, requestAbort }: UnifiedAppProps): React.JSX.Element {
+export function UnifiedApp({ project, session, bus, requestAbort, initialJobs }: UnifiedAppProps): React.JSX.Element {
   const [view, setView] = useState<RunView | null>(null);
   const viewRef = useRef(view);
   viewRef.current = view;
@@ -239,6 +241,9 @@ export function UnifiedApp({ project, session, bus, requestAbort }: UnifiedAppPr
   const [forensicScroll, setForensicScroll] = useState(0);
   const [yanked, setYanked] = useState<string | null>(null);
   const failedRef = useRef<string[]>([]);
+  // Live-control mirrors (loop is source of truth; activity lines confirm).
+  const [jobsVal, setJobsVal] = useState(Math.max(1, Math.floor(initialJobs ?? 1)));
+  const [pausedMirror, setPausedMirror] = useState(false);
 
   // Log pushes re-render immediately; board/inspector re-read on the poll.
   useEffect(() => bus.subscribe(bump), [bus]);
@@ -349,6 +354,30 @@ export function UnifiedApp({ project, session, bus, requestAbort }: UnifiedAppPr
       setTab(clampTab(Number(input) - 1));
       return;
     }
+    // Live operator controls (run phase only): same intent queue as run TUI.
+    if (input === "R" || input === "S" || input === "B" || input === "K" || input === "+" || input === "=" || input === "-" || input === "P") {
+      const v = viewRef.current;
+      if (!v || !session.runId || session.phase !== "running") return;
+      const push = bus.push;
+      if (input === "R" || input === "S" || input === "B" || input === "K") {
+        const target = v.slices[v.sel];
+        if (!target) return;
+        if (input === "R") queueControl(push, project, session.runId, { kind: "retry", sliceId: target.id });
+        else if (input === "S") queueControl(push, project, session.runId, { kind: "skip", sliceId: target.id });
+        else if (input === "B") {
+          queueControl(push, project, session.runId, { kind: "park", sliceId: target.id, reason: "operator park from TUI — fix the environment, then resume or press R" });
+        } else queueControl(push, project, session.runId, { kind: "kill", sliceId: target.id });
+      } else if (input === "P") {
+        const next = !pausedMirror;
+        setPausedMirror(next);
+        queueControl(push, project, session.runId, next ? { kind: "pause" } : { kind: "resume" });
+      } else {
+        const next = Math.min(32, Math.max(1, jobsVal + (input === "-" ? -1 : 1)));
+        setJobsVal(next);
+        queueControl(push, project, session.runId, { kind: "set-jobs", jobs: next });
+      }
+      return;
+    }
     const page = 10;
     if (key.pageUp) {
       setScrollUp((u) => u + page);
@@ -450,7 +479,7 @@ export function UnifiedApp({ project, session, bus, requestAbort }: UnifiedAppPr
           )}
         </Box>
       )}
-      {showHelp ? <HelpOverlay /> : null}
+      {showHelp ? <HelpOverlay controls /> : null}
 
       <ActivityPane
         lines={bus.lines}
@@ -464,6 +493,7 @@ export function UnifiedApp({ project, session, bus, requestAbort }: UnifiedAppPr
         <Text dimColor>
           <Text bold color="white">↑/↓</Text> select │ <Text bold color="white">n/p</Text> failure │ <Text bold color="white">g</Text> dag │{" "}
           <Text bold color="white">1-6</Text> tabs │ <Text bold color="white">Enter</Text> forensics │ <Text bold color="white">?</Text> help │{" "}
+          <Text bold color="white">R/S/B/K</Text> ctl · <Text bold color="white">+/-</Text> jobs{pausedMirror ? <Text color="yellow"> · PAUSED</Text> : null} │{" "}
           <Text bold color="yellow">q</Text> abort <Text dimColor>· resume by re-running `ompo`</Text>
         </Text>
       </Box>
@@ -505,6 +535,7 @@ export async function runUnified(opts: UnifiedOptions): Promise<LoopResult> {
       project={opts.projectDir}
       session={session}
       bus={bus}
+      initialJobs={opts.jobs}
       requestAbort={() => {
         bus.push("abort requested — finishing the in-flight store write, then exiting (re-run `ompo` to resume)");
         ctrl.abort();

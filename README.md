@@ -58,6 +58,11 @@ worker's report is a *claim* the reviewer verifies, never trusted.
 - Approve → slice `done`. Reject → findings land in `slices/<id>/review-notes.md`
   and head the *next* attempt's spec ("PRIOR REVIEW REJECTION — address these
   FIRST"), same retry budget as any other failure.
+- **Minor lane**: rejections graded `minor` (right shape, needs polish — lint,
+  naming, a missing edge test) earn one bounded fix session + gate re-run +
+  re-merge + exactly one re-review inside the same attempt, no retry spent.
+  `major` (wrong behavior, weakened tests, unrelated diffs) spends budget
+  like any other failure. When in doubt reviewers grade major.
 - Runs **outside** the commit mutex — reviews only read and spot-check, so
   they overlap other pipelines' work; only approval of `done` serializes.
 - `ompo run --no-review` skips the gate (debugging, or runs that prefer
@@ -191,6 +196,70 @@ Default chain (also stamped into new projects by `init`/`import`):
 `muse-spark-1.3-contributor-free` (zen) → `deepseek-v4-flash-free` (zen) →
 omp default. Tune via `modelFallbacks:` (dedupe is automatic).
 
+## Live control plane (TUI keys + `ompo ctl`)
+
+Intents travel as events on the run's own log, so TUI keys and a second
+shell share one path: the loop drains them within ~2s at safe points
+(between claims, at attempt stage boundaries — never mid-mutation).
+Applied and rejected intents land in `ompo log` as `control ok/no`.
+
+```bash
+ompo ctl retry --slice s2 --run 20260908-ab12cd   # one more attempt (failed/blocked-env only)
+ompo ctl skip --slice s9 --run 20260908-ab12cd    # quiescent slices leave the roadmap
+ompo ctl park --slice s3 --run 20260908-ab12cd --reason "db down, ETA 10m"
+ompo ctl kill --slice s4 --run 20260908-ab12cd    # in-flight drops at the next boundary, work preserved
+ompo ctl jobs --jobs 4 --run 20260908-ab12cd      # scale the claim loop live (needs a live loop)
+ompo ctl pause --run 20260908-ab12cd              # in-flight finishes, nothing new claims
+ompo ctl resume --run 20260908-ab12cd
+```
+
+TUI twins (run + unified TUIs): `R` retry · `S` skip · `B` park · `K` kill ·
+`+`/`-` jobs · `P` pause/resume. Against a quiescent run `ctl` applies
+slice intents immediately; `jobs`/`pause`/`resume` need a live loop.
+Stale intents reject instead of double-running (status guards).
+
+## Replan an edited roadmap (`ompo replan`)
+
+```bash
+ompo replan --run 20260908-ab12cd   # adopt ROADMAP.md edits into a quiescent run
+ompo resume --run 20260908-ab12cd
+```
+
+Unchanged slices keep status, attempts, and refs — `done` is never re-run.
+Changed/new slices reset to `pending` (attempts preserved, refs cleared).
+Removed ids drop (artifacts stay on disk). Refuses live runs (exit 3) and
+runs whose in-flight slices changed spec — finish, kill, or revert those
+sections first.
+
+## Gates: chains, preflight, lint
+
+- One `Verify:` line may chain gates with `&&` — each runs as a separately
+  reported step and the chain fail-fasts like a shell. Quote to keep one
+  gate: `Verify: sh -c 'cd e2e && bunx playwright test'` (quoted `&&`
+  never splits; split gates each run in their own shell, so keep
+  state-sharing chains quoted). `||` never splits.
+- `ompo run --check-env` probes every unique gate once against the base
+  tree before spawning: infrastructure blocks fail fast with a fix hint
+  (nothing burned); pre-slice code failures are ignored.
+- `ompo lint` validates the roadmap statically (exit 1 on errors):
+  vacuous gates, state-only split gates, `||` fallbacks, >60m timeouts,
+  heavy retries, unknown agents, skips with dependents. `run --dry-run`
+  prints the same findings alongside the dependency order.
+
+## Chaos drills (`--fault-inject`, `--seed`)
+
+CLI-only (never config — a roadmap file can't smuggle chaos into a real
+run). `fail-verify=` injects red gates, `abort-attempt=` draws seeded
+aborts, `crash-after=` dies 137 mid-run so `resume` proves recovery:
+
+```bash
+ompo run --fault-inject fail-verify=s2,crash-after=3 --seed 7
+kill -INT <pid>; ompo resume   # the honest version of the same drill
+```
+
+Same seed replays the same abort draws (`jobs 1` for exact replay).
+FRESH run ids gain a `-sN` suffix so chaos runs correlate in `ompo list`.
+
 ## Recovery runbook (plan §14)
 
 - **Interrupt**: `Ctrl-C` (or `kill -INT`) finishes the in-flight store write,
@@ -202,15 +271,14 @@ omp default. Tune via `modelFallbacks:` (dedupe is automatic).
 - **Blocked environment**: slices parked as `blocked-env` (port taken, DB
   down, deploy gate awaiting real values) re-queue on `ompo resume` after
   you fix the environment / export real values.
-- **Roadmap edited mid-run**: resume refuses on `sourceHash` mismatch.
-  Finish the run first, then start a new one.
+- **Roadmap edited mid-run**: resume refuses on `sourceHash` mismatch —
+  adopt with `ompo replan --run ID`, then resume.
 - **Lock held (exit 3)**: another `ompo run` owns the run. Wait or remove
   `.omp/roadmap/runs/<runId>.lock` only if the owner is dead.
 - **Exit codes**: `0` all done · `1` failures remain · `2` aborted ·
   `3` resume-conflict.
 
 ## Roadmap format
-
 ```markdown
 ## [slice-id] Human title
 Body (what the worker must do).
@@ -218,26 +286,27 @@ Depends: other-id
 Agent: task            # optional: agentModels key or model pattern
 Effort: med            # lo|med|hi (advisory)
 Verify: bun test       # repeatable; run after the worker, exit 0 required
+Verify: bun lint && echo lint-ok   # && splits into separately-reported gates (fail-fast);
+                       # quote to keep one shell: sh -c 'cd e2e && test e2e'
 Files: src/a.ts        # advisory allowlist
 Retries: 2             # default 1 (total tries = retries+1)
 Timeout: 60m           # worker budget, 1m..8h (default 15m); split instead past 60m
 Skip: true             # optional
-```
 
 ## Layout (durable store, plan §13)
-
 ```
 .omp/roadmap/runs/<runId>/
   roadmap.json        # materialized cursor (atomic tmp+rename writes)
-  events.jsonl        # append-only audit + replay source
+  events.jsonl        # append-only audit + replay source (claims, gates, controls, replans)
   slices/<id>/report.json | verdict.json | review.json | worker-<n>.log |
-    worker-<n>.events.jsonl | debug-<n>.log | prompt-<n>.md | review-notes.md | logs/
+    worker-<n>.events.jsonl | debug-<n>.log | prompt-<n>.md | review-notes.md |
+    review-fix-<n>.log | review-minor-<n>.applied | control-park.md | logs/
 ```
 
 ## Dev
 
 ```bash
 bun install
-bun test              # 100 unit/integration tests (mocked workers)
+bun test              # unit/integration tests (mocked workers)
 bunx tsc --noEmit
 ```

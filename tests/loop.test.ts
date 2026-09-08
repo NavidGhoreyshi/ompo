@@ -9,6 +9,8 @@ import { createRun, loadRun, sliceDir, storeApi } from "../src/store.ts";
 import { HARNESS_CLOSE, HARNESS_OPEN, REPORT_CLOSE, REPORT_OPEN } from "../src/report.ts";
 import { loadPlaceholders } from "../src/placeholders.ts";
 import { REVIEW_CLOSE, REVIEW_OPEN } from "../src/review.ts";
+import { parseFaultSpec } from "../src/faults.ts";
+import { requestControl } from "../src/control.ts";
 import type { WorkerCall, WorkerContext, WorkerResult, WorkerRunner } from "../src/worker.ts";
 
 function tmpProject(): string {
@@ -754,5 +756,107 @@ describe("loop harness fix", () => {
     expect(existsSync(join(slice, "debug-1.patch-applied"))).toBe(false);
     expect(events.some((m) => m.includes("harness-fix rejected — file not at HEAD"))).toBe(true);
     expect(loadRun(dir, "r").doc.slices[0]!.status).toBe("failed");
+  });
+});
+
+function minorReject(sliceId: string, findings: string[]): string {
+  return `${REVIEW_OPEN}\n${JSON.stringify({ sliceId, approved: false, findings, notes: "polish only", severity: "minor" })}\n${REVIEW_CLOSE}`;
+}
+
+describe("loop control plane", () => {
+  test("skip queued mid-run drains before the later slice claims", async () => {
+    const dir = tmpProject();
+    createRun(dir, parseRoadmap("## [a] A\nDo A.\nVerify: true\n\n## [b] B\nDepends: a\nDo B.\nVerify: true\n"), "r");
+    const runner = reviewAware(async (call) => {
+      if (call.sliceId === "a" && !call.label?.includes("review")) {
+        requestControl(dir, "r", { kind: "skip", sliceId: "b", reason: "test skips b" });
+      }
+      return { exit: 0, timedOut: false, stdout: reportFor(call.sliceId), stderr: "", durationMs: 1 };
+    });
+    const res = await runRoadmapLoop({ projectDir: dir, runId: "r", runner, onEvent: () => {} });
+    expect(res.exitCode).toBe(0);
+    expect(res.done).toBe(1);
+    expect(res.skipped).toBe(1);
+    expect(loadRun(dir, "r").doc.slices.find((s) => s.id === "b")!.status).toBe("skipped");
+  });
+
+  test("operator retry grants exactly one more attempt, then budget bites again", async () => {
+    const dir = tmpProject();
+    createRun(dir, parseRoadmap("## [a] A\nDo A.\nVerify: exit 1\nRetries: 0\n"), "r");
+    const opts = { projectDir: dir, runId: "r", runner: okRunner, noDebug: true, noReview: true, onEvent: () => {} };
+    const first = await runRoadmapLoop(opts);
+    expect(first.failed).toBe(1);
+    expect(loadRun(dir, "r").doc.slices[0]!.attempts).toBe(1);
+    storeApi.operatorRetry(dir, "r", "a", "test requeue");
+    const second = await runRoadmapLoop(opts);
+    expect(second.failed).toBe(1);
+    const cur = loadRun(dir, "r").doc.slices[0]!;
+    expect(cur.attempts).toBe(2);
+    expect(cur.maxRetries).toBe(1);
+  });
+});
+
+describe("loop faults + review-fix lane", () => {
+  test("fail-verify fault terminals with Retries 0 and never runs the gate", async () => {
+    const dir = tmpProject();
+    createRun(dir, parseRoadmap("## [a] A\nDo A.\nVerify: echo should-never-run\nRetries: 0\n"), "r");
+    const res = await runRoadmapLoop({
+      projectDir: dir,
+      runId: "r",
+      runner: okRunner,
+      noDebug: true,
+      noReview: true,
+      faults: parseFaultSpec("fail-verify=a"),
+      onEvent: () => {},
+    });
+    const raw = JSON.parse(readFileSync(join(sliceDir(dir, "r", "a"), "verdict.json"), "utf8")) as { steps: { outputTail: string }[] };
+    expect(raw.steps[0]!.outputTail).toMatch(/FAULT INJECTED/);
+    expect(loadRun(dir, "r").doc.slices[0]!.attempts).toBe(1);
+  });
+
+  test("minor rejection fixes in-lane and approves on the same attempt", async () => {
+    const dir = tmpProject();
+    createRun(dir, parseRoadmap("## [a] A\nDo A.\nVerify: true\nRetries: 0\n"), "r");
+    let reviews = 0;
+    const runner: WorkerRunner = async (call) => {
+      if (call.label?.endsWith(" review")) {
+        reviews += 1;
+        const stdout = reviews === 1 ? minorReject("a", ["polish the name"]) : verdictFor("a", true);
+        return { exit: 0, timedOut: false, stdout, stderr: "", durationMs: 1 };
+      }
+      if (call.label?.endsWith(" review-fix")) {
+        return { exit: 0, timedOut: false, stdout: reportFor("a", "fixed the name"), stderr: "", durationMs: 1 };
+      }
+      return { exit: 0, timedOut: false, stdout: reportFor("a"), stderr: "", durationMs: 1 };
+    };
+    const res = await runRoadmapLoop({ projectDir: dir, runId: "r", runner, onEvent: () => {} });
+    expect(res.exitCode).toBe(0);
+    expect(res.done).toBe(1);
+    expect(reviews).toBe(2);
+    // Same attempt: no retry consumed by the fix lane.
+    expect(loadRun(dir, "r").doc.slices[0]!.attempts).toBe(1);
+    const slice = sliceDir(dir, "r", "a");
+    expect(existsSync(join(slice, "review-minor-1.applied"))).toBe(true);
+    expect(existsSync(join(slice, "review-1.rejected.json"))).toBe(true);
+    const finalReview = JSON.parse(readFileSync(join(slice, "review.json"), "utf8")) as { approved: boolean };
+    expect(finalReview.approved).toBe(true);
+  });
+
+  test("major rejection spends the retry budget like any failure", async () => {
+    const dir = tmpProject();
+    createRun(dir, parseRoadmap("## [a] A\nDo A.\nRetries: 0\n"), "r");
+    const rejecting: WorkerRunner = async (call) => {
+      if (call.label) {
+        return { exit: 0, timedOut: false, stdout: verdictFor("a", false, ["fundamentally wrong"]), stderr: "", durationMs: 1 };
+      }
+      return { exit: 0, timedOut: false, stdout: reportFor("a"), stderr: "", durationMs: 1 };
+    };
+    const res = await runRoadmapLoop({ projectDir: dir, runId: "r", runner: rejecting, noDebug: true, onEvent: () => {} });
+    expect(res.exitCode).toBe(1);
+    const a = loadRun(dir, "r").doc.slices[0]!;
+    expect(a.status).toBe("failed");
+    expect(a.attempts).toBe(1);
+    expect(existsSync(join(sliceDir(dir, "r", "a"), "review-minor-1.applied"))).toBe(false);
+    expect(readFileSync(join(sliceDir(dir, "r", "a"), "review-notes.md"), "utf8")).toContain("fundamentally wrong");
   });
 });

@@ -583,6 +583,13 @@ export const HELP_ROWS: ReadonlyArray<readonly [string, string]> = [
   ["q", "quit (run TUIs: abort, exit 2)"],
 ];
 
+/** Live-loop control keys (run + unified TUIs only — watch stays read-only). */
+export const CONTROL_HELP_ROWS: ReadonlyArray<readonly [string, string]> = [
+  ["R / S / B / K", "retry-now · skip · park (env) · kill selected slice"],
+  ["+ / -", "scale jobs live (1..32)"],
+  ["P", "pause / resume the claim loop"],
+];
+
 /** Cursor lands on what needs eyes: failed/running first, then done, else top. */
 export function preferredSel(slices: SliceLine[]): number {
   const rank = (s: SliceLine) =>
@@ -955,8 +962,8 @@ export function InspectorPane({ view, tab, gutter }: InspectorOpts) {
   );
 }
 
-/** `?` overlay: the shared keymap. Pure render, no store reads. */
-export function HelpOverlay() {
+/** `?` overlay: the shared keymap (+ live controls in run TUIs). Pure render, no store reads. */
+export function HelpOverlay({ controls }: { controls?: boolean }) {
   return (
     <Box flexDirection="column" borderStyle="round" borderColor="cyan" marginTop={1} paddingX={1}>
       <Text bold color="cyan"> keys </Text>
@@ -966,6 +973,17 @@ export function HelpOverlay() {
           <Text dimColor>{what}</Text>
         </Text>
       ))}
+      {controls ? (
+        <>
+          <Text bold color="yellow"> live controls </Text>
+          {CONTROL_HELP_ROWS.map(([k, what]) => (
+            <Text key={k}>
+              <Text bold color="white">{k.padEnd(11)}</Text>
+              <Text dimColor>{what}</Text>
+            </Text>
+          ))}
+        </>
+      ) : null}
       <Text dimColor>Esc or ? closes · q quits</Text>
     </Box>
   );

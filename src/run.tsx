@@ -48,6 +48,7 @@ import {
   yankSlicePath,
   type RunView,
 } from "./watch.tsx";
+import { queueControl } from "./control.ts";
 
 const POLL_MS = 900;
 const MAX_LOG_LINES = 600;
@@ -262,9 +263,11 @@ interface LiveRunAppProps {
   bus: LogBus;
   /** User asked to quit (q / Ctrl-C): abort the loop, mirroring SIGINT. */
   requestAbort: () => void;
+  /** Claim-loop width at loop start (mirrors jobs; +/- sends absolute values). */
+  initialJobs?: number;
 }
 
-export function LiveRunApp({ project, runId, bus, requestAbort }: LiveRunAppProps) {
+export function LiveRunApp({ project, runId, bus, requestAbort, initialJobs }: LiveRunAppProps) {
   const [view, setView] = useState<RunView | null>(() => {
     const v = viewForRun(project, runId, 0);
     if (!v) return v;
@@ -284,7 +287,9 @@ export function LiveRunApp({ project, runId, bus, requestAbort }: LiveRunAppProp
   const [forensicScroll, setForensicScroll] = useState(0);
   const [yanked, setYanked] = useState<string | null>(null);
   const failedRef = useRef<string[]>([]);
-
+  // Live-control mirrors (loop is source of truth; activity lines confirm).
+  const [jobsVal, setJobsVal] = useState(Math.max(1, Math.floor(initialJobs ?? 1)));
+  const [pausedMirror, setPausedMirror] = useState(false);
   // Log pushes re-render immediately; board/inspector re-read on the poll.
   useEffect(() => bus.subscribe(bump), [bus]);
 
@@ -381,6 +386,30 @@ export function LiveRunApp({ project, runId, bus, requestAbort }: LiveRunAppProp
       }
       return;
     }
+    // Live operator controls: queue intents on the event log; the loop drains
+    // within ~2s and the applied/rejected line streams back into activity.
+    if (input === "R" || input === "S" || input === "B" || input === "K") {
+      const target = v.slices[v.sel];
+      if (!target) return;
+      if (input === "R") queueControl(bus.push, project, runId, { kind: "retry", sliceId: target.id });
+      else if (input === "S") queueControl(bus.push, project, runId, { kind: "skip", sliceId: target.id });
+      else if (input === "B") {
+        queueControl(bus.push, project, runId, { kind: "park", sliceId: target.id, reason: "operator park from TUI — fix the environment, then resume or press R" });
+      } else queueControl(bus.push, project, runId, { kind: "kill", sliceId: target.id });
+      return;
+    }
+    if (input === "+" || input === "=" || input === "-") {
+      const next = Math.min(32, Math.max(1, jobsVal + (input === "-" ? -1 : 1)));
+      setJobsVal(next);
+      queueControl(bus.push, project, runId, { kind: "set-jobs", jobs: next });
+      return;
+    }
+    if (input === "P") {
+      const next = !pausedMirror;
+      setPausedMirror(next);
+      queueControl(bus.push, project, runId, next ? { kind: "pause" } : { kind: "resume" });
+      return;
+    }
     if (/^[1-6]$/.test(input)) {
       setTab(clampTab(Number(input) - 1));
       return;
@@ -459,7 +488,7 @@ export function LiveRunApp({ project, runId, bus, requestAbort }: LiveRunAppProp
           <InspectorPane view={view} tab={tab} />
         </Box>
       )}
-      {showHelp ? <HelpOverlay /> : null}
+      {showHelp ? <HelpOverlay controls /> : null}
 
       <ActivityPane
         lines={bus.lines}
@@ -473,6 +502,7 @@ export function LiveRunApp({ project, runId, bus, requestAbort }: LiveRunAppProp
         <Text dimColor>
           <Text bold color="white">↑/↓</Text> select │ <Text bold color="white">n/p</Text> failure │ <Text bold color="white">g</Text> dag │{" "}
           <Text bold color="white">1-6</Text> tabs │ <Text bold color="white">Enter</Text> forensics │ <Text bold color="white">?</Text> help │{" "}
+          <Text bold color="white">R/S/B/K</Text> ctl · <Text bold color="white">+/-</Text> jobs{pausedMirror ? <Text color="yellow"> · PAUSED</Text> : null} │{" "}
           <Text bold color="yellow">q</Text> abort <Text dimColor>· finishes store write, exit 2</Text>
         </Text>
       </Box>
@@ -510,6 +540,7 @@ export async function runRoadmapLoopTui(opts: RunTuiLoopOptions): Promise<LoopRe
       project={opts.projectDir}
       runId={opts.runId}
       bus={bus}
+      initialJobs={opts.jobs}
       requestAbort={() => {
         bus.push("abort requested — finishing the in-flight store write, then exiting (resume with `ompo resume`)");
         ctrl.abort();

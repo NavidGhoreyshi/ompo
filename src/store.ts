@@ -235,6 +235,19 @@ export function loadRun(projectDir: string, runId: string): RunCursor {
   return cursor;
 }
 
+/**
+ * Replace the run's materialized cursor doc (replan --merge). The events log
+ * is the audit trail — callers append a `roadmap_replanned` event alongside.
+ * Refuses nothing itself; guards (lock, in-flight) live in the caller.
+ */
+export function saveRunDoc(projectDir: string, runId: string, doc: RoadmapDoc): RunCursor {
+  const cursor = loadRun(projectDir, runId);
+  cursor.doc = doc;
+  cursor.updatedAt = new Date().toISOString();
+  writeJsonAtomic(cursorPath(projectDir, runId), cursor);
+  return cursor;
+}
+
 export function readEvents(projectDir: string, runId: string): RunEvent[] {
   const path = eventsPath(projectDir, runId);
   if (!existsSync(path)) return [];
@@ -400,6 +413,73 @@ export const storeApi = {
     );
   },
   /**
+   * Operator retry-now: a terminal/blocked slice gets exactly one more
+   * attempt. attempts keeps counting (artifact names never collide); the
+   * budget grants one extra by raising maxRetries to the current attempts,
+   * so the next failure terminals again unless the operator re-queues.
+   */
+  operatorRetry(projectDir: string, runId: string, sliceId: string, reason?: string): RunCursor {
+    return mutateSlice(projectDir, runId, sliceId, "slice_retried", (s) => {
+      if (s.status !== "failed" && s.status !== "blocked-env") {
+        throw new Error(`cannot operator-retry slice "${sliceId}" in status ${s.status} (needs failed or blocked-env)`);
+      }
+      const wasBlockedEnv = s.status === "blocked-env";
+      s.status = "pending";
+      // Blocked slices never consumed budget — re-queue as-is. Failed slices
+      // get exactly one more attempt (attempts keeps counting so attempt
+      // artifacts never collide).
+      if (!wasBlockedEnv && s.attempts > s.maxRetries) {
+        s.maxRetries = s.attempts;
+        s.maxRetriesExplicit = true;
+      }
+    }, reason ?? "operator retry");
+  },
+
+  /**
+   * Operator park: a quiescent slice waits on the environment with an
+   * operator-supplied reason (no retry consumed; resume re-queues).
+   * In-flight slices need kill first, like skip.
+   */
+  parkSlice(projectDir: string, runId: string, sliceId: string, reason: string): RunCursor {
+    return mutateSlice(projectDir, runId, sliceId, "slice_blocked_env", (s) => {
+      if (s.status !== "pending" && s.status !== "failed") {
+        throw new Error(`cannot park slice "${sliceId}" in status ${s.status} (kill it first if running)`);
+      }
+      mkdirSync(sliceDir(projectDir, runId, sliceId), { recursive: true });
+      writeFileSync(join(sliceDir(projectDir, runId, sliceId), "control-park.md"), `# operator park\n${reason}\n`, "utf8");
+      s.status = "blocked-env";
+      s.verdictRef = join("slices", sliceId, "control-park.md");
+    }, reason, { reason });
+  },
+  /**
+   * Operator skip: quiescent slices (pending/failed/blocked-env) leave the
+   * roadmap without running. Downstream proceeds past skips (depSatisfied).
+   * In-flight slices need kill first — silently skipping running work would
+   * strand the pipeline holding the worktree.
+   */
+  skipSlice(projectDir: string, runId: string, sliceId: string, reason?: string): RunCursor {
+    return mutateSlice(projectDir, runId, sliceId, "slice_skipped", (s) => {
+      if (s.status !== "pending" && s.status !== "failed" && s.status !== "blocked-env") {
+        throw new Error(`cannot skip slice "${sliceId}" in status ${s.status} (kill it first if running)`);
+      }
+      s.status = "skipped";
+    }, reason ?? "operator skip");
+  },
+  /**
+   * Operator kill: pending or in-flight work stops and parks as aborted
+   * (resume re-queues it). The loop also watches for the kill at stage
+   * boundaries and discards post-kill worker output. Terminal slices
+   * (done/failed/skipped) are history — killing them is rejected.
+   */
+  killSlice(projectDir: string, runId: string, sliceId: string, reason?: string): RunCursor {
+    return mutateSlice(projectDir, runId, sliceId, "slice_killed", (s) => {
+      if (s.status !== "pending" && s.status !== "running" && s.status !== "verifying" && s.status !== "blocked-env") {
+        throw new Error(`cannot kill slice "${sliceId}" in status ${s.status}`);
+      }
+      s.status = "aborted";
+    }, reason ?? "operator kill");
+  },
+  /**
    * Environment triage: the gate failed on infrastructure (port taken, DB
    * down), not on the worker's code. No retry consumed; `resume` re-queues
    * the slice once the operator fixes the environment.
@@ -482,6 +562,25 @@ export function rebuildStatusesFromEvents(
         break;
       case "slice_blocked_env":
         status.set(ev.sliceId, "blocked-env");
+        break;
+      case "slice_skipped":
+        status.set(ev.sliceId, "skipped");
+        break;
+      case "slice_killed":
+        status.set(ev.sliceId, "aborted");
+        break;
+      case "verify_passed":
+      case "slice_done":
+        status.set(ev.sliceId, "done");
+        break;
+      case "verify_failed":
+        status.set(ev.sliceId, "failed");
+        break;
+      case "slice_retried":
+        status.set(ev.sliceId, "pending");
+        break;
+      case "slice_failed_terminal":
+        status.set(ev.sliceId, "failed");
         break;
       case "run_aborted":
         if (status.get(ev.sliceId) === "running" || status.get(ev.sliceId) === "verifying") {

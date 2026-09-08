@@ -8,6 +8,7 @@ import { spawn } from "node:child_process";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import type { Verdict, VerdictStep } from "./types.ts";
+import { classifyEnvFailure } from "./debug.ts";
 
 export interface VerifyOptions {
   projectDir: string;
@@ -132,4 +133,47 @@ export async function runVerifiers(
   if (opts.logFile) writeFileSync(opts.logFile, fullLog.join("\n---\n"), "utf8");
 
   return { sliceId, attempt, pass, steps, at: new Date().toISOString() };
+}
+
+export interface EnvProbe {
+  command: string;
+  /** Gate output matched an infrastructure signature (port/DB/host/disk). */
+  envBlocked: boolean;
+  reason?: string;
+  fix?: string;
+  exit: number | null;
+  timedOut: boolean;
+}
+
+/**
+ * Pre-run env probe (`ompo run --check-env`): run each unique gate command
+ * once against the base tree BEFORE any worker spawns, so a dead Postgres
+ * or squatted port fails fast with a fix hint instead of burning model
+ * calls. Best-effort by design: gates run pre-slice, so NON-env failures
+ * (missing code the slices will write) are ignored — only infrastructure
+ * signatures block. Never throws; a probe that can't spawn reports its
+ * spawn error as output (classify decides).
+ */
+export async function preflightEnv(
+  projectDir: string,
+  commands: string[],
+  opts?: { timeoutMs?: number; onProgress?: (line: string) => void },
+): Promise<EnvProbe[]> {
+  const out: EnvProbe[] = [];
+  const timeoutMs = opts?.timeoutMs ?? DEFAULT_VERIFY_TIMEOUT_MS;
+  for (const command of commands) {
+    opts?.onProgress?.(`preflight: $ ${command}`);
+    const r = await runCommand(command, projectDir, timeoutMs);
+    const block = r.exit === 0 && !r.timedOut ? null : classifyEnvFailure([r.output]);
+    out.push({
+      command,
+      envBlocked: block !== null,
+      reason: block?.reason,
+      fix: block?.fix,
+      exit: r.exit,
+      timedOut: r.timedOut,
+    });
+    opts?.onProgress?.(block ? `preflight BLOCKED: ${command} — ${block.reason}` : `preflight: ${command} exit=${r.exit}`);
+  }
+  return out;
 }

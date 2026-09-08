@@ -122,6 +122,46 @@ function parseSkip(value: string): boolean {
   return /^(true|yes|1|skip)$/i.test(value.trim());
 }
 
+/**
+ * Split one `Verify:` line on top-level `&&` into separately-reported gates.
+ * Quote-aware (single + double, backslash escapes): `sh -c 'cd e2e && test'`
+ * stays ONE gate — the escape hatch for chains that share shell state
+ * (cwd, exports), since split gates each run in their own shell. `||` never
+ * splits (fallback semantics). Pure — unit-tested.
+ */
+export function splitGateChain(line: string): string[] {
+  const parts: string[] = [];
+  let cur = "";
+  let quote: string | null = null;
+  for (let i = 0; i < line.length; i++) {
+    const c = line[i]!;
+    if (c === "\\" && i + 1 < line.length) {
+      cur += c + line[i + 1]!;
+      i++;
+      continue;
+    }
+    if (quote) {
+      cur += c;
+      if (c === quote) quote = null;
+      continue;
+    }
+    if (c === '"' || c === "'") {
+      quote = c;
+      cur += c;
+      continue;
+    }
+    if (c === "&" && line[i + 1] === "&") {
+      parts.push(cur);
+      cur = "";
+      i++;
+      continue;
+    }
+    cur += c;
+  }
+  parts.push(cur);
+  return parts.map((p) => p.trim()).filter(Boolean);
+}
+
 export function parseRoadmap(markdown: string): RoadmapDoc {
   const sections = splitSections(markdown);
   if (sections.length === 0) {
@@ -182,7 +222,7 @@ export function parseRoadmap(markdown: string): RoadmapDoc {
             effort = parseEffort(value, id);
             break;
           case "verify":
-            if (value.trim()) verify.push(value.trim());
+            if (value.trim()) verify.push(...splitGateChain(value.trim()));
             break;
           case "files":
             files = value

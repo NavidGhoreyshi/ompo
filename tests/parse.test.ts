@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { parseRoadmap, RoadmapParseError } from "../src/parse.ts";
+import { parseRoadmap, RoadmapParseError, splitGateChain } from "../src/parse.ts";
 import { nextReady, readySlices } from "../src/select.ts";
 
 const VALID = `# Demo roadmap
@@ -110,6 +110,27 @@ describe("parseRoadmap", () => {
     expect(doc.slices[0]!.maxRetries).toBe(0);
     expect(doc.slices[0]!.maxRetriesExplicit).toBe(true);
     expect(doc.slices[1]!.maxRetriesExplicit).toBeUndefined();
+  });
+
+  test("Verify lines split on top-level && into separately-reported gates", () => {
+    const doc = parseRoadmap("## [a] A\nVerify: bun test && bun lint\n");
+    expect(doc.slices[0]!.verify).toEqual(["bun test", "bun lint"]);
+  });
+});
+
+describe("splitGateChain", () => {
+  test("single commands pass through untouched", () => {
+    expect(splitGateChain("bun test -- scope")).toEqual(["bun test -- scope"]);
+  });
+
+  test("quoted && never splits (the state-sharing escape hatch)", () => {
+    expect(splitGateChain(`sh -c 'cd e2e && bunx playwright test'`)).toEqual([`sh -c 'cd e2e && bunx playwright test'`]);
+    expect(splitGateChain(`echo "a && b" && echo done`)).toEqual([`echo "a && b"`, "echo done"]);
+  });
+
+  test("|| never splits and empties drop", () => {
+    expect(splitGateChain("test || true")).toEqual(["test || true"]);
+    expect(splitGateChain("a &&  && b")).toEqual(["a", "b"]);
   });
 });
 

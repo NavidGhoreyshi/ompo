@@ -22,9 +22,11 @@ import { depSatisfied, readySlices } from "./select.ts";
 import { buildWorkerSpec } from "./spec.ts";
 import { sliceDir, storeApi, loadRun, RUNS_DIR } from "./store.ts";
 import type { CompletionReport, RoadmapDoc, Slice, Verdict } from "./types.ts";
+import { applyIntent, drainIntents, latestSeq } from "./control.ts";
+import { EMPTY_FAULTS, faultsArmed, mulberry32, shouldAbortAttempt, shouldCrashAfter, shouldFailVerify, type FaultSpec } from "./faults.ts";
 import { extractHarnessFix, extractReportFromOutput, validateCompletionReport, type HarnessFix } from "./report.ts";
 import { buildDebugPrompt, classifyEnvFailure, DEFAULT_DEBUG_TIMEOUT_MS, validateHarnessFix } from "./debug.ts";
-import { buildReviewPrompt, extractReviewFromOutput, formatReviewFindings, validateReviewVerdict } from "./review.ts";
+import { buildReviewPrompt, buildReviewFixPrompt, extractReviewFromOutput, formatReviewFindings, validateReviewVerdict } from "./review.ts";
 import { runVerifiers } from "./verify.ts";
 import { buildModelChain, displayModel, resolveWorkerModel, runOmpWorker, runWithModelFallbacks, type WorkerRunner } from "./worker.ts";
 import { createMutex, type Mutex } from "./mutex.ts";
@@ -62,6 +64,12 @@ export interface LoopOptions {
   debugTimeoutMs?: number;
   /** Disable dev-only placeholder injection for missing env creds (`--no-placeholders`). */
   noPlaceholders?: boolean;
+  /** Deterministic RNG seed (chaos abort draws; CLI also suffixes fresh run ids). */
+  seed?: number;
+  /** Parsed chaos faults (CLI-only `--fault-inject`, never config). */
+  faults?: FaultSpec;
+  /** Control-intent poll interval for cross-process `ompo ctl` (default 2000ms). */
+  controlPollMs?: number;
 }
 
 export interface LoopResult {
@@ -92,6 +100,15 @@ interface AttemptCtx {
   signal?: AbortSignal;
   onEvent?: (msg: string) => void;
   heartbeatMs: number;
+  /** Live operator controls: jobs holder (set-jobs scales the claim loop). */
+  jobs: { value: number };
+  /** Claim loop paused (pause intent): in-flight finish, nothing new claims. */
+  paused: boolean;
+  /** Chaos faults + seeded RNG (abort draws). Inactive unless armed. */
+  faults: FaultSpec;
+  rng: () => number;
+  controlOffset: number;
+  controlPollMs: number;
   /** Shared live-progress state per in-flight slice (for heartbeat detail). */
   trackers: Map<string, ProgressTracker>;
 }
@@ -285,6 +302,9 @@ function preserveIncompleteWork(ctx: AttemptCtx, sliceId: string, attempt: numbe
  * Independent review: fresh reviewer session audits the merged slice.
  * Returns true on approval. Rejection/invalid/timeout flow through the
  * standard retry-or-terminal path with findings saved for the next attempt.
+ * Minor rejections earn one bounded fix session + re-verify + re-merge +
+ * re-review inside the same attempt (`attemptFix`, one shot via a marker
+ * file); anything else falls through like a major rejection.
  */
 async function runReview(
   ctx: AttemptCtx,
@@ -293,7 +313,9 @@ async function runReview(
   claimed: Slice,
   report: CompletionReport,
   verifyCommands: string[],
+  wtPath: string,
   env?: Record<string, string>,
+  attemptFix = true,
 ): Promise<boolean> {
   const { projectDir, runId } = ctx;
   const dir = sliceDir(projectDir, runId, sliceId);
@@ -373,7 +395,19 @@ async function runReview(
     const verdict = validateReviewVerdict(extracted, sliceId);
     writeFileSync(join(dir, "review.json"), JSON.stringify(verdict, null, 2) + "\n", "utf8");
     verdictRef = join("slices", sliceId, "review.json");
-    if (!verdict.approved) throw new Error(`reviewer rejected: ${verdict.findings.join("; ").slice(0, 300)}`);
+    if (!verdict.approved) {
+      // Minor lane: the shape is right, only polish is missing. One bounded
+      // fix session + re-verify + re-merge + re-review inside this attempt
+      // (marker file bounds it to one shot); a major rejection, a disabled
+      // debugger lane, or a second minor all spend budget like any failure.
+      if (verdict.severity === "minor" && attemptFix && !ctx.noDebug && !existsSync(join(dir, `review-minor-${attempt}.applied`))) {
+        writeFileSync(join(dir, `review-${attempt}.rejected.json`), JSON.stringify(verdict, null, 2) + "\n", "utf8");
+        const lane = await runReviewFix(ctx, sliceId, attempt, claimed, verdict, verifyCommands, wtPath, env);
+        if (lane === "approved") return true;
+        if (lane === "settled") return false;
+      }
+      throw new Error(`reviewer rejected (${verdict.severity}): ${verdict.findings.join("; ").slice(0, 300)}`);
+    }
     log(ctx, summarize5(claimed, `review approved — ${verdict.notes.slice(0, 200)}`, report, true));
     return true;
   } catch (err) {
@@ -404,6 +438,150 @@ async function runReview(
     failAttempt(ctx, sliceId, claimed, verdictRef);
     return false;
   }
+}
+
+/**
+ * Minor-fix lane: one bounded fresh worker addresses ONLY the reviewer's
+ * polish findings in the slice worktree, then the gate re-runs and the
+ * branch re-merges under the commit mutex, then exactly one re-review
+ * decides. Outcomes: "approved" (done — the caller returns true),
+ * "settled" (the outcome is already recorded: abort, kill, or a terminal
+ * merge conflict — the caller returns false WITHOUT spending budget), or
+ * "retry" (nothing conclusive — the caller falls through to the standard
+ * retry-or-terminal path, which records it). One shot per attempt via the
+ * `review-minor-<attempt>.applied` marker; never recursive (the re-review
+ * runs with attemptFix=false); never consumes a retry itself.
+ */
+async function runReviewFix(
+  ctx: AttemptCtx,
+  sliceId: string,
+  attempt: number,
+  claimed: Slice,
+  verdict: { findings: string[] },
+  verifyCommands: string[],
+  wtPath: string,
+  env?: Record<string, string>,
+): Promise<"approved" | "settled" | "retry"> {
+  const { projectDir, runId } = ctx;
+  const dir = sliceDir(projectDir, runId, sliceId);
+  const fixChain = buildModelChain(resolveWorkerModel(claimed.workerAgent, ctx.cfg), ctx.cfg.modelFallbacks);
+  const fixBudgetMs = ctx.debugTimeoutMs ?? DEFAULT_DEBUG_TIMEOUT_MS;
+  log(ctx, `  review-fix ${sliceId} — minor polish session (attempt ${attempt}, budget ${formatTimeout(fixBudgetMs)})`);
+
+  if (ctx.signal?.aborted) {
+    storeApi.abortSlice(projectDir, runId, sliceId);
+    return "settled";
+  }
+
+  const prompt = buildReviewFixPrompt(claimed, verdict.findings, attempt);
+  writeFileSync(join(dir, `review-fix-prompt-${attempt}.md`), prompt, "utf8");
+  const onProgress = progressFn(ctx, sliceId, "review-fix");
+  let fixStdout = "";
+  try {
+    const res = await runWithModelFallbacks(
+      ctx.runner,
+      { prompt, sliceId, attempt, label: `${sliceId} review-fix` },
+      { projectDir: wtPath, timeoutMs: fixBudgetMs, signal: ctx.signal, sessionDir: dir, onProgress, env },
+      fixChain,
+      {
+        accept: (stdout) => extractReportFromOutput(stdout) !== undefined,
+        preserve: () => preserveIncompleteWork(ctx, sliceId, attempt, "review-fix model unavailable, falling back"),
+        onModelAttempt: (model, i) => {
+          if (i > 0) log(ctx, `  review-fix model: ${displayModel(model)} (fallback ${i + 1}/${fixChain.length}, no retry consumed)`);
+        },
+        onFallback: (from, to) => {
+          log(ctx, `  review-fix model ${displayModel(from)} unavailable — falling back to ${displayModel(to)} (no retry consumed)`);
+        },
+      },
+    );
+    if (res.fellBack) {
+      writeFileSync(join(dir, `review-fix-${attempt}.models.json`), JSON.stringify({ tried: res.tried, accepted: displayModel(res.model) }, null, 2) + "\n", "utf8");
+    }
+    fixStdout = res.stdout;
+    writeFileSync(join(dir, `review-fix-${attempt}.log`), `exit=${res.exit} timedOut=${res.timedOut} durationMs=${res.durationMs}\n--- stdout ---\n${res.stdout}\n--- stderr ---\n${res.stderr}\n`, "utf8");
+    if (res.eventsJsonl) {
+      try {
+        writeFileSync(join(dir, `review-fix-${attempt}.events.jsonl`), res.eventsJsonl, "utf8");
+      } catch {
+        /* forensics are best-effort */
+      }
+    }
+    if (ctx.signal?.aborted) {
+      preserveIncompleteWork(ctx, sliceId, attempt, "abort");
+      storeApi.abortSlice(projectDir, runId, sliceId);
+      return "settled";
+    }
+    if (res.timedOut) {
+      preserveIncompleteWork(ctx, sliceId, attempt, "review-fix timeout");
+      log(ctx, summarize5(claimed, `review-fix timed out (no retry consumed)`));
+      return "retry";
+    }
+    if (res.exit !== 0 && extractReportFromOutput(res.stdout) === undefined) {
+      throw new Error(`review-fix exited ${res.exit} with no report`);
+    }
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    log(ctx, summarize5(claimed, `review-fix failure: ${msg} (no retry consumed)`));
+    return "retry";
+  }
+
+  const extracted = extractReportFromOutput(fixStdout);
+  try {
+    if (extracted === undefined) throw new Error("no <<<OMPO_REPORT>>> block in review-fix output");
+    const freport = validateCompletionReport(extracted, sliceId);
+    if (!freport.done) throw new Error(`review-fix gave up: ${freport.verificationNotes.slice(0, 300)}`);
+  } catch (err) {
+    log(ctx, summarize5(claimed, `review-fix inconclusive: ${err instanceof Error ? err.message : String(err)} (falling back to retry budget)`));
+    return "retry";
+  }
+  writeFileSync(join(dir, `review-minor-${attempt}.applied`), JSON.stringify({ at: new Date().toISOString(), findings: verdict.findings.length }, null, 2) + "\n", "utf8");
+
+  // A kill that landed during the fix session drops out before re-verify.
+  try {
+    if (loadRun(projectDir, runId).doc.slices.find((s) => s.id === sliceId)?.status === "aborted") {
+      preserveIncompleteWork(ctx, sliceId, attempt, "operator kill");
+      log(ctx, summarize5(claimed, `killed by operator — review-fix output discarded (no retry consumed)`));
+      return "settled";
+    }
+  } catch {
+    /* store unreadable — proceed; the gate below will surface it */
+  }
+
+  // Re-verify + re-merge under the commit mutex (same order guarantee as
+  // the first pass), then exactly one re-review with the lane closed.
+  const release = await ctx.commit.acquire();
+  try {
+    log(ctx, `  review-fix: re-running ${verifyCommands.length} gate(s) in ${wtPath}`);
+    const verdict2 = await runVerifiers(sliceId, attempt, verifyCommands, join(dir, "logs"), {
+      projectDir: wtPath,
+      onProgress: progressFn(ctx, sliceId, "review-fix"),
+      env,
+    });
+    writeFileSync(join(dir, "verdict.json"), JSON.stringify(verdict2, null, 2) + "\n", "utf8");
+    if (!verdict2.pass) {
+      const reason = `review-fix gate still red: ${verdict2.steps.filter((s) => s.exit !== 0).map((s) => s.command).join("; ").slice(0, 300)}`;
+      log(ctx, summarize5(claimed, `${reason} (falling back to retry budget)`));
+      return "retry";
+    }
+    const m = ctx.wt.merge(projectDir, runId, sliceId, attempt);
+    if (!m.merged) {
+      const conflictFile = join("slices", sliceId, `merge-${attempt}.conflict.txt`);
+      writeFileSync(join(dir, `merge-${attempt}.conflict.txt`), m.detail, "utf8");
+      storeApi.verifyFailed(projectDir, runId, sliceId, conflictFile, "merge_conflict");
+      storeApi.terminalFail(projectDir, runId, sliceId, "merge_conflict");
+      log(ctx, summarize5(claimed, `review-fix merge conflict — terminal. ${m.detail}`, undefined, true));
+      return "settled";
+    }
+    log(ctx, `  review-fix merged (${m.detail}) — one re-review decides`);
+  } finally {
+    release();
+  }
+
+  // Exact report objects are internal to runAttempt; re-read the current
+  // one from disk (the fix session never rewrites report.json).
+  const rereport: CompletionReport = JSON.parse(readFileSync(join(dir, "report.json"), "utf8")) as CompletionReport;
+  const reapproved = await runReview(ctx, sliceId, attempt, claimed, rereport, verifyCommands, wtPath, env, false);
+  return reapproved ? "approved" : "settled";
 }
 
 /**
@@ -798,10 +976,17 @@ async function runAttempt(ctx: AttemptCtx, sliceId: string): Promise<void> {
     });
     return;
   }
-
   if (ctx.signal?.aborted) {
     preserveIncompleteWork(ctx, sliceId, attempt, "abort");
     storeApi.abortSlice(projectDir, runId, sliceId);
+    return;
+  }
+
+  // Operator kill that landed mid-worker: the branch work is preserved but
+  // the output is dropped — a killed slice must never verify or merge.
+  if (fresh().status === "aborted") {
+    preserveIncompleteWork(ctx, sliceId, attempt, "operator kill");
+    log(ctx, summarize5(claimed, `killed by operator — worker output discarded (no retry consumed)`));
     return;
   }
 
@@ -836,6 +1021,15 @@ async function runAttempt(ctx: AttemptCtx, sliceId: string): Promise<void> {
     return;
   }
 
+  // Chaos abort-attempt draw (one draw per attempt, seeded): exercises the
+  // abort→resume path with real branch preservation, no retry consumed.
+  if (shouldAbortAttempt(ctx.faults, ctx.rng)) {
+    preserveIncompleteWork(ctx, sliceId, attempt, "fault-inject abort-attempt");
+    storeApi.abortSlice(projectDir, runId, sliceId);
+    log(ctx, summarize5(claimed, `FAULT INJECTED: abort-attempt — parked as aborted, resume re-queues (no retry consumed)`));
+    return;
+  }
+
   // 6+7. Commit phase (serialized): verify in the worktree, then merge.
   // The mutex is the shared-resource lock (one DB, one :3000, one batch
   // runner) and the integration order guarantee. `done` becomes visible only
@@ -845,24 +1039,59 @@ async function runAttempt(ctx: AttemptCtx, sliceId: string): Promise<void> {
   let gateEnv: Record<string, string> | undefined;
   const release = await ctx.commit.acquire();
   try {
+    // A kill that landed while queued on the mutex drops out here — the
+    // finally below still releases, and the branch work stays preserved.
+    if (fresh().status === "aborted") {
+      preserveIncompleteWork(ctx, sliceId, attempt, "operator kill");
+      log(ctx, summarize5(claimed, `killed by operator — gate skipped (no retry consumed)`));
+      return;
+    }
     log(ctx, `  verify: ${verifyCommands.length} command(s) in ${wtPath}`);
-    const runGate = (tag: string, env?: Record<string, string>) =>
-      runVerifiers(sliceId, attempt, verifyCommands, join(dir, "logs"), {
+    const runGate = (tag: string, env?: Record<string, string>): Promise<Verdict> => {
+      // Chaos fail-verify: the verdict is injected, no command runs — the
+      // retry/debugger/terminal path below exercises exactly as on a real red.
+      if (shouldFailVerify(ctx.faults, sliceId)) {
+        return Promise.resolve({
+          sliceId,
+          attempt,
+          pass: false,
+          steps: verifyCommands.map((command) => ({
+            name: command.slice(0, 80),
+            command,
+            exit: 1,
+            timedOut: false,
+            outputTail: "FAULT INJECTED: fail-verify — no command ran",
+            logRef: join("slices", sliceId, "logs"),
+          })),
+          at: new Date().toISOString(),
+        });
+      }
+      return runVerifiers(sliceId, attempt, verifyCommands, join(dir, "logs"), {
         projectDir: wtPath,
         onProgress: progressFn(ctx, sliceId, tag),
         env,
       });
+    };
     let verdict = await runGate("verify");
     writeFileSync(join(dir, "verdict.json"), JSON.stringify(verdict, null, 2) + "\n", "utf8");
 
     const logTail = (): void => {
       // Show WHY it failed: tail of the first failing step (full log is in
       // slices/<id>/logs/). Without this the retry/terminal line is a mystery.
-      const failedStep = verdict.steps.find((s) => s.exit !== 0);
-      const tail = failedStep?.outputTail?.trim();
-      if (tail) {
+      // Split `&&` chains put setup output in the PASSING prior gate, so its
+      // tail prints as context — otherwise `echo why && exit 1` loses the why.
+      const idx = verdict.steps.findIndex((s) => s.exit !== 0);
+      const failedStep = idx >= 0 ? verdict.steps[idx] : undefined;
+      if (failedStep) {
+        const tail = failedStep.outputTail?.trim() ?? "";
         const clipped = tail.length > 2000 ? tail.slice(-2000) : tail;
-        log(ctx, `  verify output tail (${failedStep!.command.slice(0, 80)}):\n${clipped.split("\n").map((l) => `    ${l}`).join("\n")}`);
+        const body = clipped ? clipped.split("\n").map((l) => `    ${l}`).join("\n") : "    (empty — gate produced no output)";
+        log(ctx, `  verify output tail (${failedStep.command.slice(0, 80)}):\n${body}`);
+      }
+      const prev = idx > 0 ? verdict.steps[idx - 1]?.outputTail?.trim() : undefined;
+      if (prev) {
+        const clipped = prev.length > 500 ? prev.slice(-500) : prev;
+        log(ctx, `  previous gate tail:\n${clipped.split("\n").map((l) => `    ${l}`).join("\n")}`);
       }
     };
 
@@ -953,8 +1182,13 @@ async function runAttempt(ctx: AttemptCtx, sliceId: string): Promise<void> {
   // 7. Independent review (fresh session, merged tree, own checks).
   // Runs OUTSIDE the commit mutex: review only reads and spot-checks, so it
   // may overlap other pipelines' work. Done lands only on approval.
+  // A kill that landed during verify/merge drops out before the audit.
+  if (fresh().status === "aborted") {
+    log(ctx, summarize5(claimed, `killed by operator — review skipped (no retry consumed)`));
+    return;
+  }
   if (!ctx.noReview) {
-    const approved = await runReview(ctx, sliceId, attempt, claimed, report, verifyCommands, gateEnv);
+    const approved = await runReview(ctx, sliceId, attempt, claimed, report, verifyCommands, wtPath, gateEnv);
     if (!approved) return;
   }
 
@@ -973,10 +1207,11 @@ async function runAttempt(ctx: AttemptCtx, sliceId: string): Promise<void> {
 export async function runRoadmapLoop(opts: LoopOptions): Promise<LoopResult> {
   const runner: WorkerRunner = opts.runner ?? runOmpWorker;
   const cfg = loadRoadmapConfig(opts.projectDir);
-  const jobs = Math.max(1, Math.floor(opts.jobs ?? 1));
+  const jobs = { value: Math.max(1, Math.floor(opts.jobs ?? 1)) };
   const wt = opts.worktrees ?? worktreeOpsFor(opts.projectDir);
   const commit = createMutex();
   const trackers = new Map<string, ProgressTracker>();
+  const faults = opts.faults ?? EMPTY_FAULTS;
   const ctx: AttemptCtx = {
     projectDir: opts.projectDir,
     runId: opts.runId,
@@ -999,8 +1234,17 @@ export async function runRoadmapLoop(opts: LoopOptions): Promise<LoopResult> {
     signal: opts.signal,
     onEvent: opts.onEvent,
     heartbeatMs: opts.heartbeatMs ?? 60000,
+    jobs,
+    paused: false,
+    faults,
+    rng: mulberry32(opts.seed ?? (Date.now() % 4294967296)),
+    controlOffset: latestSeq(opts.projectDir, opts.runId),
+    controlPollMs: Math.max(250, opts.controlPollMs ?? 2000),
     trackers,
   };
+  if (faultsArmed(faults)) {
+    log(ctx, `CHAOS ARMED (seed ${opts.seed ?? "random"}): ${faults.failVerify.length ? `fail-verify=${faults.failVerify.join("+")} ` : ""}${faults.abortAttempt ? `abort-attempt=${faults.abortAttempt} ` : ""}${faults.crashAfter !== undefined ? `crash-after=${faults.crashAfter}` : ""}`.trim());
+  }
   const finish = (): LoopResult => {
     const cursor = loadRun(opts.projectDir, opts.runId);
     const count = (s: string) => cursor.doc.slices.filter((x) => x.status === s).length;
@@ -1041,6 +1285,7 @@ export async function runRoadmapLoop(opts: LoopOptions): Promise<LoopResult> {
   // double-claim; the claim itself is conditional (pending-only) as backup.
   const claimNext = (inflight: Map<string, Promise<void>>): Slice | null => {
     if (opts.signal?.aborted) return null;
+    if (ctx.paused) return null;
     const doc: RoadmapDoc = loadRun(opts.projectDir, opts.runId).doc;
     const next = readySlices(doc).find((s) => !inflight.has(s.id)) ?? null;
     if (!next) return null;
@@ -1076,13 +1321,38 @@ export async function runRoadmapLoop(opts: LoopOptions): Promise<LoopResult> {
 
   const inflight = new Map<string, Promise<void>>();
   const startedAt = new Map<string, number>();
+  let settledTotal = 0;
   const settle = (sliceId: string): void => {
     inflight.delete(sliceId);
     startedAt.delete(sliceId);
     trackers.delete(sliceId);
+    settledTotal += 1;
+  };
+  // Operator control plane: drain queued intents (TUI keys, `ompo ctl`)
+  // at this safe point — between claims, never mid-mutation. Slice effects
+  // go through the conditional storeApi guards; jobs/pause install locally.
+  const drainControls = (): void => {
+    const { intents, offset } = drainIntents(opts.projectDir, opts.runId, ctx.controlOffset);
+    ctx.controlOffset = offset;
+    if (intents.length === 0) return;
+    for (const intent of intents) {
+      const res = applyIntent(opts.projectDir, opts.runId, intent, ctx);
+      log(ctx, res.ok
+        ? `⌁ control ${intent.kind}${intent.sliceId ? ` ${intent.sliceId}` : ""}: ${res.message}`
+        : `⌁ control ${intent.kind}${intent.sliceId ? ` ${intent.sliceId}` : ""} rejected: ${res.message}`);
+    }
+    ctx.controlOffset = latestSeq(opts.projectDir, opts.runId);
   };
   for (;;) {
-    while (inflight.size < jobs) {
+    drainControls();
+    if (shouldCrashAfter(ctx.faults, settledTotal)) {
+      // Injected crash: a real process death mid-run. The store is already
+      // consistent (every boundary wrote through), so `ompo resume` rebuilds.
+      log(ctx, `FAULT INJECTED: crash-after=${ctx.faults.crashAfter} — dying now (exit 137); resume to recover`);
+      await new Promise((r) => setTimeout(r, 50));
+      process.exit(137);
+    }
+    while (inflight.size < jobs.value) {
       const next = claimNext(inflight);
       if (!next) break;
       startedAt.set(next.id, Date.now());
@@ -1103,6 +1373,13 @@ export async function runRoadmapLoop(opts: LoopOptions): Promise<LoopResult> {
         const r = finish();
         return { ...r, exitCode: 2 };
       }
+      if (ctx.paused) {
+        // Paused with nothing in flight: never finish (pending work waits).
+        // Sleep past the control poll so resume/jobs land promptly; an abort
+        // during the nap still exits 2 on the next pass.
+        await new Promise((r) => setTimeout(r, ctx.controlPollMs));
+        continue;
+      }
       const r = finish();
       storeApi.finishRun(
         opts.projectDir,
@@ -1116,10 +1393,16 @@ export async function runRoadmapLoop(opts: LoopOptions): Promise<LoopResult> {
       return r;
     }
 
-    // Heartbeat + prompt abort: wake every heartbeatMs to report elapsed
-    // in-flight slices, or immediately on abort.
+    // Heartbeat + prompt abort + control poll: wake every heartbeatMs to
+    // report elapsed in-flight slices, every controlPollMs to drain `ompo
+    // ctl` intents (pause/jobs/kill must land in seconds, not minutes), or
+    // immediately on abort.
     const tick = new Promise<"tick">((resolve) => {
       const t = setTimeout(() => resolve("tick"), ctx.heartbeatMs);
+      t.unref?.();
+    });
+    const control = new Promise<"control">((resolve) => {
+      const t = setTimeout(() => resolve("control"), ctx.controlPollMs);
       t.unref?.();
     });
     const aborted = new Promise<"aborted">((resolve) => {
@@ -1130,6 +1413,7 @@ export async function runRoadmapLoop(opts: LoopOptions): Promise<LoopResult> {
     const winner = await Promise.race([
       Promise.allSettled(inflight.values()).then((): "settle" => "settle"),
       tick,
+      control,
       aborted,
     ]);
     if (winner === "tick") {

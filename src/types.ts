@@ -72,9 +72,14 @@ export type RunEventType =
   | "slice_failed_terminal"
   | "slice_blocked_env"
   | "slice_skipped"
+  | "slice_killed"
   | "run_aborted"
   | "run_resumed"
-  | "run_finished";
+  | "run_finished"
+  | "control_requested"
+  | "control_applied"
+  | "control_rejected"
+  | "roadmap_replanned";
 
 export interface RunEvent {
   seq: number;

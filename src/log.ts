@@ -33,9 +33,14 @@ const TYPES: Record<RunEvent["type"], { color: number; label: string }> = {
   slice_failed_terminal: { color: 31, label: "TERMINAL" }, // red
   slice_blocked_env: { color: 35, label: "env blocked" }, // magenta
   slice_skipped: { color: 90, label: "skipped" }, // gray
+  slice_killed: { color: 31, label: "killed" }, // red
   run_aborted: { color: 31, label: "ABORTED" }, // red
   run_resumed: { color: 36, label: "resumed" }, // cyan
   run_finished: { color: 90, label: "finished" }, // gray
+  control_requested: { color: 36, label: "control?" }, // cyan
+  control_applied: { color: 32, label: "control ok" }, // green
+  control_rejected: { color: 33, label: "control no" }, // yellow
+  roadmap_replanned: { color: 35, label: "replanned" }, // magenta
 };
 
 const tty = process.stdout.isTTY === true;

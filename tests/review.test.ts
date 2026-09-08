@@ -4,6 +4,7 @@ import {
   REVIEW_CLOSE,
   REVIEW_OPEN,
   ReviewValidationError,
+  buildReviewFixPrompt,
   buildReviewPrompt,
   extractReviewFromOutput,
   formatReviewFinding,
@@ -136,6 +137,31 @@ describe("reviewBlockSkeleton", () => {
     expect(parsed).not.toBeUndefined();
     const v = validateReviewVerdict(parsed, "a");
     expect(v.approved).toBe(true);
+  });
+});
+
+describe("verdict severity", () => {
+  test("minor parses as minor; absent or unknown parses as major (safe default)", () => {
+    expect(validateReviewVerdict({ sliceId: "a", approved: false, findings: ["lint"], notes: "", severity: "minor" }, "a").severity).toBe("minor");
+    expect(validateReviewVerdict({ sliceId: "a", approved: false, findings: ["wrong"], notes: "" }, "a").severity).toBe("major");
+    expect(validateReviewVerdict({ sliceId: "a", approved: false, findings: ["wrong"], notes: "", severity: "critical" }, "a").severity).toBe("major");
+    expect(validateReviewVerdict({ sliceId: "a", approved: true, findings: [], notes: "ok" }, "a").severity).toBe("major");
+  });
+
+  test("prompt teaches the minor/major rubric", () => {
+    const prompt = buildReviewPrompt(sampleSlice(), sampleReport(), ["bun test"]);
+    expect(prompt).toContain("minor");
+    expect(prompt).toContain("one bounded fix");
+    expect(prompt).toContain("When in doubt, major");
+  });
+
+  test("fix prompt scopes to the findings with the report contract", () => {
+    const prompt = buildReviewFixPrompt(sampleSlice(), ["fix the name", "add the edge test"], 2);
+    expect(prompt).toContain("fix the name");
+    expect(prompt).toContain("add the edge test");
+    expect(prompt).toContain("Fix ONLY the findings");
+    expect(prompt).toContain('"a"');
+    expect(prompt).toContain("done=false");
   });
 });
 
