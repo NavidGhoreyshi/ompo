@@ -10,7 +10,9 @@ import { spawnSync } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { parseRoadmapYml, type RoadmapConfig } from "./config.ts";
+import { listRuns, loadRun, lockHeld, sliceDir } from "./store.ts";
 import { parseRoadmap, splitGateChain } from "./parse.ts";
+import { crashedInFlight } from "./types.ts";
 
 export interface DoctorCheck {
   name: string;
@@ -347,6 +349,47 @@ function checkConfig(yml: {
   return { name: "config", ok: true, detail: "ok" };
 }
 
+/**
+ * Crash-triage check (read-only): the latest run's interrupted slices
+ * (running/verifying/aborted after a WSL kill, SIGKILL, or net-drop death).
+ * Live runs report ok (in-flight is normal there); a quiescent latest run
+ * with interrupted slices fails with the resume fix. Real-fs reads (the
+ * probes have no readdir seam) but never throws — the run() wrapper contains
+ * errors, and missing dirs simply mean "no runs".
+ */
+function checkRecovery(projectDir: string): DoctorCheck {
+  let runs: string[];
+  try {
+    runs = listRuns(projectDir);
+  } catch {
+    return { name: "recovery", ok: true, detail: "no runs" };
+  }
+  if (runs.length === 0) return { name: "recovery", ok: true, detail: "no runs" };
+  const runId = runs[runs.length - 1]!;
+  let crashed: string[];
+  let withReport = 0;
+  try {
+    const cursor = loadRun(projectDir, runId);
+    const stuck = cursor.doc.slices.filter((s) => crashedInFlight(s.status));
+    if (stuck.length === 0) return { name: "recovery", ok: true, detail: `run ${runId}: no interrupted slices` };
+    if (lockHeld(projectDir, runId)) {
+      return { name: "recovery", ok: true, detail: `run ${runId}: live (${stuck.length} in flight)` };
+    }
+    crashed = stuck.map((s) => s.id);
+    withReport = stuck.filter((s) => existsSync(join(sliceDir(projectDir, runId, s.id), "report.json"))).length;
+  } catch {
+    return { name: "recovery", ok: true, detail: `run ${runId} unreadable` };
+  }
+  return {
+    name: "recovery",
+    ok: false,
+    detail:
+      `run ${runId}: ${crashed.length} interrupted slice(s) (${crashed.join(", ")})` +
+      (withReport > 0 ? ` — ${withReport} with saved reports, resume replays them with no new worker` : ""),
+    fix: "`ompo resume` to re-queue (saved reports replay verify+merge+review)",
+  };
+}
+
 export async function runDoctor(
   projectDir: string,
   probes?: DoctorProbes,
@@ -368,6 +411,7 @@ export async function runDoctor(
   run(() => checkGit(p, projectDir), "git");
   run(() => checkTree(p, projectDir), "tree");
   run(() => checkGates(p, projectDir, yml.cfg), "gates");
+  run(() => checkRecovery(projectDir), "recovery");
   run(() => checkDisk(p), "disk");
   run(() => checkConfig(yml), "config");
   return { checks, ok: checks.every((c) => c.ok) };

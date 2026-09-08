@@ -16,6 +16,7 @@
 
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { spawnSync } from "node:child_process";
 import {
   depSummaries,
   failAttempt,
@@ -96,6 +97,17 @@ export interface LoopResult {
   blockedEnv: number;
 }
 
+
+/** Base HEAD SHA, best-effort (null outside git or on spawn failure). */
+function gitHead(projectDir: string): string | null {
+  try {
+    const r = spawnSync("git", ["-C", projectDir, "rev-parse", "HEAD"], { encoding: "utf8" });
+    const out = (r.stdout ?? "").trim();
+    return r.status === 0 && out !== "" ? out : null;
+  } catch {
+    return null;
+  }
+}
 
 /**
  * Debugger session: one bounded fresh worker that diagnoses a genuine
@@ -460,6 +472,16 @@ async function runAttempt(ctx: AttemptCtx, sliceId: string): Promise<void> {
 
   // 5. Persist report → verifying.
   writeFileSync(join(dir, "report.json"), JSON.stringify(report, null, 2) + "\n", "utf8");
+  // Crash durability: commit the worker's tree onto the slice branch now, so
+  // a WSL kill / SIGKILL before the merge loses no file work — the retry
+  // resumes from the branch instead of a bare tree. Warning-only: the merge
+  // path commits again, so a failed snapshot never fails the attempt.
+  try {
+    const snap = ctx.wt.commitWork(projectDir, runId, sliceId, attempt, "worker-finished snapshot");
+    if (!snap.nothingToCommit) log(ctx, `  preserved worker output: ${snap.detail}`);
+  } catch (err) {
+    log(ctx, `  snapshot warning for ${sliceId}: ${err instanceof Error ? err.message : String(err)}`);
+  }
   const tracker = ctx.trackers.get(sliceId);
   storeApi.workerFinished(projectDir, runId, sliceId, join("slices", sliceId, "report.json"), {
     exit: workerMeta?.exit ?? null,
@@ -479,6 +501,39 @@ async function runAttempt(ctx: AttemptCtx, sliceId: string): Promise<void> {
     preserveIncompleteWork(ctx, sliceId, attempt, "fault-inject abort-attempt");
     storeApi.abortSlice(projectDir, runId, sliceId);
     log(ctx, summarize5(claimed, `FAULT INJECTED: abort-attempt — parked as aborted, resume re-queues (no retry consumed)`));
+    return;
+  }
+
+  // Crash-recovery seam: everything below needs no worker — the saved report
+  // carries the done claim. Recovery replays runCommitPhase from report.json.
+  await runCommitPhase(ctx, sliceId, attempt, report);
+}
+
+/**
+ * Commit phase of one attempt (stages 6-8): verify → secret scan → merge →
+ * review → done. Split from runAttempt so crash recovery can replay it from
+ * a saved report.json without respawning the worker (the expensive part).
+ * Total by contract like runAttempt: failures land in-store, never throw.
+ */
+export async function runCommitPhase(
+  ctx: AttemptCtx,
+  sliceId: string,
+  attempt: number,
+  report: CompletionReport,
+): Promise<void> {
+  const { projectDir, runId } = ctx;
+  const dir = sliceDir(projectDir, runId, sliceId);
+  const fresh = () => loadRun(projectDir, runId).doc.slices.find((s) => s.id === sliceId)!;
+  const claimed = fresh();
+  const maxRetries = maxRetriesFor(claimed, ctx);
+  let wtPath: string;
+  try {
+    wtPath = ctx.wt.ensure(projectDir, runId, sliceId);
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    writeFileSync(join(dir, `worktree-${attempt}.error.txt`), msg, "utf8");
+    log(ctx, summarize5(claimed, `worktree failure: ${msg}`));
+    failAttempt(ctx, sliceId, claimed, join("slices", sliceId, `worktree-${attempt}.error.txt`));
     return;
   }
 
@@ -640,6 +695,22 @@ async function runAttempt(ctx: AttemptCtx, sliceId: string): Promise<void> {
     }
     if (m.nothingToCommit) log(ctx, `  merge: nothing to commit — worker changed no files, proceeding to review`);
     mergedDetail = m.detail;
+    // Crash journal: record the merge landing (branch + base HEAD) so a kill
+    // between here and slice_done is recognizable on resume — and so later
+    // done-trust checks know which base commit this slice was verified on.
+    // Advisory only: the merge already landed, a failed write changes nothing.
+    try {
+      const head = gitHead(projectDir);
+      if (head !== null) {
+        writeFileSync(
+          join(dir, `merge-${attempt}.json`),
+          JSON.stringify({ branch: sliceBranchOf(runId, sliceId), baseHead: head, at: new Date().toISOString() }, null, 2) + "\n",
+          "utf8",
+        );
+      }
+    } catch {
+      /* journal is advisory */
+    }
   } finally {
     release();
   }
@@ -667,6 +738,46 @@ async function runAttempt(ctx: AttemptCtx, sliceId: string): Promise<void> {
   } catch (err) {
     log(ctx, `  worktree cleanup warning for ${sliceId}: ${err instanceof Error ? err.message : String(err)}`);
   }
+}
+
+export interface RecoveryPlan {
+  sliceId: string;
+  attempt: number;
+  status: string;
+  report: CompletionReport;
+}
+
+/**
+ * Pure detector: crashed-in-flight slices (running/verifying/aborted after a
+ * WSL kill, SIGKILL, or net-drop death) that left a valid saved done-report.
+ * Torn or missing reports are skipped — the normal retry path owns those.
+ * No store writes here; the caller applies.
+ */
+export function scanRecovery(projectDir: string, runId: string): RecoveryPlan[] {
+  const out: RecoveryPlan[] = [];
+  let doc;
+  try {
+    doc = loadRun(projectDir, runId).doc;
+  } catch {
+    return out;
+  }
+  for (const s of doc.slices) {
+    if (s.status !== "running" && s.status !== "verifying" && s.status !== "aborted") continue;
+    let raw: string;
+    try {
+      raw = readFileSync(join(sliceDir(projectDir, runId, s.id), "report.json"), "utf8");
+    } catch {
+      continue;
+    }
+    try {
+      const report = validateCompletionReport(JSON.parse(raw), s.id);
+      if (!report.done) continue;
+      out.push({ sliceId: s.id, attempt: s.attempts, status: s.status, report });
+    } catch {
+      /* torn/invalid report: normal retry owns it */
+    }
+  }
+  return out;
 }
 
 export async function runRoadmapLoop(opts: LoopOptions): Promise<LoopResult> {
@@ -707,6 +818,24 @@ export async function runRoadmapLoop(opts: LoopOptions): Promise<LoopResult> {
     controlPollMs: Math.max(250, opts.controlPollMs ?? 2000),
     trackers,
   };
+  // Crash recovery (WSL kill / SIGKILL / net-drop death): slices that left a
+  // valid saved done-report replay the commit phase — gates re-run, the merge
+  // fast-paths when it already landed, review re-audits — instead of burning
+  // a fresh worker session on already-done work. Runs before all loop paths
+  // (including --slice) so every loop start heals. Replay failures never
+  // throw: the slice stays queued for the normal retry path.
+  for (const rec of scanRecovery(opts.projectDir, opts.runId)) {
+    try {
+      const cur = loadRun(opts.projectDir, opts.runId).doc.slices.find((s) => s.id === rec.sliceId)!;
+      if (cur.status !== "verifying") {
+        storeApi.workerFinished(opts.projectDir, opts.runId, rec.sliceId, join("slices", rec.sliceId, "report.json"));
+      }
+      log(ctx, `↻ crash recovery: ${rec.sliceId} left a saved report (attempt ${rec.attempt}, was ${rec.status}) — replaying verify+merge+review, no new worker`);
+      await runCommitPhase(ctx, rec.sliceId, rec.attempt, rec.report);
+    } catch (err) {
+      log(ctx, `↻ crash recovery: ${rec.sliceId} replay failed (${err instanceof Error ? err.message : String(err)}) — leaving for the normal retry path`);
+    }
+  }
   if (faultsArmed(faults)) {
     log(ctx, `CHAOS ARMED (seed ${opts.seed ?? "random"}): ${faults.failVerify.length ? `fail-verify=${faults.failVerify.join("+")} ` : ""}${faults.abortAttempt ? `abort-attempt=${faults.abortAttempt} ` : ""}${faults.crashAfter !== undefined ? `crash-after=${faults.crashAfter}` : ""}`.trim());
   }

@@ -1,9 +1,14 @@
 import { describe, expect, test } from "bun:test";
+import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import {
   explainConfig,
   runDoctor,
   type DoctorProbes,
 } from "../src/doctor.ts";
+import { parseRoadmap } from "../src/parse.ts";
+import { createRun, sliceDir, storeApi } from "../src/store.ts";
 
 const YML = `workerModel: test-model
 reviewModel: review-model
@@ -99,6 +104,7 @@ describe("runDoctor", () => {
       "git",
       "tree",
       "gates",
+      "recovery",
       "disk",
       "config",
     ]);
@@ -220,8 +226,30 @@ describe("runDoctor", () => {
       },
     });
     expect(res.ok).toBe(false);
-    expect(res.checks).toHaveLength(8);
+    expect(res.checks).toHaveLength(9);
     for (const c of res.checks) expect(typeof c.detail).toBe("string");
+  });
+
+  test("quiescent interrupted run fails recovery with resume fix", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "ompo-doctor-"));
+    createRun(dir, parseRoadmap("## [a] First slice\nDo X.\nVerify: echo ok\n"), "r1");
+    storeApi.claimSlice(dir, "r1", "a");
+    mkdirSync(sliceDir(dir, "r1", "a"), { recursive: true });
+    writeFileSync(join(sliceDir(dir, "r1", "a"), "report.json"), "{}\n", "utf8");
+    const res = await runDoctor(dir, greenProbes());
+    const rec = res.checks.find((c) => c.name === "recovery")!;
+    expect(rec.ok).toBe(false);
+    expect(rec.detail).toContain("1 interrupted slice(s) (a)");
+    expect(rec.detail).toContain("saved reports");
+    expect(rec.fix).toContain("ompo resume");
+    expect(res.ok).toBe(false);
+  });
+
+  test("clean run passes recovery", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "ompo-doctor-"));
+    createRun(dir, parseRoadmap("## [a] First slice\nDo X.\nVerify: echo ok\n"), "r1");
+    const res = await runDoctor(dir, greenProbes());
+    expect(res.checks.find((c) => c.name === "recovery")!).toMatchObject({ ok: true });
   });
 });
 

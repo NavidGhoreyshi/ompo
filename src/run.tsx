@@ -570,6 +570,7 @@ export async function runRoadmapLoopTui(opts: RunTuiLoopOptions): Promise<LoopRe
   };
   process.on("SIGINT", onSignal);
   process.on("SIGTERM", onSignal);
+  process.on("SIGHUP", onSignal);
   try {
     const result = await runRoadmapLoop({ ...opts, signal: ctrl.signal, onEvent: (m) => bus.push(m) });
     instance.unmount();
@@ -587,5 +588,6 @@ export async function runRoadmapLoopTui(opts: RunTuiLoopOptions): Promise<LoopRe
   } finally {
     process.off("SIGINT", onSignal);
     process.off("SIGTERM", onSignal);
+    process.off("SIGHUP", onSignal);
   }
 }

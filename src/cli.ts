@@ -490,6 +490,7 @@ async function cmdRun(a: Args): Promise<number> {
     };
     process.on("SIGINT", onSig);
     process.on("SIGTERM", onSig);
+    process.on("SIGHUP", onSig);
     // CI formats: loop chatter goes to stderr (stdout stays parseable) with a
     // progress bar; the formatted event stream + job summary print at the end.
     const onEvent =
@@ -514,6 +515,7 @@ async function cmdRun(a: Args): Promise<number> {
     } finally {
       process.off("SIGINT", onSig);
       process.off("SIGTERM", onSig);
+      process.off("SIGHUP", onSig);
     }
   } finally {
     releaseLock(a.project, runId);

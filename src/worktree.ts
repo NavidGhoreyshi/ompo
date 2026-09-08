@@ -175,7 +175,7 @@ export const inPlaceWorktreeOps: WorktreeOps = {
     return { merged: true, detail: "in-place (non-git project, nothing to merge)" };
   },
   commitWork(): MergeOutcome {
-    return { merged: true, detail: "in-place (non-git project, nothing to commit)" };
+    return { merged: true, detail: "in-place (non-git project, nothing to commit)", nothingToCommit: true };
   },
   remove(_projectDir: string, _runId: string, _sliceId: string): void {},
 };

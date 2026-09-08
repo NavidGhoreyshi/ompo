@@ -648,6 +648,7 @@ export async function runUnified(opts: UnifiedOptions): Promise<LoopResult> {
     const onSig = (): void => ctrl.abort();
     process.on("SIGINT", onSig);
     process.on("SIGTERM", onSig);
+    process.on("SIGHUP", onSig);
     const session: UnifiedSession = { phase: "planning", runId: null, note: "" };
     try {
       // eslint-disable-next-line no-console
@@ -655,6 +656,7 @@ export async function runUnified(opts: UnifiedOptions): Promise<LoopResult> {
     } finally {
       process.off("SIGINT", onSig);
       process.off("SIGTERM", onSig);
+      process.off("SIGHUP", onSig);
     }
   }
   // Lazy ink load: `--help`/headless paths never pay for react (cli.ts convention).
@@ -706,6 +708,7 @@ export async function runUnified(opts: UnifiedOptions): Promise<LoopResult> {
   };
   process.on("SIGINT", onSignal);
   process.on("SIGTERM", onSignal);
+  process.on("SIGHUP", onSignal);
   try {
     const result = await driveUnifiedFlow({ ...opts, preview: opts.preview ?? preview }, (m) => bus.push(m), session, ctrl.signal);
     instance.unmount();
@@ -727,5 +730,6 @@ export async function runUnified(opts: UnifiedOptions): Promise<LoopResult> {
   } finally {
     process.off("SIGINT", onSignal);
     process.off("SIGTERM", onSignal);
+    process.off("SIGHUP", onSignal);
   }
 }
