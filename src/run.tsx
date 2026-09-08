@@ -25,15 +25,27 @@ import { runRoadmapLoop, type LoopOptions, type LoopResult } from "./loop.ts";
 import {
   AgentsPane,
   agentStates,
+  bell,
   boardWidth,
   BoardPane,
+  clampTab,
   clip,
+  ForensicsPane,
+  HelpOverlay,
   hhmmss,
   InspectorPane,
+  isFailureStatus,
+  isNarrow,
+  moveSel,
+  mutexHolders,
+  newFailures,
+  nextFailure,
   preferredSel,
+  prevFailure,
   spinnerFrame,
   summaryText,
   viewForRun,
+  yankSlicePath,
   type RunView,
 } from "./watch.tsx";
 
@@ -264,6 +276,14 @@ export function LiveRunApp({ project, runId, bus, requestAbort }: LiveRunAppProp
   const [, bump] = useReducer((n: number) => n + 1, 0);
   // Log-panel scroll margin in visual rows (0 = stuck to the live tail).
   const [scrollUp, setScrollUp] = useState(0);
+  const [tab, setTab] = useState(0);
+  const [boardMode, setBoardMode] = useState<"list" | "dag">("list");
+  const [failuresOnly, setFailuresOnly] = useState(false);
+  const [showHelp, setShowHelp] = useState(false);
+  const [fullscreen, setFullscreen] = useState(false);
+  const [forensicScroll, setForensicScroll] = useState(0);
+  const [yanked, setYanked] = useState<string | null>(null);
+  const failedRef = useRef<string[]>([]);
 
   // Log pushes re-render immediately; board/inspector re-read on the poll.
   useEffect(() => bus.subscribe(bump), [bus]);
@@ -278,6 +298,15 @@ export function LiveRunApp({ project, runId, bus, requestAbort }: LiveRunAppProp
     return () => clearInterval(t);
   }, [project, runId]);
 
+  // Bell when a new failure lands (poll discovery, not on every render).
+  useEffect(() => {
+    if (!view || view.slices.length === 0) return;
+    const cur = view.slices.filter((s) => isFailureStatus(s.status)).map((s) => s.id);
+    const fresh = newFailures(failedRef.current, cur);
+    failedRef.current = cur;
+    if (fresh.length > 0 && !fullscreen) bell();
+  }, [view, fullscreen]);
+
   useInput((input, key) => {
     const v = viewRef.current;
     if (!v) return;
@@ -289,8 +318,71 @@ export function LiveRunApp({ project, runId, bus, requestAbort }: LiveRunAppProp
       requestAbort();
       return;
     }
+    if (key.escape) {
+      if (fullscreen) setFullscreen(false);
+      else if (showHelp) setShowHelp(false);
+      return;
+    }
+    if (input === "?") {
+      setShowHelp((h) => !h);
+      return;
+    }
+    if (showHelp) return;
+    if (key.return) {
+      if (v.detail) {
+        setFullscreen((f) => !f);
+        setForensicScroll(0);
+        setYanked(null);
+      }
+      return;
+    }
+    if (fullscreen) {
+      const page = 10;
+      if (key.pageUp) {
+        setForensicScroll((u) => u + page);
+        return;
+      }
+      if (key.pageDown) {
+        setForensicScroll((u) => Math.max(0, u - page));
+        return;
+      }
+      if (key.upArrow) {
+        setForensicScroll((u) => u + 1);
+        return;
+      }
+      if (key.downArrow) {
+        setForensicScroll((u) => Math.max(0, u - 1));
+        return;
+      }
+      if (input === "y" && v.detail) {
+        setYanked(yankSlicePath(project, v.runId, v.detail.sliceId));
+        return;
+      }
+      return;
+    }
     if (input === "r") {
       setView(viewForRun(project, runId, v.sel));
+      return;
+    }
+    if (input === "g") {
+      setBoardMode((m) => (m === "dag" ? "list" : "dag"));
+      return;
+    }
+    if (input === "F") {
+      setFailuresOnly((f) => !f);
+      return;
+    }
+    if (input === "n" || input === "p") {
+      // Strictly after/before sel, wrapping — repeat presses walk the failure list.
+      const target = input === "n" ? nextFailure(v.slices, v.sel + 1) : prevFailure(v.slices, v.sel - 1);
+      if (target >= 0) {
+        bell();
+        setView(viewForRun(project, runId, target));
+      }
+      return;
+    }
+    if (/^[1-6]$/.test(input)) {
+      setTab(clampTab(Number(input) - 1));
       return;
     }
     const page = 10;
@@ -311,7 +403,7 @@ export function LiveRunApp({ project, runId, bus, requestAbort }: LiveRunAppProp
       return;
     }
     if (input === "k" || key.upArrow || input === "j" || key.downArrow) {
-      const s = input === "k" || key.upArrow ? Math.max(v.sel - 1, 0) : Math.min(v.sel + 1, Math.max(v.slices.length - 1, 0));
+      const s = moveSel(v.slices, v.sel, input === "k" || key.upArrow ? -1 : 1, failuresOnly);
       setView(viewForRun(project, runId, s));
     }
   });
@@ -320,10 +412,19 @@ export function LiveRunApp({ project, runId, bus, requestAbort }: LiveRunAppProp
 
   const cols = process.stdout.columns ?? 80;
   const rows = process.stdout.rows ?? 24;
+  const narrow = isNarrow(cols);
   // Header (2) + panes + footer (1) leave the rest for the activity pane.
   const logRows = activityRows(rows);
-  const bw = boardWidth(cols);
+  const bw = narrow ? Math.max(24, cols - 2) : boardWidth(cols);
   const statusOf = (id: string) => view.slices.find((s) => s.id === id);
+
+  if (fullscreen && view.detail) {
+    return (
+      <Box flexDirection="column">
+        <ForensicsPane project={project} runId={view.runId} detail={view.detail} scrollUp={forensicScroll} height={rows} width={cols} yanked={yanked} />
+      </Box>
+    );
+  }
 
   return (
     <Box flexDirection="column">
@@ -341,13 +442,24 @@ export function LiveRunApp({ project, runId, bus, requestAbort }: LiveRunAppProp
       </Box>
 
       {/* Slice board + agents | attempt inspector (1-col gutter via inspector margin) */}
-      <Box flexDirection="row">
-        <Box flexDirection="column" width={bw} flexShrink={0}>
-          <BoardPane view={view} width={bw} />
-          <AgentsPane agents={agentStates(bus.lines)} statusOf={statusOf} width={bw} />
+      {narrow ? (
+        <Box flexDirection="column">
+          <BoardPane view={view} width={bw} mode={boardMode} failuresOnly={failuresOnly} />
+          <Box marginTop={1}>
+            <InspectorPane view={view} tab={tab} gutter={false} />
+          </Box>
+          <AgentsPane agents={agentStates(bus.lines)} statusOf={statusOf} width={bw} verifyingIds={mutexHolders(view.slices)} />
         </Box>
-        <InspectorPane view={view} />
-      </Box>
+      ) : (
+        <Box flexDirection="row">
+          <Box flexDirection="column" width={bw} flexShrink={0}>
+            <BoardPane view={view} width={bw} mode={boardMode} failuresOnly={failuresOnly} />
+            <AgentsPane agents={agentStates(bus.lines)} statusOf={statusOf} width={bw} verifyingIds={mutexHolders(view.slices)} />
+          </Box>
+          <InspectorPane view={view} tab={tab} />
+        </Box>
+      )}
+      {showHelp ? <HelpOverlay /> : null}
 
       <ActivityPane
         lines={bus.lines}
@@ -359,8 +471,9 @@ export function LiveRunApp({ project, runId, bus, requestAbort }: LiveRunAppProp
 
       <Box marginTop={1}>
         <Text dimColor>
-          <Text bold color="white">↑/↓</Text> select │ <Text bold color="white">PgUp/PgDn</Text> scroll │{" "}
-          <Text bold color="white">r</Text> refresh │ <Text bold color="yellow">q</Text> abort <Text dimColor>· finishes store write, exit 2</Text>
+          <Text bold color="white">↑/↓</Text> select │ <Text bold color="white">n/p</Text> failure │ <Text bold color="white">g</Text> dag │{" "}
+          <Text bold color="white">1-6</Text> tabs │ <Text bold color="white">Enter</Text> forensics │ <Text bold color="white">?</Text> help │{" "}
+          <Text bold color="yellow">q</Text> abort <Text dimColor>· finishes store write, exit 2</Text>
         </Text>
       </Box>
     </Box>

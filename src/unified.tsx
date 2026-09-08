@@ -38,14 +38,26 @@ import { ActivityPane, activityRows, createLogBus, type LogBus } from "./run.tsx
 import {
   AgentsPane,
   agentStates,
+  bell,
   BoardPane,
   boardWidth,
+  clampTab,
+  ForensicsPane,
+  HelpOverlay,
   hhmmss,
   InspectorPane,
+  isFailureStatus,
+  isNarrow,
+  moveSel,
+  mutexHolders,
+  newFailures,
+  nextFailure,
   preferredSel,
+  prevFailure,
   spinnerFrame,
   summaryText,
   viewForRun,
+  yankSlicePath,
   type RunView,
 } from "./watch.tsx";
 
@@ -219,6 +231,14 @@ export function UnifiedApp({ project, session, bus, requestAbort }: UnifiedAppPr
   const [, bump] = useReducer((n: number) => n + 1, 0);
   // Log-panel scroll margin in visual rows (0 = stuck to the live tail).
   const [scrollUp, setScrollUp] = useState(0);
+  const [tab, setTab] = useState(0);
+  const [boardMode, setBoardMode] = useState<"list" | "dag">("list");
+  const [failuresOnly, setFailuresOnly] = useState(false);
+  const [showHelp, setShowHelp] = useState(false);
+  const [fullscreen, setFullscreen] = useState(false);
+  const [forensicScroll, setForensicScroll] = useState(0);
+  const [yanked, setYanked] = useState<string | null>(null);
+  const failedRef = useRef<string[]>([]);
 
   // Log pushes re-render immediately; board/inspector re-read on the poll.
   useEffect(() => bus.subscribe(bump), [bus]);
@@ -240,6 +260,15 @@ export function UnifiedApp({ project, session, bus, requestAbort }: UnifiedAppPr
     return () => clearInterval(t);
   }, [project, session]);
 
+  // Bell when a new failure lands (poll discovery, not on every render).
+  useEffect(() => {
+    if (!view || view.slices.length === 0) return;
+    const cur = view.slices.filter((s) => isFailureStatus(s.status)).map((s) => s.id);
+    const fresh = newFailures(failedRef.current, cur);
+    failedRef.current = cur;
+    if (fresh.length > 0 && !fullscreen) bell();
+  }, [view, fullscreen]);
+
   useInput((input, key) => {
     if (input === "q") {
       requestAbort();
@@ -249,8 +278,75 @@ export function UnifiedApp({ project, session, bus, requestAbort }: UnifiedAppPr
       requestAbort();
       return;
     }
+    if (key.escape) {
+      if (fullscreen) setFullscreen(false);
+      else if (showHelp) setShowHelp(false);
+      return;
+    }
+    if (input === "?") {
+      setShowHelp((h) => !h);
+      return;
+    }
+    if (showHelp) return;
+    if (key.return) {
+      const v = viewRef.current;
+      if (v?.detail) {
+        setFullscreen((f) => !f);
+        setForensicScroll(0);
+        setYanked(null);
+      }
+      return;
+    }
+    if (fullscreen) {
+      const page = 10;
+      if (key.pageUp) {
+        setForensicScroll((u) => u + page);
+        return;
+      }
+      if (key.pageDown) {
+        setForensicScroll((u) => Math.max(0, u - page));
+        return;
+      }
+      if (key.upArrow) {
+        setForensicScroll((u) => u + 1);
+        return;
+      }
+      if (key.downArrow) {
+        setForensicScroll((u) => Math.max(0, u - 1));
+        return;
+      }
+      if (input === "y") {
+        const v = viewRef.current;
+        if (v?.detail) setYanked(yankSlicePath(project, v.runId, v.detail.sliceId));
+        return;
+      }
+      return;
+    }
     if (input === "r" && session.runId) {
       setView(viewForRun(project, session.runId, viewRef.current?.sel ?? 0));
+      return;
+    }
+    if (input === "g") {
+      setBoardMode((m) => (m === "dag" ? "list" : "dag"));
+      return;
+    }
+    if (input === "F") {
+      setFailuresOnly((f) => !f);
+      return;
+    }
+    if (input === "n" || input === "p") {
+      const v = viewRef.current;
+      if (!v || !session.runId) return;
+      // Strictly after/before sel, wrapping — repeat presses walk the failure list.
+      const target = input === "n" ? nextFailure(v.slices, v.sel + 1) : prevFailure(v.slices, v.sel - 1);
+      if (target >= 0) {
+        bell();
+        setView(viewForRun(project, session.runId, target));
+      }
+      return;
+    }
+    if (/^[1-6]$/.test(input)) {
+      setTab(clampTab(Number(input) - 1));
       return;
     }
     const page = 10;
@@ -273,13 +369,14 @@ export function UnifiedApp({ project, session, bus, requestAbort }: UnifiedAppPr
     const v = viewRef.current;
     if (!v || !session.runId) return;
     if (input === "k" || key.upArrow || input === "j" || key.downArrow) {
-      const s = input === "k" || key.upArrow ? Math.max(v.sel - 1, 0) : Math.min(v.sel + 1, Math.max(v.slices.length - 1, 0));
+      const s = moveSel(v.slices, v.sel, input === "k" || key.upArrow ? -1 : 1, failuresOnly);
       setView(viewForRun(project, session.runId, s));
     }
   });
 
   const cols = process.stdout.columns ?? 80;
   const rows = process.stdout.rows ?? 24;
+  const narrow = isNarrow(cols);
   // Header (2) + panes + footer (1) leave the rest for the activity pane.
   const logRows = activityRows(rows);
   const phaseLabel = session.phase === "planning"
@@ -290,8 +387,16 @@ export function UnifiedApp({ project, session, bus, requestAbort }: UnifiedAppPr
         ? view && view.live ? "RUNNING" : "running"
         : `done ${session.note}`;
   const live = session.phase === "planning" || session.phase === "ready" || (session.phase === "running" && (!view || view.live));
-  const bw = boardWidth(cols);
+  const bw = narrow ? Math.max(24, cols - 2) : boardWidth(cols);
   const statusOf = (id: string) => view?.slices.find((s) => s.id === id);
+
+  if (fullscreen && view?.detail) {
+    return (
+      <Box flexDirection="column">
+        <ForensicsPane project={project} runId={view.runId} detail={view.detail} scrollUp={forensicScroll} height={rows} width={cols} yanked={yanked} />
+      </Box>
+    );
+  }
 
   return (
     <Box flexDirection="column">
@@ -308,22 +413,44 @@ export function UnifiedApp({ project, session, bus, requestAbort }: UnifiedAppPr
           : <Text dimColor>no run yet — roadmap first</Text>}
       </Box>
 
-      <Box flexDirection="row">
-        <Box flexDirection="column" width={bw} flexShrink={0}>
-          {view ? <BoardPane view={view} width={bw} /> : (
+      {narrow ? (
+        <Box flexDirection="column">
+          {view ? <BoardPane view={view} width={bw} mode={boardMode} failuresOnly={failuresOnly} /> : (
             <Box flexDirection="column" borderStyle="round" borderColor="gray">
               <Text bold color="white"> slices </Text>
               <Text dimColor>(roadmap not ready)</Text>
             </Box>
           )}
-          <AgentsPane agents={agentStates(bus.lines)} statusOf={statusOf} width={bw} />
+          {view ? (
+            <Box marginTop={1}>
+              <InspectorPane view={view} tab={tab} gutter={false} />
+            </Box>
+          ) : (
+            <Box flexDirection="column" borderStyle="round" borderColor="gray" flexGrow={1} marginTop={1} paddingX={1}>
+              <Text dimColor>major step logs appear here once the run starts</Text>
+            </Box>
+          )}
+          <AgentsPane agents={agentStates(bus.lines)} statusOf={statusOf} width={bw} verifyingIds={view ? mutexHolders(view.slices) : []} />
         </Box>
-        {view ? <InspectorPane view={view} /> : (
-          <Box flexDirection="column" borderStyle="round" borderColor="gray" flexGrow={1} marginLeft={1} paddingX={1}>
-            <Text dimColor>major step logs appear here once the run starts</Text>
+      ) : (
+        <Box flexDirection="row">
+          <Box flexDirection="column" width={bw} flexShrink={0}>
+            {view ? <BoardPane view={view} width={bw} mode={boardMode} failuresOnly={failuresOnly} /> : (
+              <Box flexDirection="column" borderStyle="round" borderColor="gray">
+                <Text bold color="white"> slices </Text>
+                <Text dimColor>(roadmap not ready)</Text>
+              </Box>
+            )}
+            <AgentsPane agents={agentStates(bus.lines)} statusOf={statusOf} width={bw} verifyingIds={view ? mutexHolders(view.slices) : []} />
           </Box>
-        )}
-      </Box>
+          {view ? <InspectorPane view={view} tab={tab} /> : (
+            <Box flexDirection="column" borderStyle="round" borderColor="gray" flexGrow={1} marginLeft={1} paddingX={1}>
+              <Text dimColor>major step logs appear here once the run starts</Text>
+            </Box>
+          )}
+        </Box>
+      )}
+      {showHelp ? <HelpOverlay /> : null}
 
       <ActivityPane
         lines={bus.lines}
@@ -335,8 +462,9 @@ export function UnifiedApp({ project, session, bus, requestAbort }: UnifiedAppPr
 
       <Box marginTop={1}>
         <Text dimColor>
-          <Text bold color="white">↑/↓</Text> select │ <Text bold color="white">PgUp/PgDn</Text> scroll │{" "}
-          <Text bold color="white">r</Text> refresh │ <Text bold color="yellow">q</Text> abort <Text dimColor>· resume by re-running `ompo`</Text>
+          <Text bold color="white">↑/↓</Text> select │ <Text bold color="white">n/p</Text> failure │ <Text bold color="white">g</Text> dag │{" "}
+          <Text bold color="white">1-6</Text> tabs │ <Text bold color="white">Enter</Text> forensics │ <Text bold color="white">?</Text> help │{" "}
+          <Text bold color="yellow">q</Text> abort <Text dimColor>· resume by re-running `ompo`</Text>
         </Text>
       </Box>
     </Box>

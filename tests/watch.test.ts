@@ -1,15 +1,40 @@
 import { describe, expect, test } from "bun:test";
+import { mkdtempSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import {
   agentStates,
   boardWidth,
+  clampTab,
+  dagDepths,
+  elapsedSince,
+  failureIndices,
+  forensicsPaths,
   formatDuration,
   formatEventLine,
+  INSPECTOR_TABS,
+  isFailureStatus,
+  isNarrow,
+  moveSel,
+  mutexHolders,
+  newFailures,
+  nextFailure,
+  prevFailure,
   sliceMetrics,
   spinnerFrame,
   summaryText,
+  viewForRun,
+  visibleIndices,
   type RunView,
+  type SliceLine,
 } from "../src/watch.tsx";
+import { parseRoadmap } from "../src/parse.ts";
+import { createRun } from "../src/store.ts";
 import type { RunEvent } from "../src/types.ts";
+
+function line(id: string, status: SliceLine["status"], deps: string[] = []): SliceLine {
+  return { id, title: id, status, attempts: 1, updatedAt: "2026-09-07T08:00:00.000Z", deps };
+}
 describe("formatDuration", () => {
   test("seconds, minutes, hours", () => {
     expect(formatDuration(45000)).toBe("45s");
@@ -96,6 +121,128 @@ describe("agentStates tags", () => {
     expect(agentStates(["[a] turn 2…"])).toEqual([{ id: "a", tag: undefined, last: "turn 2…" }]);
     expect(agentStates(["[s1-deploy-b review] turn 5…"])).toEqual([
       { id: "s1-deploy-b", tag: "review", last: "turn 5…" },
+    ]);
+  });
+});
+
+describe("inspector tabs", () => {
+  test("six tabs in contract order, clamped", () => {
+    expect([...INSPECTOR_TABS]).toEqual(["Output", "Diff", "Verify", "Review", "Prompt", "Events"]);
+    expect(clampTab(0)).toBe(0);
+    expect(clampTab(5)).toBe(5);
+    expect(clampTab(99)).toBe(5);
+    expect(clampTab(-3)).toBe(0);
+    expect(clampTab(Number.NaN)).toBe(0);
+  });
+});
+
+describe("failure navigation", () => {
+  const slices = [line("a", "done"), line("b", "failed"), line("c", "running"), line("d", "blocked-env"), line("e", "failed")];
+
+  test("only failed + blocked-env count, running does not", () => {
+    expect(isFailureStatus("failed")).toBe(true);
+    expect(isFailureStatus("blocked-env")).toBe(true);
+    expect(isFailureStatus("running")).toBe(false);
+    expect(isFailureStatus("done")).toBe(false);
+    expect(failureIndices(slices)).toEqual([1, 3, 4]);
+  });
+
+  test("n walks forward wrapping, p walks back wrapping", () => {
+    expect(nextFailure(slices, 0)).toBe(1);
+    expect(nextFailure(slices, 2)).toBe(3);
+    expect(nextFailure(slices, 5)).toBe(1);
+    expect(prevFailure(slices, 4)).toBe(4);
+    expect(prevFailure(slices, 3)).toBe(3);
+    expect(prevFailure(slices, 2)).toBe(1);
+    expect(prevFailure(slices, 0)).toBe(4);
+  });
+
+  test("-1 when no failures", () => {
+    const clean = [line("a", "done"), line("b", "pending")];
+    expect(nextFailure(clean, 0)).toBe(-1);
+    expect(prevFailure(clean, 1)).toBe(-1);
+    expect(failureIndices(clean)).toEqual([]);
+  });
+});
+
+describe("failures-only filter + moveSel", () => {
+  const slices = [line("a", "done"), line("b", "failed"), line("c", "pending"), line("d", "blocked-env")];
+
+  test("visible rows shrink to failures, j/k clamp inside them", () => {
+    expect(visibleIndices(slices, false)).toEqual([0, 1, 2, 3]);
+    expect(visibleIndices(slices, true)).toEqual([1, 3]);
+    expect(moveSel(slices, 1, 1, true)).toBe(3);
+    expect(moveSel(slices, 3, 1, true)).toBe(3);
+    expect(moveSel(slices, 3, -1, true)).toBe(1);
+    expect(moveSel(slices, 0, 1, false)).toBe(1);
+    expect(moveSel(slices, 0, -1, false)).toBe(0);
+  });
+
+  test("hidden cursor re-enters at the nearest visible edge", () => {
+    expect(moveSel(slices, 0, 1, true)).toBe(1);
+    expect(moveSel(slices, 2, -1, true)).toBe(3);
+  });
+});
+
+describe("narrow layout + mutex + freshness", () => {
+  test("isNarrow flips at 80 columns", () => {
+    expect(isNarrow(79)).toBe(true);
+    expect(isNarrow(80)).toBe(false);
+    expect(isNarrow(120)).toBe(false);
+  });
+
+  test("mutex holders are exactly the verifying slices", () => {
+    const slices = [line("a", "running"), line("b", "verifying"), line("c", "verifying"), line("d", "done")];
+    expect(mutexHolders(slices)).toEqual(["b", "c"]);
+    expect(mutexHolders([line("a", "done")])).toEqual([]);
+  });
+
+  test("elapsedSince renders compact age, blank when unparseable", () => {
+    expect(elapsedSince("2026-09-07T08:00:00.000Z", Date.parse("2026-09-07T08:04:00.000Z"))).toBe("4m");
+    expect(elapsedSince("not-a-date", Date.now())).toBe("");
+  });
+
+  test("newFailures diffs id sets", () => {
+    expect(newFailures(["a"], ["a", "b"])).toEqual(["b"]);
+    expect(newFailures(["a", "b"], ["a"])).toEqual([]);
+    expect(newFailures([], [])).toEqual([]);
+  });
+});
+
+describe("dag depths", () => {
+  test("linear chain deepens, fan-in takes the max, roots stay 0", () => {
+    const slices = [line("a", "pending"), line("b", "pending", ["a"]), line("c", "pending", ["b"]), line("d", "pending", ["a", "c"])];
+    const depths = dagDepths(slices);
+    expect(depths.get("a")).toBe(0);
+    expect(depths.get("b")).toBe(1);
+    expect(depths.get("c")).toBe(2);
+    expect(depths.get("d")).toBe(3);
+  });
+
+  test("unknown deps and cycles stay total instead of looping", () => {
+    const slices = [line("a", "pending", ["ghost"]), line("b", "pending", ["c"]), line("c", "pending", ["b"])];
+    const depths = dagDepths(slices);
+    expect(depths.get("a")).toBe(0);
+    expect(depths.get("b")).toBeDefined();
+    expect(depths.get("c")).toBeDefined();
+  });
+});
+
+describe("forensics paths + view wiring", () => {
+  test("branch naming matches the worktree convention", () => {
+    const p = forensicsPaths("/proj", "run1", "s1");
+    expect(p.branch).toBe("ompo/run1/s1");
+    expect(p.dir).toBe(join("/proj", ".omp", "roadmap", "runs", "run1", "slices", "s1"));
+  });
+
+  test("viewForRun carries Depends through for DAG mode", () => {
+    const dir = mkdtempSync(join(tmpdir(), "ompo-dag-"));
+    const doc = parseRoadmap("## [a] A\nDo A.\nVerify: true\n\n## [b] B\nDo B.\nDepends: a\nVerify: true\n");
+    const { runId } = createRun(dir, doc);
+    const v = viewForRun(dir, runId, 0);
+    expect(v?.slices.map((s) => [s.id, s.deps])).toEqual([
+      ["a", []],
+      ["b", ["a"]],
     ]);
   });
 });
