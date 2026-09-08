@@ -1,0 +1,421 @@
+/**
+ * Slice forensics — read-only inspection of a finished (or in-flight) slice.
+ *
+ * Pure viewer over the store layout: the run cursor (roadmap.json) for slice
+ * meta, slices/<id>/{report,verdict,review}.json + prompt-*.md +
+ * worker-*.models.json for artifacts, and events.jsonl for timing. All
+ * artifact reads are best-effort — missing files leave the field undefined,
+ * never throw. The only hard error is an unknown run/slice.
+ *
+ * Filesystem access sits behind optional `io` overrides so tests can inject
+ * fakes; the default path uses the real fs against tmp-dir fixtures built
+ * with `createRun`.
+ */
+
+import { spawnSync } from "node:child_process";
+import { existsSync, readFileSync, readdirSync, rmSync } from "node:fs";
+import { join } from "node:path";
+import { listRuns, loadRun, readEvents, sliceDir } from "./store.ts";
+
+export interface SliceShow {
+  sliceId: string;
+  title: string;
+  status: string;
+  attempts: number;
+  deps: string[];
+  verify: string[];
+  report?: unknown;
+  verdict?: unknown;
+  review?: unknown;
+  promptTail?: string;
+  modelChain?: unknown;
+  timing: { durationMs: (number | null)[]; turns: number | null; tools: number | null };
+}
+
+export interface ForensicsIo {
+  readFile?: (p: string) => string;
+  exists?: (p: string) => boolean;
+  listDir?: (p: string) => string[];
+}
+
+function ioRead(io: ForensicsIo | undefined, p: string): string {
+  return io?.readFile ? io.readFile(p) : readFileSync(p, "utf8");
+}
+
+function ioExists(io: ForensicsIo | undefined, p: string): boolean {
+  return io?.exists ? io.exists(p) : existsSync(p);
+}
+
+function ioList(io: ForensicsIo | undefined, p: string): string[] {
+  if (io?.listDir) return io.listDir(p);
+  try {
+    return readdirSync(p).sort();
+  } catch {
+    return [];
+  }
+}
+
+function tryReadJson(io: ForensicsIo | undefined, p: string): unknown | undefined {
+  try {
+    if (!ioExists(io, p)) return undefined;
+    return JSON.parse(ioRead(io, p)) as unknown;
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * Load everything known about one slice. Throws
+ * `unknown slice "<id>"` when the run or slice does not exist.
+ */
+export function showSlice(
+  projectDir: string,
+  runId: string,
+  sliceId: string,
+  io?: ForensicsIo,
+): SliceShow {
+  let cursor;
+  try {
+    cursor = loadRun(projectDir, runId);
+  } catch {
+    throw new Error(`unknown slice "${sliceId}"`);
+  }
+  const slice = cursor.doc.slices.find((s) => s.id === sliceId);
+  if (!slice) throw new Error(`unknown slice "${sliceId}"`);
+
+  const dir = sliceDir(projectDir, runId, sliceId);
+  const report = tryReadJson(io, join(dir, "report.json"));
+  const verdict = tryReadJson(io, join(dir, "verdict.json"));
+  const review = tryReadJson(io, join(dir, "review.json"));
+
+  // Newest prompt artifact (worker prompt-*.md, review/debug prompts included).
+  let promptTail: string | undefined;
+  try {
+    const files = ioList(io, dir);
+    const promptFile = files
+      .filter((f) => f.endsWith(".md") && f.includes("prompt"))
+      .sort()
+      .at(-1);
+    if (promptFile) {
+      const text = ioRead(io, join(dir, promptFile));
+      if (text.trim()) promptTail = text.slice(-2000);
+    }
+  } catch {
+    /* advisory only */
+  }
+
+  // Newest model chain record wins.
+  let modelChain: unknown;
+  try {
+    const files = ioList(io, dir);
+    const modelsFile = files
+      .filter((f) => f.endsWith(".models.json"))
+      .sort()
+      .at(-1);
+    if (modelsFile) modelChain = tryReadJson(io, join(dir, modelsFile));
+  } catch {
+    /* advisory only */
+  }
+
+  // Timing from worker_finished events for this slice.
+  const timing: SliceShow["timing"] = { durationMs: [], turns: null, tools: null };
+  try {
+    const events = readEvents(projectDir, runId);
+    for (const e of events) {
+      if (e.sliceId !== sliceId || e.type !== "worker_finished") continue;
+      timing.durationMs.push(typeof e.durationMs === "number" ? e.durationMs : null);
+      if (e.stats && typeof e.stats.turns === "number" && typeof e.stats.tools === "number") {
+        timing.turns = e.stats.turns;
+        timing.tools = e.stats.tools;
+      }
+    }
+  } catch {
+    /* events unreadable — timing stays empty */
+  }
+
+  const out: SliceShow = {
+    sliceId: slice.id,
+    title: slice.title,
+    status: slice.status,
+    attempts: slice.attempts,
+    deps: [...slice.deps],
+    verify: [...slice.verify],
+    timing,
+  };
+  if (report !== undefined) out.report = report;
+  if (verdict !== undefined) out.verdict = verdict;
+  if (review !== undefined) out.review = review;
+  if (promptTail !== undefined) out.promptTail = promptTail;
+  if (modelChain !== undefined) out.modelChain = modelChain;
+  return out;
+}
+
+function section(title: string, body: string): string {
+  const trimmed = body.trim();
+  return `## ${title}\n${trimmed ? body : "(none)"}`;
+}
+
+/** Script-friendly multi-section rendering of a SliceShow. */
+export function renderShowText(s: SliceShow): string {
+  const deps = s.deps.length > 0 ? s.deps.join(", ") : "(none)";
+  const verify = s.verify.length > 0 ? s.verify.join("\n") : "(none)";
+  const spec = `attempts: ${s.attempts}\ndeps: ${deps}\nverify:\n${verify}`;
+
+  let reportBody = "(none)";
+  if (s.report !== undefined) {
+    const r = s.report as { summary?: unknown };
+    if (r && typeof r === "object" && typeof r.summary === "string" && r.summary.trim()) {
+      reportBody = r.summary;
+    } else {
+      reportBody = JSON.stringify(s.report, null, 2);
+    }
+  }
+
+  let verdictBody = "(none)";
+  if (s.verdict !== undefined) {
+    const v = s.verdict as { pass?: unknown; steps?: unknown };
+    if (v && typeof v === "object") {
+      const lines: string[] = [];
+      if (typeof v.pass === "boolean") lines.push(`pass: ${v.pass}`);
+      if (Array.isArray(v.steps)) {
+        for (const st of v.steps) {
+          const step = st as { name?: unknown; exit?: unknown; timedOut?: unknown };
+          lines.push(
+            `- ${String(step?.name ?? "?")}: exit=${String(step?.exit ?? "?")} timedOut=${String(step?.timedOut ?? "?")}`,
+          );
+        }
+      }
+      verdictBody = lines.length > 0 ? lines.join("\n") : JSON.stringify(s.verdict, null, 2);
+    } else {
+      verdictBody = JSON.stringify(s.verdict);
+    }
+  }
+
+  let reviewBody = "(none)";
+  if (s.review !== undefined) {
+    const r = s.review as { approved?: unknown; findings?: unknown; notes?: unknown };
+    if (r && typeof r === "object") {
+      const lines: string[] = [];
+      if (typeof r.approved === "boolean") lines.push(`approved: ${r.approved}`);
+      if (Array.isArray(r.findings) && r.findings.length > 0) {
+        lines.push("findings:");
+        for (const f of r.findings.slice(0, 10)) {
+          lines.push(`- ${typeof f === "string" ? f : JSON.stringify(f)}`);
+        }
+      }
+      if (typeof r.notes === "string" && r.notes.trim()) lines.push(`notes: ${r.notes}`);
+      reviewBody = lines.length > 0 ? lines.join("\n") : JSON.stringify(s.review, null, 2);
+    } else {
+      reviewBody = JSON.stringify(s.review);
+    }
+  }
+
+  const modelBody =
+    s.modelChain === undefined ? "(none)" : JSON.stringify(s.modelChain, null, 2);
+
+  const durations =
+    s.timing.durationMs.length > 0 ? s.timing.durationMs.map((d) => String(d)).join(", ") : "(none)";
+  const timingBody =
+    `durationMs: ${durations}\n` +
+    `turns: ${s.timing.turns ?? "(none)"}\n` +
+    `tools: ${s.timing.tools ?? "(none)"}`;
+
+  return [
+    `# ${s.sliceId} — ${s.title} [${s.status}]`,
+    section("Spec", spec),
+    section("Report summary", reportBody),
+    section("Verdict gates", verdictBody),
+    section("Review", reviewBody),
+    section("Model chain", modelBody),
+    section("Timing", timingBody),
+  ].join("\n\n");
+}
+
+export type ExecFn = (cmd: string, args: string[], cwd: string) => { exit: number; out: string };
+
+function defaultExec(cmd: string, args: string[], cwd: string): { exit: number; out: string } {
+  try {
+    const r = spawnSync(cmd, args, { cwd, encoding: "utf8", maxBuffer: 32 * 1024 * 1024 });
+    return { exit: r.status ?? 1, out: String(r.stdout ?? "") };
+  } catch (err) {
+    return { exit: 1, out: err instanceof Error ? err.message : String(err) };
+  }
+}
+
+export interface SliceDiff {
+  branch: string;
+  base: string | null;
+  stat: string;
+  diff: string;
+  note: string;
+}
+
+export const DIFF_CAP = 20000;
+
+/**
+ * Diff the slice's worktree branch against HEAD. Never throws: git failures
+ * surface as a `note`.
+ */
+export function diffSliceBranch(
+  projectDir: string,
+  runId: string,
+  sliceId: string,
+  exec: ExecFn = defaultExec,
+): SliceDiff {
+  const branch = `ompo/${runId}/${sliceId}`;
+  try {
+    const baseRes = exec("git", ["merge-base", "HEAD", branch], projectDir);
+    if (baseRes.exit !== 0 || !baseRes.out.trim()) {
+      return { branch, base: null, stat: "", diff: "", note: "in-place run, no branch" };
+    }
+    const base = baseRes.out.trim().split("\n")[0]!.trim();
+    const range = `${base}...${branch}`;
+    const statRes = exec("git", ["diff", "--stat", range], projectDir);
+    const diffRes = exec("git", ["diff", range], projectDir);
+    let diff = diffRes.exit === 0 ? diffRes.out : "";
+    let note = "";
+    if (diff.length > DIFF_CAP) {
+      diff = diff.slice(0, DIFF_CAP);
+      note = "truncated";
+    } else if (diffRes.exit !== 0 || statRes.exit !== 0) {
+      note = "git diff failed";
+    }
+    return { branch, base, stat: statRes.exit === 0 ? statRes.out : "", diff, note };
+  } catch (err) {
+    return {
+      branch,
+      base: null,
+      stat: "",
+      diff: "",
+      note: err instanceof Error ? err.message : String(err),
+    };
+  }
+}
+
+/**
+ * Git worktree path when the dir exists, else the project dir (in-place run).
+ */
+export function sliceWorktreePath(
+  projectDir: string,
+  runId: string,
+  sliceId: string,
+  exists: (p: string) => boolean = existsSync,
+): string {
+  const wt = join(projectDir, ".omp", "roadmap", "worktrees", `${runId}-${sliceId}`);
+  try {
+    return exists(wt) ? wt : projectDir;
+  } catch {
+    return projectDir;
+  }
+}
+
+export interface PruneOptions {
+  exec?: ExecFn;
+  removeDir?: (p: string) => void;
+  listRuns?: () => string[];
+  readdir?: (p: string) => string[];
+}
+
+/** Terminal slice statuses whose worktree dirs are safe to remove. */
+const PRUNEABLE = new Set(["done", "failed", "skipped"]);
+
+/**
+ * `git worktree prune`, then remove worktree dirs whose run is unknown or
+ * whose slice is terminal (done/failed/skipped). Dirs for running/verifying
+ * slices are always kept, as is everything when the run list is unavailable.
+ * Never throws for a single bad entry — it is kept.
+ */
+export function pruneWorktrees(
+  projectDir: string,
+  opts: PruneOptions = {},
+): { pruned: string[]; kept: string[] } {
+  const exec = opts.exec ?? defaultExec;
+  const removeDir =
+    opts.removeDir ?? ((p: string) => rmSync(p, { recursive: true, force: true }));
+  const pruned: string[] = [];
+  const kept: string[] = [];
+  try {
+    exec("git", ["worktree", "prune"], projectDir);
+  } catch {
+    /* best-effort */
+  }
+
+  const wtRoot = join(projectDir, ".omp", "roadmap", "worktrees");
+  let entries: string[];
+  try {
+    entries = opts.readdir ? opts.readdir(wtRoot) : readdirSync(wtRoot).sort();
+  } catch {
+    return { pruned, kept };
+  }
+
+  let known: string[] | undefined;
+  try {
+    known = opts.listRuns ? opts.listRuns() : listRuns(projectDir);
+  } catch {
+    known = undefined;
+  }
+  if (known === undefined) {
+    // Cannot tell unknown runs from live ones — keep everything.
+    return { pruned, kept: entries.map((e) => join(wtRoot, e)) };
+  }
+  const knownSet = new Set(known);
+  const longestFirst = [...known].sort((a, b) => b.length - a.length);
+
+  for (const entry of entries) {
+    const full = join(wtRoot, entry);
+    try {
+      // Split "<run>-<slice>": run ids contain a dash, so match the longest
+      // known run prefix instead of splitting on the first dash.
+      const runHit = longestFirst.find((r) => entry.startsWith(`${r}-`));
+      if (!runHit || !knownSet.has(runHit)) {
+        removeDir(full);
+        pruned.push(full);
+        continue;
+      }
+      const sliceId = entry.slice(runHit.length + 1);
+      if (!sliceId) {
+        kept.push(full);
+        continue;
+      }
+      const cursor = loadRun(projectDir, runHit);
+      const slice = cursor.doc.slices.find((s) => s.id === sliceId);
+      if (slice && PRUNEABLE.has(slice.status)) {
+        removeDir(full);
+        pruned.push(full);
+      } else {
+        kept.push(full);
+      }
+    } catch {
+      kept.push(full);
+    }
+  }
+  return { pruned, kept };
+}
+
+/**
+ * Last `n` lines of the newest worker-*.log for a slice. Empty array when
+ * there is no log. Never throws.
+ */
+export function tailSliceLog(
+  projectDir: string,
+  runId: string,
+  sliceId: string,
+  n = 50,
+  io?: ForensicsIo,
+): string[] {
+  try {
+    const dir = sliceDir(projectDir, runId, sliceId);
+    const files = ioList(io, dir);
+    const logFile = files
+      .filter((f) => /^worker-.*\.log$/.test(f))
+      .sort()
+      .at(-1);
+    if (!logFile) return [];
+    const text = ioRead(io, join(dir, logFile));
+    const lines = text.split("\n");
+    if (lines.length > 0 && lines[lines.length - 1] === "") lines.pop();
+    return lines.slice(-n);
+  } catch {
+    return [];
+  }
+}

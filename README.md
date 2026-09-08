@@ -260,7 +260,55 @@ kill -INT <pid>; ompo resume   # the honest version of the same drill
 Same seed replays the same abort draws (`jobs 1` for exact replay).
 FRESH run ids gain a `-sN` suffix so chaos runs correlate in `ompo list`.
 
-## Recovery runbook (plan §14)
+## Slice forensics (`show/diff/shell/logs/retry/skip/worktrees`)
+
+The inspector tabs, for scripts — all read the existing
+`.omp/roadmap/runs/<run>/slices/<id>/` layout, no format change:
+
+```bash
+ompo show s2        # report, verdict gates, review, prompt tail, model chain, timing
+ompo diff s2        # slice branch vs merge-base (stat + hunks; "in-place run, no branch" otherwise)
+ompo shell s2       # $SHELL with cwd=slice worktree (project dir when in-place)
+ompo logs s2 --tail 100 --follow
+ompo retry s2 --reason "flaky gate"   # quiescent: applies now; live: queued like ctl
+ompo skip s9 --reason "deferred"      # downstream proceeds past skips
+ompo worktrees prune                  # git worktree prune + drop dirs for terminal/unknown runs
+```
+
+## Post-run checklist (`checklist/fill`)
+
+`deferred.md` + `placeholders.md` already aggregate at run end; these make
+them actionable:
+
+```bash
+ompo checklist              # merged what — needs value; manual check, with file refs
+ompo checklist --json       # same list for scripts
+ompo fill --var SEED_ADMIN_PASSWORD=real --var PORT=4000
+                            # re-run gates of slices mentioning those vars (never writes the store)
+```
+
+## Operability (`doctor/config`)
+
+```bash
+ompo doctor                 # omp, models, tmux, git, tree, gates, disk, config — exit 1 on any FAIL
+ompo config --explain       # resolved .omp/roadmap.yml + per-slice effective models
+```
+
+## Observability (`stats/query/export/replay/log`)
+
+```bash
+ompo stats                  # pass rate, mean turns/tools/duration, per-Effort, top failing gates, fallbacks
+ompo query "failed where attempts>1"      # tiny DSL: all|<type-substr>|slice ID [where <field><op><value> ...]
+ompo query "slice s2 where exit!=0" --json
+ompo export --html --out report.html      # self-contained run report (stdout without --out)
+ompo replay                 # rebuild statuses from events.jsonl, diff vs cursor
+ompo log --format tap       # pretty|json|tap|github (also: ompo run --format github in CI)
+```
+
+CI: `ompo run --format tap|github|json` streams loop chatter to stderr
+with a progress bar (`████░░░░ 4/12`) so stdout stays parseable, then
+prints the formatted event stream plus `deferred.md`/`placeholders.md`
+as the job summary (`$GITHUB_STEP_SUMMARY` appended when set).
 
 - **Interrupt**: `Ctrl-C` (or `kill -INT`) finishes the in-flight store write,
   marks the slice `aborted`, exits `2`. Resume with `ompo resume` — `done`

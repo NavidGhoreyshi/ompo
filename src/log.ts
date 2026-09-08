@@ -20,8 +20,8 @@
 import { existsSync, readFileSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { listRuns, loadRun, readEvents } from "./store.ts";
+import { formatCiEvent, parseCiFormat, type CiFormat } from "./ci.ts";
 import type { RunEvent } from "./types.ts";
-
 const TYPES: Record<RunEvent["type"], { color: number; label: string }> = {
   run_started: { color: 36, label: "started" }, // cyan
   slice_claimed: { color: 36, label: "claimed" }, // cyan
@@ -100,6 +100,8 @@ export interface LogOptions {
   run?: string;
   follow: boolean;
   json: boolean;
+  /** pretty|json|tap|github (default pretty; --json forces json). */
+  format?: string;
 }
 
 /** Print the header line describing the run (pretty mode only). */
@@ -112,7 +114,7 @@ function header(project: string, runId: string): void {
 }
 
 /** Tail the events file for `--follow`: poll size, print only new seqs. */
-async function follow(project: string, runId: string, json: boolean): Promise<number> {
+async function follow(project: string, runId: string, format: CiFormat): Promise<number> {
   const path = join(project, ".omp", "roadmap", "runs", runId, "events.jsonl");
   let lastSize = 0;
   let lastSeq = 0;
@@ -132,8 +134,8 @@ async function follow(project: string, runId: string, json: boolean): Promise<nu
       }
       if (ev.seq <= lastSeq) continue;
       lastSeq = ev.seq;
-      if (json) console.log(JSON.stringify(ev));
-      else console.log(`${paint(90, ">")}${humanLine(ev)}`);
+      if (format === "pretty") console.log(`${paint(90, ">")}${humanLine(ev)}`);
+      else console.log(formatCiEvent(ev, format, { n: ev.seq, total: ev.seq + 1 }));
     }
   };
   for (;;) {
@@ -148,19 +150,29 @@ export async function cmdLog(o: LogOptions): Promise<number> {
     console.log("no runs yet");
     return 0;
   }
-  if (o.json && !o.follow) {
-    for (const ev of readEvents(o.project, runId)) console.log(JSON.stringify(ev));
-    return 0;
+  let format: CiFormat = "pretty";
+  try {
+    if (o.format !== undefined) format = parseCiFormat(o.format);
+    else if (o.json) format = "json";
+  } catch (err) {
+    console.error(String((err as Error).message));
+    return 1;
   }
-  if (!o.json) header(o.project, runId);
   const events = readEvents(o.project, runId);
+  if (format === "pretty") header(o.project, runId);
   if (!o.follow) {
-    if (!o.json && events.length === 0) console.log(dim("(no events)"));
-    for (const ev of events) console.log(o.json ? JSON.stringify(ev) : humanLine(ev));
+    if (format === "pretty" && events.length === 0) console.log(dim("(no events)"));
+    events.forEach((ev, i) => {
+      if (format === "pretty") console.log(humanLine(ev));
+      else console.log(formatCiEvent(ev, format, { n: i + 1, total: events.length }));
+    });
     return 0;
   }
-  // Follow: print what exists (unless --json, already handled), then tail.
-  for (const ev of events) console.log(o.json ? JSON.stringify(ev) : humanLine(ev));
+  // Follow: print what exists, then tail.
+  events.forEach((ev, i) => {
+    if (format === "pretty") console.log(humanLine(ev));
+    else console.log(formatCiEvent(ev, format, { n: i + 1, total: events.length }));
+  });
   console.log(dim("— following (Ctrl-C to stop) —"));
-  return follow(o.project, runId, o.json);
+  return follow(o.project, runId, format);
 }
