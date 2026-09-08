@@ -61,6 +61,9 @@ USAGE
                                             jobs --jobs N, pause, resume (queued on live runs, applied now otherwise)
   ompo replan [--run ID] [--project DIR]    adopt an edited ROADMAP.md into a quiescent run (keeps done,
                                             resets changed slices, refuses live runs and changed in-flight slices)
+  ompo revalidate [--run ID] [--project DIR] [--roadmap PATH] [--model M]
+                                            agentic truth-check: audit ROADMAP.md vs run evidence + tree,
+                                            propose ROADMAP.revalidate.md (adopt via replan)
   ompo plan [--project DIR] [--roadmap PATH]  preview the plan: slices, gates, deps + lint (exit 1 when blocked)
   ompo show <id> [--run ID]                inspector tabs for scripts (report, verdict, review, prompt, models, timing)
   ompo diff <id> [--run ID]                slice branch vs merge-base (stat + hunks, or "in-place run, no branch")
@@ -994,6 +997,26 @@ async function cmdReplay(a: Args): Promise<number> {
   return 1;
 }
 
+async function cmdRevalidate(a: Args): Promise<number> {
+  const { runRevalidate } = await import("./revalidate.ts");
+  try {
+    const res = await runRevalidate({
+      projectDir: a.project,
+      runId: a.run,
+      roadmapPath: a.roadmap,
+      workerModel: a.model,
+      timeoutMs: a.timeoutSec ? a.timeoutSec * 1000 : undefined,
+      onEvent: (m) => console.log(m),
+    });
+    console.log(`next: review ${res.proposalPath}, then \`ompo plan\` + \`ompo replan\` to adopt`);
+    return 0;
+  } catch (err) {
+    console.error(`revalidate failed: ${String((err as Error).message)}`);
+    return 1;
+  }
+}
+
+
 async function cmdImport(a: Args): Promise<number> {
   if (!a.from) {
     console.error("ompo import requires --from FILE (foreign roadmap in any template)");
@@ -1065,6 +1088,8 @@ async function main(): Promise<number> {
       return cmdUnified(a);
     case "import":
       return cmdImport(a);
+    case "revalidate":
+      return cmdRevalidate(a);
     case "run":
       return cmdRun(a);
     case "resume":

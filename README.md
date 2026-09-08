@@ -232,6 +232,21 @@ Removed ids drop (artifacts stay on disk). Refuses live runs (exit 3) and
 runs whose in-flight slices changed spec — finish, kill, or revert those
 sections first.
 
+## Revalidate a distrusted map (`ompo revalidate`)
+
+Resume trusts structure (drift → replan, lost merges → demote) but never
+judges whether the map describes reality. After a crashy stretch, an
+explicit agent audit proposes a revised map from run evidence + tree:
+
+```bash
+ompo revalidate --run 20260908-ab12cd   # → ROADMAP.revalidate.md (proposal only)
+diff ROADMAP.md ROADMAP.revalidate.md    # review
+cp ROADMAP.revalidate.md ROADMAP.md && ompo plan && ompo replan --run 20260908-ab12cd
+```
+
+Blocked proposals are never presented (same lint gate as the preview).
+The worker never writes ROADMAP.md — adoption stays human, via replan.
+
 ## Planner preview (`ompo plan`, unified gate)
 
 Execution is more mature than planning, so the plan shows itself before
