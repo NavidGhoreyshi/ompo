@@ -63,6 +63,7 @@ export interface EffortStats {
   meanDurationMs: number | null;
   meanTurns: number | null;
   meanTools: number | null;
+  meanTokens: number | null;
 }
 
 export interface RunStats {
@@ -70,9 +71,13 @@ export interface RunStats {
   totals: Record<string, number>;
   passRate: number | null;
   attempts: { total: number; perSlice: Record<string, number> };
+  meanAttempts: number | null;
   meanTurns: number | null;
   meanTools: number | null;
   meanDurationMs: number | null;
+  meanTokens: number | null;
+  tokensTotal: number | null;
+  handoffs: number;
   byEffort: Record<"lo" | "med" | "hi" | "none", EffortStats>;
   topFailingGates: { command: string; fails: number }[];
   modelFallbacks: Record<string, number>;
@@ -217,6 +222,19 @@ export function computeStats(projectDir: string, runId: string, io?: StatsIo): R
   const tools = finished
     .map((e) => e.stats?.tools)
     .filter((v): v is number => typeof v === "number");
+  const tokenTotals = finished
+    .map((e) => e.stats?.tokens?.total)
+    .filter((v): v is number => typeof v === "number" && Number.isFinite(v) && v >= 0);
+  const tokensTotal = tokenTotals.length > 0 ? tokenTotals.reduce((a, b) => a + b, 0) : null;
+  const meanAttempts = slices.length > 0 ? totalAttempts / slices.length : null;
+  // Handoffs: authoritative sidecar first, slice_handoff event count as fallback.
+  let handoffs = 0;
+  const handoffsRaw = tryJson<unknown>(tryRead(files, join(runDir(projectDir, runId), "handoffs.json")));
+  if (Array.isArray(handoffsRaw)) {
+    handoffs = handoffsRaw.length;
+  } else {
+    for (const e of events) if (e.type === "slice_handoff") handoffs += 1;
+  }
 
   const groups: Record<"lo" | "med" | "hi" | "none", Slice[]> = {
     lo: [],
@@ -241,6 +259,11 @@ export function computeStats(projectDir: string, runId: string, io?: StatsIo): R
       ),
       meanTools: mean(
         fe.map((e) => e.stats?.tools).filter((v): v is number => typeof v === "number"),
+      ),
+      meanTokens: mean(
+        fe
+          .map((e) => e.stats?.tokens?.total)
+          .filter((v): v is number => typeof v === "number" && Number.isFinite(v) && v >= 0),
       ),
     };
   }
@@ -267,9 +290,13 @@ export function computeStats(projectDir: string, runId: string, io?: StatsIo): R
     totals,
     passRate,
     attempts: { total: totalAttempts, perSlice },
+    meanAttempts,
     meanTurns: mean(turns),
     meanTools: mean(tools),
     meanDurationMs: mean(durations),
+    meanTokens: mean(tokenTotals),
+    tokensTotal,
+    handoffs,
     byEffort,
     topFailingGates,
     modelFallbacks: collectModelFallbacks(files, projectDir, runId, slices),
@@ -505,7 +532,7 @@ export function exportHtml(projectDir: string, runId: string, io?: StatsIo): str
       ([k, g]) =>
         `<tr><td>${esc(k)}</td><td>${esc(String(g.count))}</td><td>${esc(String(g.done))}</td>` +
         `<td>${esc(fmtStat(g.meanDurationMs))}</td><td>${esc(fmtStat(g.meanTurns))}</td>` +
-        `<td>${esc(fmtStat(g.meanTools))}</td></tr>`,
+        `<td>${esc(fmtStat(g.meanTools))}</td><td>${esc(fmtStat(g.meanTokens))}</td></tr>`,
     )
     .join("\n");
 
@@ -547,7 +574,7 @@ ${statusRows}
 </table>
 <h2>Stats</h2>
 <p>pass rate: ${esc(stats.passRate === null ? "-" : String(stats.passRate))}</p>
-<p>attempts: ${esc(String(stats.attempts.total))} mean turns: ${esc(fmtStat(stats.meanTurns))} mean tools: ${esc(fmtStat(stats.meanTools))} mean duration: ${esc(fmtStat(stats.meanDurationMs))}</p>
+<p>attempts: ${esc(String(stats.attempts.total))} mean attempts: ${esc(fmtStat(stats.meanAttempts))} mean turns: ${esc(fmtStat(stats.meanTurns))} mean tools: ${esc(fmtStat(stats.meanTools))} mean duration: ${esc(fmtStat(stats.meanDurationMs))} mean tokens: ${esc(fmtStat(stats.meanTokens))} tokens total: ${esc(stats.tokensTotal === null ? "-" : String(stats.tokensTotal))} handoffs: ${esc(String(stats.handoffs))}</p>
 <h3>Status totals</h3>
 <table>
 <tr><th>status</th><th>count</th></tr>
@@ -555,7 +582,7 @@ ${totalRows}
 </table>
 <h3>By effort</h3>
 <table>
-<tr><th>effort</th><th>count</th><th>done</th><th>mean duration</th><th>mean turns</th><th>mean tools</th></tr>
+<tr><th>effort</th><th>count</th><th>done</th><th>mean duration</th><th>mean turns</th><th>mean tools</th><th>mean tokens</th></tr>
 ${effortRows}
 </table>
 <h3>Top failing gates</h3>
