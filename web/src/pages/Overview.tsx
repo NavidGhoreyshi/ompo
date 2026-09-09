@@ -2,6 +2,7 @@ import type { RunDetail, RunEvent } from "../api.ts";
 import RunHeader from "../components/RunHeader.tsx";
 import SliceTable from "../components/SliceTable.tsx";
 import StatusBadge from "../components/StatusBadge.tsx";
+import Timeline from "../components/Timeline.tsx";
 import type { View } from "../components/Sidebar.tsx";
 
 export default function Overview({
@@ -33,8 +34,9 @@ export default function Overview({
   return (
     <>
       <RunHeader detail={detail} events={events} />
-
       <SliceTable slices={detail.slices} selected={selected} onSelect={onInspect} events={events} />
+
+      <Timeline events={events} slices={detail.slices} selected={selected} onSelect={onInspect} />
 
       <section className="omp-panel" aria-label="Needs attention">
         <h2>Needs attention ({attention.length})</h2>
