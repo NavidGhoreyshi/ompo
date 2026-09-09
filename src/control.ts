@@ -56,6 +56,18 @@ export function validateIntent(intent: ControlIntent): string | null {
   if (intent.kind === "park" && !intent.reason?.trim()) return "park needs a reason (what to fix before resume)";
   return null;
 }
+/**
+ * Rejection for a loop-local intent (set-jobs/pause/resume) on a quiescent
+ * run, or null when the kind needs no live loop. Names the real recovery
+ * (`ompo resume` restarts the loop): loop-`resume` and run-`resume` share a
+ * name, so a bare "needs a live loop" sends operators back to the same doomed
+ * button. Pure — CLI and the dashboard server share it so the classification
+ * and the guidance never drift.
+ */
+export function quiescentLoopLocalRejection(kind: ControlKind, runId: string): string | null {
+  if (kind !== "set-jobs" && kind !== "pause" && kind !== "resume") return null;
+  return `${kind} needs a live loop (no lock on run ${runId}) — run is quiescent; restart it with \`ompo resume --run ${runId}\``;
+}
 
 /** Queue an intent on the run's event log. Throws on invalid intents. */
 export function requestControl(projectDir: string, runId: string, intent: ControlIntent): RunEvent {

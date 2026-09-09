@@ -27,7 +27,7 @@ import {
   storeApi,
   StoreLockedError,
 } from "./store.ts";
-import { applyIntent, drainIntents, latestSeq, requestControl, validateIntent, type ControlIntent } from "./control.ts";
+import { applyIntent, drainIntents, latestSeq, quiescentLoopLocalRejection, requestControl, validateIntent, type ControlIntent } from "./control.ts";
 import { mergeRoadmap, replanGuards } from "./replan.ts";
 import { formatFinding, lintFailed, lintRoadmap } from "./lint.ts";
 import { parseFaultSpec, seedSuffix } from "./faults.ts";
@@ -59,8 +59,8 @@ USAGE
   ompo run [FLAGS]                          run roadmap — live TUI (board + logs) in a terminal,
                                             line logs when piped (--format pretty|json|tap|github)
   ompo resume [FLAGS]                       resume latest run (alias: run --resume)
-  ompo ctl ACTION [--run ID] [--slice ID]   live control: retry|skip|park|kill [--slice ID] [--reason R],
-                                            jobs --jobs N, pause, resume (queued on live runs, applied now otherwise)
+  ompo ctl ACTION [--run ID] [--slice ID]   live control: retry|skip|park|kill [--slice ID] [--reason R] (queued live, applied now when quiescent),
+                                            jobs --jobs N, pause, resume (live runs only; quiescent runs: \`ompo resume --run ID\`)
   ompo replan [--run ID] [--project DIR]    adopt an edited ROADMAP.md into a quiescent run (keeps done,
                                             resets changed slices, refuses live runs and changed in-flight slices)
   ompo revalidate [--run ID] [--project DIR] [--roadmap PATH] [--model M]
@@ -636,11 +636,11 @@ async function cmdCtl(a: Args): Promise<number> {
     console.error(bad);
     return 1;
   }
-  const loopLocal = intent.kind === "set-jobs" || intent.kind === "pause" || intent.kind === "resume";
   try {
     if (!lockHeld(a.project, runId)) {
-      if (loopLocal) {
-        console.error(`${intent.kind} needs a live loop (no lock on run ${runId})`);
+      const rejected = quiescentLoopLocalRejection(intent.kind, runId);
+      if (rejected) {
+        console.error(rejected);
         return 1;
       }
       // Quiescent run: no drain will come, so validate + apply immediately

@@ -15,6 +15,7 @@ import { join, normalize } from "node:path";
 import {
   applyIntent,
   drainIntents,
+  quiescentLoopLocalRejection,
   requestControl,
   validateIntent,
   type ControlIntent,
@@ -853,9 +854,11 @@ async function handleControl(projectDir: string, runId: string, req: Request): P
   if (invalid) return bad(invalid);
   // Quiescent loop-local intents need a live loop (cmdCtl parity): reject
   // before appending so the log never holds an outcome-less control_requested.
-  const loopLocal = intent.kind === "set-jobs" || intent.kind === "pause" || intent.kind === "resume";
-  if (loopLocal && !lockHeld(projectDir, runId)) {
-    return json({ ok: false, message: `${intent.kind} needs a live loop (no lock on run ${runId})`, applied: "direct" }, 200);
+  // The message names the run-resume recovery — loop-`resume` and run-`resume`
+  // share a name and a bare "needs a live loop" retries the doomed button.
+  const quiescentRejection = quiescentLoopLocalRejection(intent.kind, runId);
+  if (quiescentRejection && !lockHeld(projectDir, runId)) {
+    return json({ ok: false, message: quiescentRejection, applied: "direct" }, 200);
   }
   let requested;
   try {

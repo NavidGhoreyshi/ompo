@@ -164,9 +164,14 @@ Server handling is `requestControl` → outcome observation, byte-for-byte the
    `skip`/`park` are quiescent-only (`pending`/`failed`/`blocked-env` — kill
    in-flight work first); `kill` takes `pending`/`running`/`verifying`/
    `blocked-env` to `aborted` (loop drops post-kill output at the next stage
-   boundary); `set-jobs`/`pause`/`resume` are loop-local effects reported back
-   by `applyIntent`. `resume` on the store (`resumeRun`) is a separate,
-   quiescent-only CLI path — not part of the live control contract.
+  boundary); `set-jobs`/`pause`/`resume` are loop-local effects reported back
+  by `applyIntent`. `resume` on the store (`resumeRun`) is a separate,
+  quiescent-only CLI path — not part of the live control contract. Both names
+  collide, so the quiescent loop-local rejection (`quiescentLoopLocalRejection`,
+  shared by `cmdCtl` and POST …/control) names the recovery verbatim
+  (``ompo resume --run <id>``), and the dashboard hides the Run pause/resume/jobs
+  buttons on quiescent runs (`live === false`) behind that same restart command —
+  never offer a button whose intent is guaranteed-rejected.
 
 ## 6. Static asset strategy
 

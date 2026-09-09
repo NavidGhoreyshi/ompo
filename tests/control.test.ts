@@ -12,6 +12,7 @@ import {
   latestSeq,
   parseIntentPayload,
   queueControl,
+  quiescentLoopLocalRejection,
   requestControl,
   validateIntent,
 } from "../src/control.ts";
@@ -48,6 +49,21 @@ describe("validateIntent", () => {
     expect(validateIntent({ kind: "set-jobs", jobs: 33 })).not.toBeNull();
     expect(validateIntent({ kind: "pause", sliceId: "a" })).not.toBeNull();
     expect(validateIntent({ kind: "nope" as never })).not.toBeNull();
+  });
+});
+describe("quiescentLoopLocalRejection", () => {
+  test("slice intents need no live loop", () => {
+    for (const kind of ["retry", "skip", "park", "kill"] as const) {
+      expect(quiescentLoopLocalRejection(kind, "r")).toBeNull();
+    }
+  });
+
+  test("loop-local intents name the run-resume recovery", () => {
+    for (const kind of ["set-jobs", "pause", "resume"] as const) {
+      const msg = quiescentLoopLocalRejection(kind, "r")!;
+      expect(msg).toContain("needs a live loop");
+      expect(msg).toContain("ompo resume --run r");
+    }
   });
 });
 
@@ -312,6 +328,7 @@ describe("browser control path (POST /api/runs/:runId/control)", () => {
       const eventsBefore = readEvents(dir, "r").length;
       const pause = await postControl(server.url, "r", { kind: "pause" });
       expect(pause.body).toMatchObject({ ok: false, applied: "direct" });
+      expect(bodyMessage(pause.body)).toContain("ompo resume --run r");
       expect(readEvents(dir, "r")).toHaveLength(eventsBefore);
     } finally {
       releaseLock(dir, "r");

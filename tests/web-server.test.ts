@@ -105,6 +105,8 @@ describe("dashboard server", () => {
       const pause = await post({ kind: "pause" });
       expect(pause.status).toBe(200);
       expect(pause.body).toMatchObject({ ok: false, applied: "direct" });
+      const pauseMessage = pause.body && typeof pause.body === "object" && "message" in pause.body ? pause.body.message : undefined;
+      expect(pauseMessage).toContain("ompo resume --run r1");
 
       // Cross-origin writes are denied.
       const evil = await post({ kind: "pause" }, { origin: "https://evil.test" });

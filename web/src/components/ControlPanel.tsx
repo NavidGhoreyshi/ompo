@@ -263,56 +263,60 @@ export default function ControlPanel({
 
       <div className="omp-control-group" role="group" aria-label="Run actions">
         <span className="omp-control-label">Run</span>
-        <button
-          className="omp-btn"
-          disabled={busy}
-          title="pause claiming — in-flight slices finish, nothing new claims"
-          onClick={() => sendRun("pause")}
-        >
-          Pause
-        </button>
-        <button
-          className="omp-btn"
-          disabled={busy}
-          title="resume claiming"
-          onClick={() => sendRun("resume")}
-        >
-          Resume
-        </button>
-        <span className="omp-control-label">Jobs</span>
-        <button
-          className="omp-btn"
-          disabled={busy}
-          aria-label="Decrease jobs by one"
-          title="set-jobs −1 (1..32)"
-          onClick={() => stepJobs(-1)}
-        >
-          −
-        </button>
-        <input
-          className="omp-input"
-          value={jobs}
-          onChange={(e) => setJobs(e.target.value)}
-          size={3}
-          aria-label="jobs"
-        />
-        <button
-          className="omp-btn"
-          disabled={busy}
-          aria-label="Increase jobs by one"
-          title="set-jobs +1 (1..32)"
-          onClick={() => stepJobs(1)}
-        >
-          +
-        </button>
-        <button
-          className="omp-btn"
-          disabled={busy}
-          title="apply the typed jobs value (1..32)"
-          onClick={() => sendJobs(Number(jobs))}
-        >
-          Set
-        </button>
+        {live === false ? (
+          <p className="omp-hint">
+            Run is quiescent (no live loop) — pause/resume/jobs need a live loop. Restart it with{" "}
+            <code>ompo resume --run {runId}</code>
+          </p>
+        ) : (
+          <>
+            <button
+              className="omp-btn"
+              disabled={busy}
+              title="pause claiming — in-flight slices finish, nothing new claims"
+              onClick={() => sendRun("pause")}
+            >
+              Pause
+            </button>
+            <button className="omp-btn" disabled={busy} title="resume claiming" onClick={() => sendRun("resume")}>
+              Resume
+            </button>
+            <span className="omp-control-label">Jobs</span>
+            <button
+              className="omp-btn"
+              disabled={busy}
+              aria-label="Decrease jobs by one"
+              title="set-jobs −1 (1..32)"
+              onClick={() => stepJobs(-1)}
+            >
+              −
+            </button>
+            <input
+              className="omp-input"
+              value={jobs}
+              onChange={(e) => setJobs(e.target.value)}
+              size={3}
+              aria-label="jobs"
+            />
+            <button
+              className="omp-btn"
+              disabled={busy}
+              aria-label="Increase jobs by one"
+              title="set-jobs +1 (1..32)"
+              onClick={() => sendJobs(Number(jobs))}
+            >
+              +
+            </button>
+            <button
+              className="omp-btn"
+              disabled={busy}
+              title="apply the typed jobs value (1..32)"
+              onClick={() => sendJobs(Number(jobs))}
+            >
+              Set
+            </button>
+          </>
+        )}
       </div>
 
       <div className="omp-control-status" aria-live="polite">

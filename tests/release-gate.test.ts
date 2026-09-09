@@ -263,6 +263,10 @@ describe("release gate: control path (CLI + HTTP agree)", () => {
     expect(skip.exit).toBe(0);
     expect(skip.out).toMatch(/skip b/);
     expect(loadRun(dir, "r1").doc.slices.find((s) => s.id === "b")?.status).toBe("skipped");
+
+    const resume = cli(dir, "ctl", "resume", "--run", "r1");
+    expect(resume.exit).toBe(1);
+    expect(resume.out).toContain("ompo resume --run r1");
   });
 
   test("POST /control: direct-apply, validation parity, queued on live runs", async () => {
@@ -283,8 +287,12 @@ describe("release gate: control path (CLI + HTTP agree)", () => {
       expect((await post("r2", { kind: "retry" })).status).toBe(400);
       expect((await post("r2", { kind: "park", sliceId: "a" })).status).toBe(400);
       expect((await post("r2", { kind: "retry", sliceId: "zzz" })).status).toBe(404);
-      // Loop-local intents need a live loop, like `ompo ctl pause` quiescent.
-      expect(await post("r2", { kind: "pause" })).toMatchObject({ status: 200 });
+      // Loop-local intents need a live loop, like `ompo ctl resume` quiescent —
+      // the rejection names the run-resume recovery on both surfaces.
+      const paused = await post("r2", { kind: "pause" });
+      expect(paused).toMatchObject({ status: 200 });
+      const pausedMessage = paused.body && typeof paused.body === "object" && "message" in paused.body ? paused.body.message : undefined;
+      expect(pausedMessage).toContain("ompo resume --run r2");
       // Cross-origin writes are denied.
       expect((await post("r2", { kind: "pause" }, { origin: "https://evil.test" })).status).toBe(403);
 
