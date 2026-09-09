@@ -90,9 +90,14 @@ function noteProgress(t: ProgressTracker, line: string): void {
   else if (line.startsWith("tool ")) t.tools += 1;
 }
 
+/** Render one worker progress line exactly as the TUI/activity bus shows it. Pure. */
+export function formatProgressLine(sliceId: string, tag: string | undefined, line: string): string {
+  const prefix = tag ? `  [${sliceId} ${tag}]` : `  [${sliceId}]`;
+  return `${prefix} ${line}`;
+}
+
 /** Build an onProgress sink that logs prefixed lines and feeds the heartbeat. */
 export function progressFn(ctx: AttemptCtx, sliceId: string, tag?: string): (line: string) => void {
-  const prefix = tag ? `  [${sliceId} ${tag}]` : `  [${sliceId}]`;
   return (line) => {
     let t = ctx.trackers.get(sliceId);
     if (!t) {
@@ -100,7 +105,7 @@ export function progressFn(ctx: AttemptCtx, sliceId: string, tag?: string): (lin
       ctx.trackers.set(sliceId, t);
     }
     noteProgress(t, line);
-    log(ctx, `${prefix} ${line}`);
+    log(ctx, formatProgressLine(sliceId, tag, line));
   };
 }
 
@@ -112,7 +117,6 @@ export function progressFn(ctx: AttemptCtx, sliceId: string, tag?: string): (lin
  * per message. The tag mirrors progressFn so the line lands on the right row.
  */
 export function usageFn(ctx: AttemptCtx, sliceId: string, tag?: string): (u: TokenUsage) => void {
-  const prefix = tag ? `  [${sliceId} ${tag}]` : `  [${sliceId}]`;
   return (u) => {
     let t = ctx.trackers.get(sliceId);
     if (!t) {
@@ -123,7 +127,7 @@ export function usageFn(ctx: AttemptCtx, sliceId: string, tag?: string): (u: Tok
     const last = t.tokensLogged;
     if (last === undefined || Math.floor(u.total / 1000) > Math.floor(last / 1000)) {
       t.tokensLogged = u.total;
-      log(ctx, `${prefix} tok in=${u.input} out=${u.output} total=${u.total}`);
+      log(ctx, formatProgressLine(sliceId, tag, `tok in=${u.input} out=${u.output} total=${u.total}`));
     }
   };
 }

@@ -115,6 +115,13 @@ describe("loop", () => {
     expect(events.some((m) => m.includes("[a] turn 1…"))).toBe(true);
     expect(events.some((m) => m.includes("[a] tool bash: bun test"))).toBe(true);
     expect(events.some((m) => m.includes("model:"))).toBe(true);
+    // Same lines land in the generation's worker log as they render, exit
+    // footer appended after them — the live transcript `ompo logs --follow`
+    // and the dashboard Log tab read.
+    const transcript = readFileSync(join(sliceDir(dir, "r", "a"), "worker-1-g0.log"), "utf8");
+    expect(transcript).toContain("  [a] turn 1…");
+    expect(transcript).toContain("  [a] tool bash: bun test");
+    expect(transcript.indexOf("tool bash: bun test")).toBeLessThan(transcript.indexOf("exit=0"));
   });
 
   test("verify steps log start/finish live", async () => {

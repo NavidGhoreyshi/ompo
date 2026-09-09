@@ -14,13 +14,14 @@
  * Exit codes: 0 all done · 1 failures remain · 2 aborted · 3 resume-conflict.
  */
 
-import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
+import { appendFileSync, existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { spawnSync } from "node:child_process";
 import {
   depSummaries,
   DEFAULT_CONTEXT_CAP_TOKENS,
   failAttempt,
+  formatProgressLine,
   formatTimeout,
   log,
   maxRetriesFor,
@@ -605,7 +606,22 @@ async function runAttempt(ctx: AttemptCtx, sliceId: string): Promise<void> {
   const workerChain = buildModelChain(resolveWorkerModel(claimed.workerAgent, ctx.cfg), ctx.cfg.modelFallbacks);
   const workerTimeoutMs = ctx.timeoutMsOverride ?? claimed.timeoutMs
     ?? (ctx.cfg.workerTimeoutSec ? ctx.cfg.workerTimeoutSec * 1000 : undefined);
-  const onProgress = progressFn(ctx, sliceId);
+  const progress = progressFn(ctx, sliceId);
+  // Live transcript: the same progress lines the TUI streams land in the
+  // generation's worker log as they render, so `ompo logs --follow` and the
+  // dashboard Log tab stay live mid-attempt instead of showing only the exit
+  // footer. Best-effort: a failed append never fails real work.
+  let transcriptPath = "";
+  const onProgress = (line: string) => {
+    progress(line);
+    if (transcriptPath !== "") {
+      try {
+        appendFileSync(transcriptPath, formatProgressLine(sliceId, undefined, line) + "\n");
+      } catch {
+        /* transcript is observational */
+      }
+    }
+  };
   const onUsage = usageFn(ctx, sliceId);
   const cap = ctx.contextCapTokens;
   let workerOut = "";
@@ -623,6 +639,12 @@ async function runAttempt(ctx: AttemptCtx, sliceId: string): Promise<void> {
     workerOut = "";
     workerStdout = "";
     workerMeta = undefined;
+    transcriptPath = join(dir, `worker-${attempt}-g${gen}.log`);
+    try {
+      writeFileSync(transcriptPath, "", "utf8");
+    } catch {
+      transcriptPath = "";
+    }
     const genTracker = ctx.trackers.get(sliceId);
     if (genTracker) {
       genTracker.tokens = undefined;
@@ -700,7 +722,7 @@ async function runAttempt(ctx: AttemptCtx, sliceId: string): Promise<void> {
       workerMeta = { exit: res.exit, timedOut: res.timedOut, durationMs: res.durationMs };
       workerStdout = res.stdout;
       workerOut = `exit=${res.exit} timedOut=${res.timedOut} durationMs=${res.durationMs}\n--- stdout ---\n${res.stdout}\n--- stderr ---\n${res.stderr}\n`;
-      writeFileSync(join(dir, `worker-${attempt}-g${gen}.log`), workerOut, "utf8");
+      appendFileSync(join(dir, `worker-${attempt}-g${gen}.log`), workerOut, "utf8");
       if (res.eventsJsonl) {
         try {
           writeFileSync(join(dir, `worker-${attempt}-g${gen}.events.jsonl`), res.eventsJsonl, "utf8");
@@ -749,7 +771,7 @@ async function runAttempt(ctx: AttemptCtx, sliceId: string): Promise<void> {
     } catch (err) {
       stopForwarding();
       const msg = err instanceof Error ? err.message : String(err);
-      writeFileSync(join(dir, `worker-${attempt}-g${gen}.log`), workerOut + `\nSPAWN ERROR: ${msg}\n`, "utf8");
+      appendFileSync(join(dir, `worker-${attempt}-g${gen}.log`), workerOut + `\nSPAWN ERROR: ${msg}\n`, "utf8");
       // Same sidecar for generations that end by throw (timeout / non-zero
       // exit / cap abort racing spawn): usage observed before the throw is
       // still this generation's authoritative spend. Best-effort.
