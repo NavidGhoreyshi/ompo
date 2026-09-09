@@ -190,14 +190,24 @@ function hhmmss(iso: string): string {
   return `${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`;
 }
 
-function formatEventLine(e: RunEvent): string {
+/** Compact wall-clock duration: 45s · 5m · 2h04m. Shared with watch.tsx formatDuration — keep in sync. */
+export function formatDuration(ms: number): string {
+  const s = Math.max(0, Math.round(ms / 1000));
+  if (s < 60) return `${s}s`;
+  const m = Math.floor(s / 60);
+  if (m < 60) return `${m}m`;
+  return `${Math.floor(m / 60)}h${String(m % 60).padStart(2, "0")}m`;
+}
+
+/** One scannable event row: TIME → EVENT → SOURCE → OPTIONAL DETAIL. Shared with watch.tsx — keep in sync. */
+function formatEventLine(e: RunEvent, opts?: { source?: boolean }): string {
   const extras: string[] = [];
   if (e.attempt !== undefined) extras.push(`#${e.attempt}`);
   if (e.reason) extras.push(e.reason);
   if (e.stats) extras.push(`${e.stats.turns}t/${e.stats.tools}tl`);
-  if (e.durationMs !== undefined && /finished/.test(e.type)) extras.push(`${e.durationMs}ms`);
+  if (e.durationMs !== undefined && /finished/.test(e.type)) extras.push(formatDuration(e.durationMs));
   const suf = extras.length ? ` ${extras.join(" ")}` : "";
-  const src = !e.sliceId ? "" : ` ${e.sliceId}`;
+  const src = opts?.source === false || !e.sliceId ? "" : ` ${e.sliceId}`;
   return `${hhmmss(e.at)} ${e.type}${src}${suf}`;
 }
 
@@ -539,8 +549,8 @@ function sliceDetailFor(projectDir: string, runId: string, sliceId: string): Sli
     generation: slice.generation,
     verify: [...slice.verify],
     deps: [...slice.deps],
-    recentEvents: sliceEvents.slice(-2).reverse().map(formatEventLine),
-    history: sliceEvents.slice(0, -2).slice(-8).reverse().map(formatEventLine),
+    recentEvents: sliceEvents.slice(-2).reverse().map((e) => formatEventLine(e, { source: false })),
+    history: sliceEvents.slice(0, -2).slice(-8).reverse().map((e) => formatEventLine(e, { source: false })),
     metrics: sliceMetrics(events, sliceId),
     generations: sliceGenerations(projectDir, runId, sliceId, files, events),
     artifacts: {
@@ -639,7 +649,8 @@ function sliceDetailFor(projectDir: string, runId: string, sliceId: string): Sli
 function newestWorkerLog(projectDir: string, runId: string, sliceId: string): string | null {
   try {
     const dir = join(projectDir, ".omp", "roadmap", "runs", runId, "slices", sliceId);
-    return readdirSync(dir).sort().filter((f) => /^worker-.*\.log$/.test(f)).at(-1) ?? null;
+    // Same generation-aware pattern as sliceDetailFor/workerLog (watch.tsx parity): worker/debug attempt logs with optional -gN.
+    return readdirSync(dir).sort().filter((f) => /^(worker|debug)-\d+(-g\d+)?\.log$/.test(f)).at(-1) ?? null;
   } catch {
     return null;
   }
