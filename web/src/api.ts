@@ -37,7 +37,7 @@ export interface SliceDetail {
   verify: string[];
   deps: string[];
   reportSummary?: string;
-  metrics?: { turns: number; tools: number; durationMs?: number };
+  metrics?: { turns: number; tools: number; durationMs?: number; tokens?: { input: number; output: number; total: number } };
   recentEvents: string[];
   history: string[];
   note?: string;
@@ -70,7 +70,7 @@ export interface AgentRow {
   agent?: string;
   effort?: string;
   lastLine: string;
-  metrics?: { turns: number; tools: number; durationMs?: number };
+  metrics?: { turns: number; tools: number; durationMs?: number; tokens?: { input: number; output: number; total: number } };
 }
 
 export interface RunEvent {

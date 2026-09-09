@@ -95,7 +95,7 @@ export interface SliceDetail {
   verify: string[];
   deps: string[];
   reportSummary?: string;
-  metrics?: { turns: number; tools: number; durationMs?: number };
+  metrics?: { turns: number; tools: number; durationMs?: number; tokens?: { input: number; output: number; total: number } };
   recentEvents: string[];
   history: string[];
   note?: string;
@@ -138,8 +138,8 @@ export interface AgentRow {
   effort?: Effort;
   /** Last formatted event line for the slice ("" when no events yet). */
   lastLine: string;
-  /** Last finished worker counters where available (turns/tools/durationMs). */
-  metrics?: { turns: number; tools: number; durationMs?: number };
+  /** Last finished worker counters where available (turns/tools/durationMs/tokens). */
+  metrics?: { turns: number; tools: number; durationMs?: number; tokens?: { input: number; output: number; total: number } };
 }
 
 // ---- small pure projections (ported from watch.tsx — no ink import here) ----
@@ -180,9 +180,10 @@ function sliceMetrics(events: RunEvent[], sliceId: string): SliceDetail["metrics
   for (let i = events.length - 1; i >= 0; i--) {
     const e = events[i]!;
     if (e.sliceId === sliceId && e.type === "worker_finished" && e.stats) {
-      return e.durationMs !== undefined
-        ? { turns: e.stats.turns, tools: e.stats.tools, durationMs: e.durationMs }
-        : { turns: e.stats.turns, tools: e.stats.tools };
+      const m: NonNullable<SliceDetail["metrics"]> = { turns: e.stats.turns, tools: e.stats.tools };
+      if (e.durationMs !== undefined) m.durationMs = e.durationMs;
+      if (e.stats.tokens) m.tokens = { ...e.stats.tokens };
+      return m;
     }
   }
   return undefined;
@@ -342,8 +343,8 @@ function sliceDetailFor(projectDir: string, runId: string, sliceId: string): Sli
   }
   const events = readEvents(projectDir, runId);
   const sliceEvents = events.filter((e) => e.sliceId === sliceId);
-  const promptFile = files.filter((f) => /^(review-prompt|debug-prompt|prompt)-\d+\.md$/.test(f)).sort().at(-1);
-  const workerLog = files.filter((f) => /^(worker|debug)-\d+\.log$/.test(f)).sort().at(-1);
+  const promptFile = files.filter((f) => /^(review-fix-prompt|review-prompt|debug-prompt|prompt)-\d+(-g\d+)?\.md$/.test(f)).sort().at(-1);
+  const workerLog = files.filter((f) => /^(worker|debug)-\d+(-g\d+)?\.log$/.test(f)).sort().at(-1);
   const detail: SliceDetail = {
     sliceId: slice.id,
     title: slice.title,
