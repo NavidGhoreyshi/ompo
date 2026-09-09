@@ -7,6 +7,12 @@ export interface RunSummary {
   live: boolean;
   counts: { done: number; active: number; failed: number; skipped: number; blockedEnv: number; pending: number };
   workers: number;
+  total: number;
+  status: string;
+  retries: number;
+  handoffs: number;
+  tokens: number | null;
+  cost: number | null;
 }
 
 export interface SliceSummary {

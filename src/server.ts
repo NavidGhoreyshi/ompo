@@ -68,6 +68,18 @@ export interface RunSummary {
   counts: Counts;
   /** Live workers (slices with status running/verifying). Mirrors counts.active. */
   workers: number;
+  /** Total slices in the run cursor. */
+  total: number;
+  /** Overall run status: running while live, else failed/blocked-env/done/pending. */
+  status: string;
+  /** Extra attempts beyond the first per slice (sum of max(0, attempts-1)). */
+  retries: number;
+  /** Fresh-context handoffs recorded in handoffs.json (0 when none). */
+  handoffs: number;
+  /** Authoritative token spend (sum of worker_finished stats.tokens.total); null when none reported. */
+  tokens: number | null;
+  /** Authoritative USD cost (sum of stats.tokens.cost.total); null when no envelope reported cost. */
+  cost: number | null;
 }
 
 export interface SliceSummary {
@@ -420,20 +432,52 @@ function summarizeRun(projectDir: string, runId: string): RunSummary | null {
   }
   const count = (s: SliceStatus) => cursor.doc.slices.filter((x) => x.status === s).length;
   const active = count("running") + count("verifying");
+  const counts: Counts = {
+    done: count("done"),
+    active,
+    failed: count("failed"),
+    skipped: count("skipped"),
+    blockedEnv: count("blocked-env"),
+    pending: cursor.doc.slices.filter((x) => !["done", "failed", "skipped"].includes(x.status)).length,
+  };
+  const total = cursor.doc.slices.length;
+  const live = lockHeld(projectDir, runId);
+  let retries = 0;
+  for (const s of cursor.doc.slices) {
+    if (typeof s.attempts === "number" && s.attempts > 1) retries += s.attempts - 1;
+  }
+  let handoffs = 0;
+  try {
+    handoffs = loadHandoffs(projectDir, runId).length;
+  } catch {
+    handoffs = 0;
+  }
+  let tokens: number | null = null;
+  let cost: number | null = null;
+  try {
+    for (const e of readEvents(projectDir, runId)) {
+      if (e.type !== "worker_finished" || !e.stats?.tokens) continue;
+      const t = e.stats.tokens.total;
+      if (typeof t === "number" && Number.isFinite(t) && t >= 0) tokens = (tokens ?? 0) + t;
+      const c = e.stats.tokens.cost?.total;
+      if (typeof c === "number" && Number.isFinite(c) && c >= 0) cost = (cost ?? 0) + c;
+    }
+  } catch {
+    /* events unreadable — tokens/cost stay unknown */
+  }
   return {
     runId,
     createdAt: cursor.createdAt,
     updatedAt: cursor.updatedAt,
-    live: lockHeld(projectDir, runId),
-    counts: {
-      done: count("done"),
-      active,
-      failed: count("failed"),
-      skipped: count("skipped"),
-      blockedEnv: count("blocked-env"),
-      pending: cursor.doc.slices.filter((x) => !["done", "failed", "skipped"].includes(x.status)).length,
-    },
+    live,
+    counts,
     workers: active,
+    total,
+    status: live ? "running" : counts.failed > 0 ? "failed" : counts.blockedEnv > 0 ? "blocked-env" : counts.active > 0 ? "running" : total > 0 && counts.done + counts.skipped === total ? "done" : "pending",
+    retries,
+    handoffs,
+    tokens,
+    cost,
   };
 }
 
