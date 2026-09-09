@@ -100,9 +100,10 @@
       "tokens": 230
     },
     "narrow": {
-      "breakpoint760": true,
-      "tableScroll": true,
-      "shellClip": true
+      "viewportShell": true,
+      "panelScroll": true,
+      "stacked900": true,
+      "tableScroll": true
     },
     "longOutput": {
       "workerTailLines": 60,

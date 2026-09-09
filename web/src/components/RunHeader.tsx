@@ -1,29 +1,58 @@
-import type { RunDetail, RunEvent } from "../api.ts";
+import type { AgentRow, RunDetail, RunEvent } from "../api.ts";
 import { formatElapsed, formatTokens } from "../lib/format.ts";
-import StatusBadge from "./StatusBadge.tsx";
+import { describeEvent } from "../lib/events.ts";
+import { heroAction, preferredSliceId } from "../lib/selection.ts";
+import { symbolForStatus, toneForStatus } from "./StatusBadge.tsx";
 
 /**
- * Run header: real observed values only — totals derived from the run
- * cursor, elapsed from created/updated timestamps, token spend summed
- * from finished-worker event stats where the backend reports them.
- * No forecasts, ETAs, or cost estimates (no authoritative source).
+ * Run hero, not telemetry: first glance answers "s5a is running,
+ * generation 1, on worker L0, working on X — while the rest is
+ * done/pending." Hierarchy: current run → what is happening (hero slice +
+ * state) → which worker (lane) → what it is on (live line, else latest
+ * slice event, else status fallback) → quiet telemetry (counts, elapsed,
+ * tokens, workers, 12px muted). No forecasts, ETAs, or cost estimates.
  */
 export default function RunHeader({
   detail,
   events,
+  agents,
+  activeId,
 }: {
   detail: RunDetail;
   events: RunEvent[];
+  agents: AgentRow[];
+  activeId?: string | null;
 }) {
-  // Server-authoritative board counts (same shape the TUI renders:
-  // done · active · failed · blockedEnv · skipped · pending, where pending
-  // counts every non-done/non-failed/non-skipped slice, so it includes the
-  // active ones). Never recomputed locally — a local recount silently drops
-  // blocked-env/skipped slices from the header.
   const counts = detail.counts;
+  const hero =
+    detail.slices.find((s) => s.id === activeId) ??
+    detail.slices.find((s) => s.id === preferredSliceId(detail.slices)) ??
+    null;
+  const agent = hero ? agents.find((a) => a.id === hero.id) : undefined;
+  // Latest-event fallback only where "on what?" is live information.
+  // Terminal states answer with the outcome itself (done / reason).
+  const liveState =
+    hero !== null &&
+    (hero.status === "running" ||
+      hero.status === "verifying" ||
+      hero.status === "pending" ||
+      hero.status === "blocked" ||
+      hero.status === "blocked-env");
+  let lastEvent: string | null = null;
+  if (hero && liveState) {
+    for (let i = events.length - 1; i >= 0; i--) {
+      const e = events[i]!;
+      if (e.sliceId === hero.id) {
+        const text = describeEvent(e).trim();
+        lastEvent = text ? `${e.type} — ${text}` : e.type;
+        break;
+      }
+    }
+  }
+  const action = hero
+    ? heroAction({ status: hero.status, lastLine: agent?.lastLine, lastEvent, reason: hero.reason, deps: hero.deps })
+    : null;
 
-  // Authoritative token spend: every finished worker attempt reports
-  // stats.tokens; each attempt spent real budget, so sum all of them.
   let tokens: number | null = null;
   for (const e of events) {
     const t = e.stats?.tokens?.total;
@@ -31,75 +60,79 @@ export default function RunHeader({
       tokens = (tokens ?? 0) + t;
     }
   }
+
   return (
-    <section className="omp-panel" aria-label="Run header">
-      <span className="omp-eyebrow">Run</span>
-      <h2>
-        {detail.runId}{" "}
-        <StatusBadge status={detail.status} />{" "}
+    <section className="omp-runline" aria-label="Run status">
+      <p className="omp-runline-eyebrow">
+        <span className="omp-section-label">Run</span>
+        <span className="omp-runline-id">{detail.runId}</span>
         <span className="omp-hint">
-          · {detail.live ? "live" : "quiescent"} · updated{" "}
-          {new Date(detail.updatedAt).toLocaleString()}
+          {detail.live ? "live" : "quiescent"} · updated {new Date(detail.updatedAt).toLocaleString()}
         </span>
-      </h2>
-      <div className="omp-cards" role="list">
-        <div className="omp-stat-card" role="listitem">
-          <div className="omp-stat-num">{detail.total}</div>
-          <div className="omp-stat-label">total slices</div>
+      </p>
+      {hero ? (
+        <div className="omp-hero">
+          <h1 className="omp-hero-title">
+            <span aria-hidden="true" className="omp-status-sym" data-tone={toneForStatus(hero.status)}>
+              {symbolForStatus(hero.status)}
+            </span>
+            <code className="omp-hero-id">{hero.id}</code>
+            <span className="omp-hero-name" title={hero.title}>
+              {hero.title}
+            </span>
+            <span className="omp-hero-status" data-tone={toneForStatus(hero.status)}>
+              {hero.status}
+            </span>
+          </h1>
+          <p className="omp-hero-sub">
+            gen {hero.generation} · attempt {hero.attempts}
+            {agent ? ` · L${agent.lane}` : hero.agent ? ` · ${hero.agent}` : ""}
+            {action ? ` · ${action}` : ""}
+          </p>
         </div>
-        <div className="omp-stat-card" data-tone="green" role="listitem">
-          <div className="omp-stat-num">{counts.done}</div>
-          <div className="omp-stat-label">done</div>
-        </div>
-        <div className="omp-stat-card" data-tone="cyan" role="listitem">
-          <div className="omp-stat-num">{counts.active}</div>
-          <div className="omp-stat-label">running</div>
-        </div>
-        <div className="omp-stat-card" data-tone="red" role="listitem">
-          <div className="omp-stat-num">{counts.failed}</div>
-          <div className="omp-stat-label">failed</div>
-        </div>
-        <div className="omp-stat-card" data-tone="amber" role="listitem" title="slices parked on environment failures (operator must fix the environment)">
-          <div className="omp-stat-num">{counts.blockedEnv}</div>
-          <div className="omp-stat-label">blocked-env</div>
-        </div>
-        <div className="omp-stat-card" role="listitem">
-          <div className="omp-stat-num">{counts.skipped}</div>
-          <div className="omp-stat-label">skipped</div>
-        </div>
-        <div
-          className="omp-stat-card"
-          role="listitem"
-          title="non-done/non-failed/non-skipped slices (includes the running ones — TUI parity)"
-        >
-          <div className="omp-stat-num">{counts.pending}</div>
-          <div className="omp-stat-label">pending</div>
-        </div>
-        <div className="omp-stat-card" data-tone="cyan" role="listitem">
-          <div className="omp-stat-num">{detail.workers}</div>
-          <div className="omp-stat-label">active workers</div>
-        </div>
-        <div
-          className="omp-stat-card"
-          role="listitem"
-          title={`created ${detail.createdAt} · updated ${detail.updatedAt}`}
-        >
-          <div className="omp-stat-num">{formatElapsed(detail.createdAt, detail.updatedAt)}</div>
-          <div className="omp-stat-label">elapsed</div>
-        </div>
-        <div
-          className="omp-stat-card"
-          role="listitem"
+      ) : (
+        <p className="omp-hint">No slices yet.</p>
+      )}
+      <p className="omp-runline-telemetry" aria-label="Run counts">
+        <span className="omp-stat">
+          <strong>{counts.done}</strong> done
+        </span>
+        <span className="omp-stat" data-tone="cyan">
+          <strong>{counts.active}</strong> active
+        </span>
+        <span className="omp-stat">
+          <strong>{counts.pending}</strong> pending
+        </span>
+        <span className="omp-stat" data-tone={counts.failed > 0 ? "red" : undefined}>
+          <strong>{counts.failed}</strong> failed
+        </span>
+        {counts.blockedEnv > 0 && (
+          <span className="omp-stat" data-tone="amber" title="slices parked on environment failures (operator must fix the environment)">
+            <strong>{counts.blockedEnv}</strong> blocked-env
+          </span>
+        )}
+        {counts.skipped > 0 && (
+          <span className="omp-stat">
+            <strong>{counts.skipped}</strong> skipped
+          </span>
+        )}
+        <span className="omp-stat" title={`created ${detail.createdAt} · updated ${detail.updatedAt}`}>
+          {formatElapsed(detail.createdAt, detail.updatedAt)}
+        </span>
+        <span
+          className="omp-stat"
           title={
             tokens === null
               ? "no finished worker has reported token usage yet"
               : "sum of stats.tokens.total over finished worker events"
           }
         >
-          <div className="omp-stat-num">{tokens === null ? "—" : formatTokens(tokens)}</div>
-          <div className="omp-stat-label">tokens</div>
-        </div>
-      </div>
+          {tokens === null ? "—" : formatTokens(tokens)} tokens
+        </span>
+        <span className="omp-stat">
+          {detail.workers} worker{detail.workers === 1 ? "" : "s"}
+        </span>
+      </p>
     </section>
   );
 }

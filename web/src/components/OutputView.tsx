@@ -61,7 +61,7 @@ export default function OutputView({
       ) : (
         <p className="omp-hint">
           {selected.status === "running" || selected.status === "verifying"
-            ? "no output yet — waiting for worker output…"
+            ? "no report yet — worker is active; follow live output on the Log tab"
             : selected.status === "pending" || selected.status === "blocked" || selected.status === "blocked-env"
               ? "no output yet — worker hasn't started"
               : "no output yet"}

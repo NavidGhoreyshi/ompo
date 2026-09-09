@@ -327,12 +327,13 @@ try {
   check("timeline rows", model.rows.length === qa.slices.length && model.rows.some((r) => r.sliceId === "ship" && r.attempts.length >= 1) && model.rows.some((r) => r.sliceId === "gen" && r.attempts.length >= 1), model.rows.map((r) => [r.sliceId, r.attempts.length]));
   snap.timeline = { rows: model.rows.length, tokens: timelineTokens };
 
-  // 14. narrow-width CSS contract (static): breakpoints + no page-level overflow.
+  // 14. narrow-width CSS contract (static): viewport shell, internal scroll, stacked narrow layout.
   const css = readFileSync(join(ROOT, "web", "src", "styles", "theme.css"), "utf8");
-  check("narrow 760 breakpoint", css.includes("@media (max-width: 760px)"));
+  check("viewport shell", css.includes("height: 100dvh") && css.includes(".omp-shell") && css.includes("overflow: hidden"));
+  check("internal panel scroll", css.includes(".omp-board-scroll") && css.includes("overflow-y: auto"));
+  check("narrow stacked breakpoint", css.includes("@media (max-width: 900px)"));
   check("narrow table scroll", css.includes(".omp-table-wrap") && css.includes("overflow-x: auto"));
-  check("narrow shell clip", css.includes("overflow-x: clip"));
-  snap.narrow = { breakpoint760: true, tableScroll: true, shellClip: true };
+  snap.narrow = { viewportShell: true, panelScroll: true, stacked900: true, tableScroll: true };
 
   // 15. long output capped; 16. empty output null-safe.
   const workerTailLines = ship.workerTail ? ship.workerTail.split("\n").length : 0;

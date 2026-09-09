@@ -1,6 +1,6 @@
 import type { RunEvent, SliceSummary } from "../api.ts";
 import { formatDurationMs } from "../lib/format.ts";
-import StatusBadge from "./StatusBadge.tsx";
+import { symbolForStatus, toneForStatus } from "./StatusBadge.tsx";
 
 /** Last observed worker duration per slice (worker_finished durationMs). */
 function durationBySlice(events: RunEvent[]): Map<string, number> {
@@ -14,8 +14,12 @@ function durationBySlice(events: RunEvent[]): Map<string, number> {
 }
 
 /**
- * Slice board: the run's primary operating table. Board order is preserved;
- * selecting a row drives the Inspector (control lives there, in context).
+ * Execution board: dense rows that read as workflow, not a database table.
+ * Each row carries state (symbol + word, never color alone), slice id and
+ * title, and one meta line — effort, attempt, generation, agent lane,
+ * dependency needs, duration or failure reason. Rows stay compact; the full
+ * story lives in the Inspector. Board order is preserved; selecting a row
+ * drives the Inspector.
  */
 export default function SliceTable({
   slices,
@@ -30,8 +34,8 @@ export default function SliceTable({
 }) {
   if (slices.length === 0) {
     return (
-      <section className="omp-panel" aria-label="Slice board">
-        <h2>Slice board</h2>
+      <section className="omp-board" aria-label="Slice board">
+        <h2 className="omp-board-title">Execution board</h2>
         <p className="omp-hint">No slices yet.</p>
       </section>
     );
@@ -40,99 +44,55 @@ export default function SliceTable({
   const durations = durationBySlice(events);
 
   return (
-    <section className="omp-panel" aria-label="Slice board">
-      <span className="omp-eyebrow">Board</span>
-      <h2>Slice board — {slices.length} slices</h2>
-      <div className="omp-table-wrap">
-        <table className="omp-table">
-          <thead>
-            <tr>
-              <th scope="col">ID</th>
-              <th scope="col">Title</th>
-              <th scope="col">Effort</th>
-              <th scope="col">Depends</th>
-              <th scope="col">Verify</th>
-              <th scope="col">Status</th>
-              <th scope="col">Attempt</th>
-              <th scope="col">Gen</th>
-              <th scope="col">Agent</th>
-              <th scope="col">Duration</th>
-            </tr>
-          </thead>
-          <tbody>
-            {slices.map((s) => {
-              const isSel = selected === s.id;
-              const dur = durations.get(s.id);
-              return (
-                <tr
-                  key={s.id}
-                  data-selected={isSel ? "true" : "false"}
-                  aria-selected={isSel}
-                  onClick={() => onSelect(s.id)}
-                  tabIndex={0}
-                  onKeyDown={(e) => {
-                    if (e.key === "Enter" || e.key === " ") {
-                      e.preventDefault();
-                      onSelect(s.id);
-                    }
-                  }}
-                >
-                  <td>
-                    <code>{s.id}</code>
-                  </td>
-                  <td>
-                    <div className="omp-ellipsis" title={s.title}>
+    <section className="omp-board" aria-label="Slice board">
+      <ul className="omp-board-list" role="listbox" aria-label={`${slices.length} slices`}>
+        {slices.map((s) => {
+          const isSel = selected === s.id;
+          const dur = durations.get(s.id);
+          const tone = toneForStatus(s.status);
+          const live = s.status === "running" || s.status === "verifying";
+          return (
+            <li key={s.id}>
+              <button
+                type="button"
+                role="option"
+                aria-selected={isSel}
+                className="omp-board-row"
+                data-selected={isSel ? "true" : "false"}
+                data-tone={tone}
+                data-live={live ? "true" : "false"}
+                onClick={() => onSelect(s.id)}
+              >
+                <span aria-hidden="true" className="omp-status-sym" data-tone={tone}>
+                  {symbolForStatus(s.status)}
+                </span>
+                <span className="omp-board-main">
+                  <span className="omp-board-top">
+                    <code className="omp-board-id">{s.id}</code>
+                    <span className="omp-board-title-text" title={s.title}>
                       {s.title}
-                    </div>
-                    {s.reason && (
-                      <div className="omp-sub omp-ellipsis" title={s.reason}>
-                        {s.reason}
-                      </div>
-                    )}
-                  </td>
-                  <td>{s.effort ?? "—"}</td>
-                  <td>
-                    {s.deps.length === 0 ? (
-                      "—"
-                    ) : (
-                      <span className="omp-ellipsis" title={s.deps.join(", ")}>
-                        {s.deps.join(", ")}
-                      </span>
-                    )}
-                  </td>
-                  <td>
-                    {s.verify.length === 0 ? (
-                      "—"
-                    ) : (
-                      <span className="omp-ellipsis" title={s.verify.join("\n")}>
-                        {s.verify.length} check{s.verify.length === 1 ? "" : "s"}
-                      </span>
-                    )}
-                  </td>
-                  <td>
-                    <StatusBadge status={s.status} />
-                  </td>
-                  <td>{s.attempts}</td>
-                  <td>{s.generation}</td>
-                  <td>
-                    {s.agent ? (
-                      <span className="omp-ellipsis" title={s.agent}>
-                        {s.agent}
-                      </span>
-                    ) : (
-                      "—"
-                    )}
-                  </td>
-                  <td title={typeof dur === "number" ? `${dur}ms (last worker_finished)` : "no finished worker yet"}>
-                    {formatDurationMs(dur)}
-                  </td>
-                </tr>
-              );
-            })}
-          </tbody>
-        </table>
-      </div>
-      <p className="omp-hint">Select a row to inspect it — control actions live in the inspector, in context.</p>
+                    </span>
+                    <span className="omp-board-state" data-tone={tone}>
+                      {s.status}
+                    </span>
+                  </span>
+                  <span className="omp-board-meta">
+                    {s.effort ? `${s.effort} · ` : ""}attempt {s.attempts} · gen {s.generation}
+                    {s.agent ? ` · ${s.agent}` : ""}
+                    {s.deps.length > 0 ? ` · needs ${s.deps.join(", ")}` : ""}
+                    {typeof dur === "number" ? ` · ${formatDurationMs(dur)}` : live ? " · working…" : ""}
+                  </span>
+                  {s.reason && (s.status === "failed" || s.status === "blocked-env") && (
+                    <span className="omp-board-reason" title={s.reason}>
+                      {s.reason}
+                    </span>
+                  )}
+                </span>
+              </button>
+            </li>
+          );
+        })}
+      </ul>
     </section>
   );
 }

@@ -1,4 +1,4 @@
-/** Semantic status badge: cyan running/active, green done, amber blocked, red failed, muted rest. */
+/** Semantic status indicator: symbol + word, never color alone. Flat typographic treatment — pills are reserved for genuinely interactive chips. */
 
 export type Tone = "cyan" | "green" | "amber" | "red" | "muted";
 
@@ -24,7 +24,7 @@ export function toneForStatus(status: string): Tone {
   }
 }
 
-/** Text symbol per status family: badge never relies on color alone. */
+/** Text symbol per status family: status never relies on color alone. */
 export function symbolForStatus(status: string): string {
   switch (status) {
     case "done":
@@ -53,8 +53,10 @@ export function symbolForStatus(status: string): string {
 
 export default function StatusBadge({ status }: { status: string }) {
   return (
-    <span className="omp-badge" data-tone={toneForStatus(status)}>
-      <span aria-hidden="true" className="omp-badge-sym">{symbolForStatus(status)}</span>
+    <span className="omp-status" data-tone={toneForStatus(status)}>
+      <span aria-hidden="true" className="omp-status-sym" data-tone={toneForStatus(status)}>
+        {symbolForStatus(status)}
+      </span>
       {status}
     </span>
   );

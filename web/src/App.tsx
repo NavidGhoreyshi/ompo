@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { api, type AgentRow, type RunDetail, type RunEvent, type RunStats, type RunSummary, type SliceDetail } from "./api.ts";
+import { preferredSliceId } from "./lib/selection.ts";
 import Activity from "./components/Activity.tsx";
 import Header from "./components/Header.tsx";
 import Inspector from "./components/Inspector.tsx";
@@ -133,6 +134,19 @@ export default function App() {
     };
   }, [runId, loadRun]);
 
+  // Active slice auto-selection: a single selection system shared by the
+  // board, lanes, graph, and Inspector. When nothing is selected (initial
+  // load, run switch), the slice that needs eyes becomes the selection, so
+  // the Inspector is never an empty rectangle while there is work to show.
+  // Manual clicks always win — this only fills a null or stale selection.
+  useEffect(() => {
+    if (!detail || detail.slices.length === 0) return;
+    if (!sel || !detail.slices.some((s) => s.id === sel)) {
+      const id = preferredSliceId(detail.slices);
+      if (id && id !== sel) setSel(id);
+    }
+  }, [detail, sel]);
+
   useEffect(() => {
     if (!runId || !sel) {
       setSliceDetail(null);
@@ -169,6 +183,7 @@ export default function App() {
         <Sidebar
           view={view}
           onNavigate={setView}
+          runId={runId}
           counts={{
             overview: undefined,
             runs: runs.length || undefined,
@@ -181,7 +196,7 @@ export default function App() {
           {stale && <p className="omp-warn">Bundle built against a different ompo version — rebuild the dashboard (`bun run web:build`).</p>}
           {(error ?? runsError) && <p className="omp-error" role="alert">{error ?? runsError}</p>}
           {view === "overview" && (
-            <Overview detail={detail} events={events} selected={sel} onInspect={inspect} onNavigate={setView} />
+            <Overview detail={detail} events={events} agents={agents} selected={sel} onInspect={inspect} onNavigate={setView} />
           )}
           {view === "runs" && (
             <RunsPage runs={runs} activeRunId={runId} onOpen={openRun} />
@@ -200,7 +215,6 @@ export default function App() {
               runId={runId}
               selected={selected}
               detail={sliceDetail}
-              onClose={() => setSel(null)}
               onControlDone={() => void loadRun(runId)}
               slices={detail?.slices ?? []}
               events={events}

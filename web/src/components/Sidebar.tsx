@@ -8,17 +8,30 @@ export const VIEWS: { id: View; label: string; icon: string }[] = [
   { id: "stats", label: "Stats", icon: "∑" },
 ];
 
+/**
+ * Light run-centric rail: five views, no decorative cards. Overview is the
+ * control room; Runs/Roadmap/Agents/Stats are secondary. The current run
+ * stays visible at the rail head so navigation never competes with it.
+ */
 export default function Sidebar({
   view,
   onNavigate,
   counts,
+  runId,
 }: {
   view: View;
   onNavigate: (v: View) => void;
   counts: Partial<Record<View, number>>;
+  runId?: string | null;
 }) {
   return (
     <nav className="omp-sidebar" aria-label="Dashboard sections">
+      {runId && (
+        <p className="omp-sidebar-run" title={`current run ${runId}`}>
+          <span className="omp-section-label">Run</span>
+          <code className="omp-ellipsis">{runId}</code>
+        </p>
+      )}
       {VIEWS.map((v) => (
         <button
           key={v.id}
