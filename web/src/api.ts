@@ -6,6 +6,7 @@ export interface RunSummary {
   updatedAt: string;
   live: boolean;
   counts: { done: number; active: number; failed: number; skipped: number; blockedEnv: number; pending: number };
+  workers: number;
 }
 
 export interface SliceSummary {
@@ -16,9 +17,61 @@ export interface SliceSummary {
   updatedAt: string;
   reason?: string;
   deps: string[];
+  effort?: string;
+  agent?: string;
+  generation: number;
+  verify: string[];
 }
 
 export type RunDetail = RunSummary & { slices: SliceSummary[] };
+
+export interface SliceDetail {
+  sliceId: string;
+  title: string;
+  status: string;
+  attempts: number;
+  reason?: string;
+  effort?: string;
+  agent?: string;
+  generation: number;
+  verify: string[];
+  deps: string[];
+  reportSummary?: string;
+  metrics?: { turns: number; tools: number; durationMs?: number; tokens?: { input: number; output: number; total: number } };
+  recentEvents: string[];
+  history: string[];
+  note?: string;
+  verdictStep?: { name: string; exit: number | null; timedOut: boolean; tail: string };
+  verdictSteps?: { name: string; exit: number | null; timedOut: boolean; tail: string }[];
+  verdictPass?: boolean;
+  review?: { approved: boolean; findings: string[]; notes?: string };
+  reviewNotes?: string;
+  promptTail?: string;
+  promptName?: string;
+  workerTail?: string;
+  workerLogName?: string;
+  artifacts: { report: boolean; verdict: boolean; review: boolean; workerLog: boolean; prompt: boolean };
+  reportFull?: {
+    filesChanged: string[];
+    testsRun: string[];
+    deferred: string[];
+    done?: boolean;
+    verificationNotes?: string;
+    followUps: string[];
+  };
+}
+
+export interface AgentRow {
+  id: string;
+  lane: number;
+  status: string;
+  attempt: number;
+  generation: number;
+  agent?: string;
+  effort?: string;
+  lastLine: string;
+  metrics?: { turns: number; tools: number; durationMs?: number; tokens?: { input: number; output: number; total: number } };
+}
 
 export interface RunEvent {
   seq: number;
@@ -28,6 +81,10 @@ export interface RunEvent {
   attempt?: number;
   detail?: string;
   reason?: string;
+  exit?: number | null;
+  timedOut?: boolean;
+  durationMs?: number;
+  stats?: { turns: number; tools: number; tokens?: { input: number; output: number; total: number } };
 }
 
 export type ControlKind = "retry" | "skip" | "park" | "kill" | "set-jobs" | "pause" | "resume";
@@ -47,18 +104,29 @@ async function req<T>(path: string, init?: RequestInit): Promise<T> {
   return (await res.json()) as T;
 }
 
+export interface EventsFilter {
+  types?: string[];
+  sliceId?: string;
+}
+
 export const api = {
   health: () => req<{ ok: boolean; version: string }>("/api/health"),
   runs: () => req<RunSummary[]>("/api/runs"),
   run: (runId: string) => req<RunDetail>(`/api/runs/${runId}`),
+  slices: (runId: string) => req<SliceSummary[]>(`/api/runs/${runId}/slices`),
   slice: (runId: string, sliceId: string) =>
-    req<Record<string, unknown>>(`/api/runs/${runId}/slices/${sliceId}`),
+    req<SliceDetail>(`/api/runs/${runId}/slices/${sliceId}`),
   sliceLog: (runId: string, sliceId: string, tail = 50) =>
     req<{ name: string | null; lines: string[] }>(`/api/runs/${runId}/slices/${sliceId}/log?tail=${tail}`),
   sliceDiff: (runId: string, sliceId: string) =>
     req<Record<string, unknown>>(`/api/runs/${runId}/slices/${sliceId}/diff`),
-  events: (runId: string, afterSeq = -1, limit = 200) =>
-    req<{ events: RunEvent[]; offset: number }>(`/api/runs/${runId}/events?afterSeq=${afterSeq}&limit=${limit}`),
+  agents: (runId: string) => req<AgentRow[]>(`/api/runs/${runId}/agents`),
+  events: (runId: string, afterSeq = -1, limit = 200, filter?: EventsFilter) => {
+    const params = new URLSearchParams({ afterSeq: String(afterSeq), limit: String(limit) });
+    if (filter?.types?.length) params.set("types", filter.types.join(","));
+    if (filter?.sliceId) params.set("sliceId", filter.sliceId);
+    return req<{ events: RunEvent[]; offset: number }>(`/api/runs/${runId}/events?${params}`);
+  },
   stats: (runId: string) => req<Record<string, unknown>>(`/api/runs/${runId}/stats`),
   control: (runId: string, body: Record<string, unknown>) =>
     req<Record<string, unknown>>(`/api/runs/${runId}/control`, {
