@@ -49,7 +49,8 @@ function help(): string {
   return `ompo ${VERSION} — long-horizon roadmap orchestrator for stock omp
 
 USAGE
-  ompo                                    unified TUI: plan (if needed) → run → done
+  ompo [--port N] [--no-open]              local dashboard: serve the web UI + API on 127.0.0.1 (auto port)
+  ompo --tui [RUN FLAGS]                   unified TUI: plan (if needed) → run → done
   ompo init [--project DIR] [--roadmap PATH] [--replan] [--template] [--model M]
                                             planner session: survey docs → roadmap file (+ .omp/roadmap.yml)
   ompo import --from FILE [--project DIR] [--roadmap PATH] [--done IDS] [--active IDS] [--model M]
@@ -106,11 +107,16 @@ RUN FLAGS
   --fault-inject SPEC chaos, CLI-only: fail-verify=a+b,abort-attempt=0.25,crash-after=5
   --replan           re-run the planner even if ROADMAP.md exists (overwrite)
   --template         blank 2-slice template instead of the planner session
-
 LOG FLAGS
   --follow           tail the run's event stream (works on a live run)
   --json             raw events, one JSON object per line
   --format FMT       pretty|json|tap|github rendering of the event stream
+
+WEB FLAGS (bare ompo dashboard)
+  --port N           dashboard port (default: automatically selected available localhost port)
+  --host H           dashboard bind host (default 127.0.0.1; 0.0.0.0 prints a warning, no auth)
+  --no-open          start the server without launching a browser
+  --tui              run the unified terminal UI instead of the dashboard
 
 FORENSICS FLAGS (show/diff/shell/logs/retry/skip/worktrees/checklist/fill/stats/query/export/replay/doctor/config)
   --var K=V          fill: real value for a placeholder var (repeatable)
@@ -190,6 +196,14 @@ interface Args {
   tail?: number;
   /** `config --explain`: dump resolved config + per-slice models. */
   explain?: boolean;
+  /** Bare dashboard: explicit port (default: automatically selected localhost port). */
+  port?: number;
+  /** Bare dashboard: bind host (default 127.0.0.1). */
+  host?: string;
+  /** Bare dashboard: start the server without launching a browser. */
+  noOpen?: boolean;
+  /** Bare flags only: run the unified TUI instead of the dashboard. */
+  tui?: boolean;
 }
 
 function splitIds(v?: string): string[] | undefined {
@@ -219,7 +233,13 @@ function parseArgs(argv: string[]): Args {
     rest: [],
     vars: {},
   };
-  for (let i = 1; i < argv.length; i++) {
+  // argv[0] doubles as the command slot, so a leading `--tui` never reaches
+  // the flag loop below — detect it up front.
+  if (argv.includes("--tui")) a.tui = true;
+  // Bare mode is flags-only (argv[0] is a flag, not a command): parse from 0
+  // so a leading `--port 4317` keeps its value. main() re-maps the cmd slot.
+  const start = (argv[0] ?? "").startsWith("-") ? 0 : 1;
+  for (let i = start; i < argv.length; i++) {
     const t = argv[i]!;
     if (t === "--project" && argv[i + 1]) a.project = resolve(argv[++i]!);
     else if (t === "--roadmap" && argv[i + 1]) a.roadmap = argv[++i]!;
@@ -263,6 +283,10 @@ function parseArgs(argv: string[]): Args {
     else if (t === "--out" && argv[i + 1]) a.out = argv[++i]!;
     else if (t === "--tail" && argv[i + 1]) a.tail = parsePositiveInt(argv[++i]!, "--tail");
     else if (t === "--explain") a.explain = true;
+    else if (t === "--port" && argv[i + 1]) a.port = parsePositiveInt(argv[++i]!, "--port");
+    else if (t === "--host" && argv[i + 1]) a.host = argv[++i]!;
+    else if (t === "--no-open") a.noOpen = true;
+    else if (t === "--tui") a.tui = true;
     else if (!t.startsWith("-") && a.sub === undefined) a.sub = t;
     else if (!t.startsWith("-")) a.rest.push(t);
     else throw new Error(`unknown flag ${t}`);
@@ -1085,6 +1109,42 @@ async function cmdUnified(a: Args): Promise<number> {
     return 1;
   }
 }
+/** Best-effort browser launch: the server is the deliverable, never the open. */
+async function openBrowser(url: string): Promise<void> {
+  try {
+    const target = process.platform === "darwin" ? "open" : process.platform === "win32" ? "cmd" : "xdg-open";
+    const args = process.platform === "win32" ? ["/c", "start", "", url] : process.platform === "darwin" ? [url] : [url];
+    const proc = Bun.spawn([target, ...args], { stdout: "ignore", stderr: "ignore" });
+    proc.unref();
+  } catch {
+    console.log(`open a browser at ${url}`);
+  }
+}
+
+async function cmdDashboard(a: Args): Promise<number> {
+  // Lazy import: the HTTP server loads only for the dashboard path.
+  const { startDashboardServer, DEFAULT_HOST } = await import("./server.ts");
+  const host = a.host ?? DEFAULT_HOST;
+  if (host === "0.0.0.0" || host === "::" || host === "::0") {
+    console.error(`warning: binding ${host} exposes the dashboard beyond this machine (no auth) — prefer 127.0.0.1`);
+  }
+  try {
+    const server = startDashboardServer({ projectDir: a.project, port: a.port ?? 0, host });
+    console.log(`ompo dashboard: ${server.url}  (project ${a.project}, assets: ${server.assetMode})`);
+    console.log("press Ctrl-C to stop");
+    if (!a.noOpen) await openBrowser(server.url);
+    await new Promise<void>((resolve) => {
+      process.on("SIGINT", () => resolve());
+      process.on("SIGTERM", () => resolve());
+    });
+    server.stop();
+    console.log("ompo dashboard stopped");
+    return 0;
+  } catch (err) {
+    console.error(`dashboard failed: ${String((err as Error).message)}`);
+    return 1;
+  }
+}
 
 async function main(): Promise<number> {
   let a: Args;
@@ -1095,11 +1155,14 @@ async function main(): Promise<number> {
     console.log(help());
     return 1;
   }
-  // Bare `ompo` (no command, or flags only) launches the unified TUI.
+  // Bare `ompo` (no command, or flags only) serves the local dashboard.
+  // `ompo --tui` (or the `tui` command) keeps the existing unified terminal UI.
   // Explicit --help/-h still prints help.
   const raw = process.argv.slice(2);
-  if ((raw.length === 0 || raw[0]!.startsWith("-")) && a.cmd !== "--help") a.cmd = "tui";
+  if ((raw.length === 0 || raw[0]!.startsWith("-")) && a.cmd !== "--help") a.cmd = a.tui ? "tui" : "web";
   switch (a.cmd) {
+    case "web":
+      return cmdDashboard(a);
     case "init":
       return cmdInit(a);
     case "tui":
