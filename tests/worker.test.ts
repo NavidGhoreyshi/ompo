@@ -367,21 +367,64 @@ describe("model fallback chain", () => {
 });
 
 describe("usageForEvent", () => {
-  const usage = { input: 18334, output: 23, cacheRead: 241, cacheWrite: 0, totalTokens: 18598 };
-  test("reads cumulative totals off assistant message_end", () => {
+  // Shape verified against live omp 18.1.14 `--mode json` output:
+  // totalTokens = input+output+cacheRead+cacheWrite, reasoningTokens is a
+  // sub-count of output, cost.total is authoritative USD.
+  const usage = {
+    input: 18348,
+    output: 17,
+    cacheRead: 241,
+    cacheWrite: 0,
+    totalTokens: 18606,
+    reasoningTokens: 6,
+    cost: { input: 0.0018348, output: 0.0000034, cacheRead: 4.82e-7, cacheWrite: 0, total: 0.001838682 },
+  };
+  test("reads the full envelope off assistant message_end", () => {
     expect(usageForEvent({ type: "message_end", message: { role: "assistant", usage } })).toEqual({
-      input: 18334,
-      output: 23,
-      total: 18598,
+      input: 18348,
+      output: 17,
+      total: 18606,
+      cacheRead: 241,
+      cacheWrite: 0,
+      reasoningTokens: 6,
+      cost: { input: 0.0018348, output: 0.0000034, cacheRead: 4.82e-7, cacheWrite: 0, total: 0.001838682 },
     });
   });
-  test("reads the same envelope off turn_end, falls back to input+output", () => {
+  test("reads the same envelope off turn_end, total falls back to input+output+cache", () => {
     const { totalTokens: _drop, ...noTotal } = usage;
     expect(usageForEvent({ type: "turn_end", message: { role: "assistant", usage: noTotal } })).toEqual({
-      input: 18334,
-      output: 23,
-      total: 18357,
+      input: 18348,
+      output: 17,
+      total: 18606,
+      cacheRead: 241,
+      cacheWrite: 0,
+      reasoningTokens: 6,
+      cost: { input: 0.0018348, output: 0.0000034, cacheRead: 4.82e-7, cacheWrite: 0, total: 0.001838682 },
     });
+  });
+  test("legacy envelopes without cache/cost stay subset-shaped (no zero-fill)", () => {
+    expect(usageForEvent({ type: "message_end", message: { role: "assistant", usage: { input: 100, output: 50 } } })).toEqual({
+      input: 100,
+      output: 50,
+      total: 150,
+    });
+  });
+  test("drops malformed optionals but keeps the authoritative core", () => {
+    expect(
+      usageForEvent({
+        type: "message_end",
+        message: {
+          role: "assistant",
+          usage: { input: 100, output: 50, totalTokens: 150, cacheRead: -1, cacheWrite: "x", reasoningTokens: NaN, cost: { input: 1 } },
+        },
+      }),
+    ).toEqual({ input: 100, output: 50, total: 150 });
+    expect(
+      usageForEvent({
+        type: "message_end",
+        message: { role: "assistant", usage: { input: 100, output: 50, totalTokens: 150, cost: { total: -2 } } },
+      }),
+    ).toEqual({ input: 100, output: 50, total: 150 });
   });
   test("ignores user messages, other event types, and malformed envelopes", () => {
     expect(usageForEvent({ type: "message_end", message: { role: "user", usage } })).toBeUndefined();
@@ -389,6 +432,7 @@ describe("usageForEvent", () => {
     expect(usageForEvent({ type: "turn_start" })).toBeUndefined();
     expect(usageForEvent({ type: "message_end", message: { role: "assistant" } })).toBeUndefined();
     expect(usageForEvent({ type: "message_end", message: { role: "assistant", usage: { input: "x" } } })).toBeUndefined();
+    expect(usageForEvent({ type: "message_end", message: { role: "assistant", usage: { input: -1, output: 5 } } })).toBeUndefined();
     expect(usageForEvent(null)).toBeUndefined();
     expect(usageForEvent("turn_end")).toBeUndefined();
   });

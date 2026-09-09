@@ -708,6 +708,20 @@ async function runAttempt(ctx: AttemptCtx, sliceId: string): Promise<void> {
           /* forensics are best-effort */
         }
       }
+      // Per-generation usage sidecar: the tracker's latest cumulative usage
+      // is this generation's authoritative spend (each generation is a fresh
+      // session). The dashboard's Usage tab reads these; handoffs.json keeps
+      // only the total. Best-effort like the other forensics above.
+      try {
+        const genUsage = ctx.trackers.get(sliceId)?.tokens ?? null;
+        writeFileSync(
+          join(dir, `worker-${attempt}-g${gen}.usage.json`),
+          JSON.stringify({ attempt, generation: gen, usage: genUsage, durationMs: res.durationMs }) + "\n",
+          "utf8",
+        );
+      } catch {
+        /* forensics are best-effort */
+      }
       const t = ctx.trackers.get(sliceId);
       log(ctx, `  worker g${gen} exited in ${Math.round(res.durationMs / 1000)}s${t ? ` (${t.turns} turns, ${t.tools} tools)` : ""}`);
       if (capBelowBaseline && !ctx.signal?.aborted && fresh().status !== "aborted") {
@@ -736,6 +750,21 @@ async function runAttempt(ctx: AttemptCtx, sliceId: string): Promise<void> {
       stopForwarding();
       const msg = err instanceof Error ? err.message : String(err);
       writeFileSync(join(dir, `worker-${attempt}-g${gen}.log`), workerOut + `\nSPAWN ERROR: ${msg}\n`, "utf8");
+      // Same sidecar for generations that end by throw (timeout / non-zero
+      // exit / cap abort racing spawn): usage observed before the throw is
+      // still this generation's authoritative spend. Best-effort.
+      try {
+        const genUsage = ctx.trackers.get(sliceId)?.tokens ?? null;
+        if (genUsage && workerMeta) {
+          writeFileSync(
+            join(dir, `worker-${attempt}-g${gen}.usage.json`),
+            JSON.stringify({ attempt, generation: gen, usage: genUsage, durationMs: workerMeta.durationMs }) + "\n",
+            "utf8",
+          );
+        }
+      } catch {
+        /* forensics are best-effort */
+      }
       if (ctx.signal?.aborted) {
         preserveIncompleteWork(ctx, sliceId, attempt, "abort");
         storeApi.abortSlice(projectDir, runId, sliceId);

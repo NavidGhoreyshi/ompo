@@ -25,6 +25,44 @@ export interface SliceSummary {
 
 export type RunDetail = RunSummary & { slices: SliceSummary[] };
 
+export interface TokenCost {
+  input: number;
+  output: number;
+  cacheRead: number;
+  cacheWrite: number;
+  total: number;
+}
+
+/**
+ * Cumulative per-session spend from `--mode json` usage envelopes
+ * (see src/worker.ts usageForEvent). Optional fields stay absent when the
+ * envelope omits them — the UI renders "—", never 0 or an estimate.
+ * reasoningTokens is a sub-count of output, not an additive column.
+ */
+export interface TokenUsage {
+  input: number;
+  output: number;
+  total: number;
+  cacheRead?: number;
+  cacheWrite?: number;
+  reasoningTokens?: number;
+  cost?: TokenCost;
+}
+
+/**
+ * One fresh-context generation's authoritative spend. `usage` is the full
+ * envelope (sidecar first, per-generation events.jsonl fallback);
+ * `tokensTotal` is the total-only handoffs.json fallback for ended
+ * generations with no observed envelope. Both absent means unknown.
+ */
+export interface GenerationUsage {
+  attempt: number;
+  generation: number;
+  usage?: TokenUsage;
+  tokensTotal?: number;
+  durationMs?: number;
+}
+
 export interface SliceDetail {
   sliceId: string;
   title: string;
@@ -37,7 +75,9 @@ export interface SliceDetail {
   verify: string[];
   deps: string[];
   reportSummary?: string;
-  metrics?: { turns: number; tools: number; durationMs?: number; tokens?: { input: number; output: number; total: number } };
+  metrics?: { turns: number; tools: number; durationMs?: number; tokens?: TokenUsage };
+  /** Per-generation spend, oldest first; [] when no generation ran yet. */
+  generations?: GenerationUsage[];
   recentEvents: string[];
   history: string[];
   note?: string;
@@ -70,7 +110,7 @@ export interface AgentRow {
   agent?: string;
   effort?: string;
   lastLine: string;
-  metrics?: { turns: number; tools: number; durationMs?: number; tokens?: { input: number; output: number; total: number } };
+  metrics?: { turns: number; tools: number; durationMs?: number; tokens?: TokenUsage };
 }
 
 export interface RunEvent {
@@ -84,7 +124,7 @@ export interface RunEvent {
   exit?: number | null;
   timedOut?: boolean;
   durationMs?: number;
-  stats?: { turns: number; tools: number; tokens?: { input: number; output: number; total: number } };
+  stats?: { turns: number; tools: number; tokens?: TokenUsage };
 }
 
 export type ControlKind = "retry" | "skip" | "park" | "kill" | "set-jobs" | "pause" | "resume";
