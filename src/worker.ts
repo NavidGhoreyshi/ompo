@@ -23,12 +23,42 @@ export interface WorkerCall {
   label?: string;
 }
 
-/** Cumulative per-session token counts from `--mode json` usage envelopes. */
+/** Authoritative per-session cost in USD, from `--mode json` usage envelopes. */
+export interface TokenCost {
+  input: number;
+  output: number;
+  cacheRead: number;
+  cacheWrite: number;
+  total: number;
+}
+
+/**
+ * Cumulative per-session token counts from `--mode json` usage envelopes.
+ *
+ * Verified against live omp 18.1.14 output (`message.usage` on assistant
+ * `message_end` / `turn_end`):
+ * - `input`: fresh (non-cached) input tokens.
+ * - `output`: generated tokens, reasoning included.
+ * - `cacheRead`: prompt-cache hit tokens; `cacheWrite`: cache-creation tokens.
+ * - `totalTokens`: authoritative total = input + output + cacheRead + cacheWrite.
+ * - `reasoningTokens`: sub-count of `output` spent on reasoning (not additive).
+ * - `cost`: authoritative USD breakdown with the same shape (`cost.total`).
+ * Older envelopes may omit every optional field; unknown values stay absent
+ * (never zero-filled) so the UI renders them unavailable instead of 0.
+ */
 export interface TokenUsage {
   input: number;
   output: number;
-  /** totalTokens when reported, else input + output. */
+  /** totalTokens when reported, else input + output + cacheRead + cacheWrite. */
   total: number;
+  /** Prompt-cache hit tokens (absent when the envelope omits it). */
+  cacheRead?: number;
+  /** Cache-creation tokens (absent when the envelope omits it). */
+  cacheWrite?: number;
+  /** Reasoning sub-count of output (absent when the envelope omits it). */
+  reasoningTokens?: number;
+  /** Authoritative USD cost (absent when the envelope omits it). */
+  cost?: TokenCost;
 }
 
 export interface WorkerContext {
@@ -182,8 +212,11 @@ export function progressLineForEvent(event: unknown, state: ProgressState): stri
 /**
  * Extract cumulative token usage from one `--mode json` event.
  * Assistant `message_end` / `turn_end` events carry
- * `message.usage = {input, output, cacheRead, cacheWrite, totalTokens, …}`
- * (verified against omp 18.1.14 output). Pure (no I/O) — unit-tested.
+ * `message.usage = {input, output, cacheRead, cacheWrite, totalTokens,
+ * reasoningTokens, cost: {input, output, cacheRead, cacheWrite, total}}`
+ * (verified against live omp 18.1.14 output: totalTokens equals
+ * input+output+cacheRead+cacheWrite, reasoningTokens is a sub-count of
+ * output, cost.total is authoritative USD). Pure (no I/O) — unit-tested.
  */
 export function usageForEvent(event: unknown): TokenUsage | undefined {
   if (typeof event !== "object" || event === null) return undefined;
@@ -197,8 +230,46 @@ export function usageForEvent(event: unknown): TokenUsage | undefined {
   }
   const input = usage["input"] as number;
   const output = usage["output"] as number;
-  const total = typeof usage["totalTokens"] === "number" ? (usage["totalTokens"] as number) : input + output;
-  return { input, output, total };
+  if (!Number.isFinite(input) || !Number.isFinite(output) || input < 0 || output < 0) return undefined;
+  const out: TokenUsage = {
+    input,
+    output,
+    total: validCount(usage["totalTokens"]) ?? input + output + (validCount(usage["cacheRead"]) ?? 0) + (validCount(usage["cacheWrite"]) ?? 0),
+  };
+  const cacheRead = validCount(usage["cacheRead"]);
+  if (cacheRead !== undefined) out.cacheRead = cacheRead;
+  const cacheWrite = validCount(usage["cacheWrite"]);
+  if (cacheWrite !== undefined) out.cacheWrite = cacheWrite;
+  const reasoningTokens = validCount(usage["reasoningTokens"]);
+  if (reasoningTokens !== undefined) out.reasoningTokens = reasoningTokens;
+  const cost = costForEnvelope(usage["cost"]);
+  if (cost) out.cost = cost;
+  return out;
+}
+
+/** Finite non-negative count, else undefined (unknown stays absent, never 0). */
+function validCount(v: unknown): number | undefined {
+  return typeof v === "number" && Number.isFinite(v) && v >= 0 ? v : undefined;
+}
+
+/** Authoritative USD cost envelope, else undefined when absent or malformed. */
+function costForEnvelope(v: unknown): TokenCost | undefined {
+  if (typeof v !== "object" || v === null) return undefined;
+  const c = v as Record<string, unknown>;
+  const total = validCost(c["total"]);
+  if (total === undefined) return undefined;
+  return {
+    input: validCost(c["input"]) ?? 0,
+    output: validCost(c["output"]) ?? 0,
+    cacheRead: validCost(c["cacheRead"]) ?? 0,
+    cacheWrite: validCost(c["cacheWrite"]) ?? 0,
+    total,
+  };
+}
+
+/** Finite non-negative dollar amount, else undefined. */
+function validCost(v: unknown): number | undefined {
+  return typeof v === "number" && Number.isFinite(v) && v >= 0 ? v : undefined;
 }
 
 /**

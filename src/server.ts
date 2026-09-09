@@ -24,6 +24,8 @@ import { resolveRunId } from "./log.ts";
 import { computeStats, queryEvents, replayRun } from "./stats.ts";
 import { listRuns, loadRun, lockHeld, readEvents } from "./store.ts";
 import type { Effort, RunEvent, SliceStatus } from "./types.ts";
+import { loadHandoffs, type HandoffEntry } from "./handoffs.ts";
+import { usageForEvent, type TokenUsage } from "./worker.ts";
 import { EMBEDDED_WEB_DIST, EMBEDDED_WEB_VERSION } from "./webAssets.generated.ts";
 import pkg from "../package.json";
 
@@ -83,6 +85,22 @@ export interface SliceSummary {
 
 export type RunDetail = RunSummary & { slices: SliceSummary[] };
 
+/**
+ * One fresh-context generation's authoritative spend. `usage` is the full
+ * `--mode json` breakdown (sidecar first, per-generation events.jsonl
+ * fallback); `tokensTotal` is the total-only fallback from handoffs.json for
+ * ended generations with no observed envelope (e.g. tmux runs, which have no
+ * JSON stream). Absent usage AND absent tokensTotal means unknown — the UI
+ * renders "—", never 0.
+ */
+export interface GenerationUsage {
+  attempt: number;
+  generation: number;
+  usage?: TokenUsage;
+  tokensTotal?: number;
+  durationMs?: number;
+}
+
 export interface SliceDetail {
   sliceId: string;
   title: string;
@@ -95,7 +113,9 @@ export interface SliceDetail {
   verify: string[];
   deps: string[];
   reportSummary?: string;
-  metrics?: { turns: number; tools: number; durationMs?: number; tokens?: { input: number; output: number; total: number } };
+  metrics?: { turns: number; tools: number; durationMs?: number; tokens?: TokenUsage };
+  /** Per-generation spend, oldest first; [] when no generation ran yet. */
+  generations?: GenerationUsage[];
   recentEvents: string[];
   history: string[];
   note?: string;
@@ -139,7 +159,7 @@ export interface AgentRow {
   /** Last formatted event line for the slice ("" when no events yet). */
   lastLine: string;
   /** Last finished worker counters where available (turns/tools/durationMs/tokens). */
-  metrics?: { turns: number; tools: number; durationMs?: number; tokens?: { input: number; output: number; total: number } };
+  metrics?: { turns: number; tools: number; durationMs?: number; tokens?: TokenUsage };
 }
 
 // ---- small pure projections (ported from watch.tsx — no ink import here) ----
@@ -187,6 +207,123 @@ function sliceMetrics(events: RunEvent[], sliceId: string): SliceDetail["metrics
     }
   }
   return undefined;
+}
+
+/** Last usage envelope in one generation's raw `--mode json` NDJSON stream. */
+function lastUsageInEventsJsonl(projectDir: string, runId: string, sliceId: string, attempt: number, generation: number): TokenUsage | undefined {
+  const path = join(projectDir, ".omp", "roadmap", "runs", runId, "slices", sliceId, `worker-${attempt}-g${generation}.events.jsonl`);
+  let text: string;
+  try {
+    text = readFileSync(path, "utf8");
+  } catch {
+    return undefined;
+  }
+  let last: TokenUsage | undefined;
+  // Envelopes are cumulative per session, so the last one wins; cap the scan
+  // so a pathological stream cannot stall the dashboard read path.
+  const lines = text.split("\n");
+  const start = Math.max(0, lines.length - 2000);
+  for (let i = start; i < lines.length; i++) {
+    const line = lines[i]!.trim();
+    if (!line || (!line.includes("message_end") && !line.includes("turn_end"))) continue;
+    let event: unknown;
+    try {
+      event = JSON.parse(line);
+    } catch {
+      continue;
+    }
+    const usage = usageForEvent(event);
+    if (usage) last = usage;
+  }
+  return last;
+}
+
+/**
+ * Per-generation spend for a slice, oldest first. Sources, best first:
+ * `worker-<a>-g<g>.usage.json` sidecars (written by the loop with the full
+ * envelope + duration), the raw per-generation events.jsonl tail (older runs
+ * that predate sidecars), and handoffs.json totals for ended generations
+ * with no observed envelope (tmux runs never report usage). Generations seen
+ * only as log files with no usage anywhere still get a row so the chain is
+ * complete — every unknown cell renders "—". Never throws.
+ */
+function sliceGenerations(
+  projectDir: string,
+  runId: string,
+  sliceId: string,
+  files: string[],
+  events: RunEvent[],
+): GenerationUsage[] {
+  const keys = new Map<string, { attempt: number; generation: number }>();
+  const add = (attempt: number, generation: number): void => {
+    if (!Number.isInteger(attempt) || !Number.isInteger(generation) || attempt < 1 || generation < 0) return;
+    keys.set(`${attempt}:g${generation}`, { attempt, generation });
+  };
+  for (const f of files) {
+    const m = f.match(/^worker-(\d+)-g(\d+)\.(log|events\.jsonl|usage\.json)$/);
+    if (m) add(Number(m[1]), Number(m[2]));
+  }
+  let handoffs: HandoffEntry[] = [];
+  try {
+    handoffs = loadHandoffs(projectDir, runId).filter((h) => h.sliceId === sliceId);
+  } catch {
+    /* sidecar absent — usage falls back to envelopes */
+  }
+  for (const h of handoffs) add(h.attempt, h.generation);
+  if (keys.size === 0) return [];
+  const handoffTotal = new Map<string, number>();
+  for (const h of handoffs) {
+    if (h.tokens > 0) handoffTotal.set(`${h.attempt}:g${h.generation}`, h.tokens);
+  }
+  // Final-generation duration/usage: the newest worker_finished event per attempt.
+  const finishedByAttempt = new Map<number, RunEvent>();
+  for (const e of events) {
+    if (e.sliceId === sliceId && e.type === "worker_finished" && typeof e.attempt === "number") {
+      finishedByAttempt.set(e.attempt, e);
+    }
+  }
+  const dir = join(projectDir, ".omp", "roadmap", "runs", runId, "slices", sliceId);
+  const rows = [...keys.values()].sort((a, b) => a.attempt - b.attempt || a.generation - b.generation);
+  return rows.map(({ attempt, generation }) => {
+    const row: GenerationUsage = { attempt, generation };
+    try {
+      const raw = readFileSync(join(dir, `worker-${attempt}-g${generation}.usage.json`), "utf8");
+      const parsed = JSON.parse(raw) as { usage?: unknown; durationMs?: unknown };
+      if (parsed && typeof parsed === "object") {
+        if (parsed.usage && typeof parsed.usage === "object") {
+          const u = parsed.usage as Record<string, unknown>;
+          if (typeof u["input"] === "number" && typeof u["output"] === "number" && typeof u["total"] === "number") {
+            row.usage = u as unknown as TokenUsage;
+          }
+        }
+        if (typeof parsed.durationMs === "number" && Number.isFinite(parsed.durationMs) && parsed.durationMs >= 0) {
+          row.durationMs = parsed.durationMs;
+        }
+      }
+    } catch {
+      /* no sidecar — fall through to the envelope scan */
+    }
+    if (!row.usage) {
+      const envelope = lastUsageInEventsJsonl(projectDir, runId, sliceId, attempt, generation);
+      if (envelope) row.usage = envelope;
+    }
+    if (!row.usage) {
+      const total = handoffTotal.get(`${attempt}:g${generation}`);
+      if (total !== undefined) row.tokensTotal = total;
+    }
+    if (row.durationMs === undefined) {
+      const finished = finishedByAttempt.get(attempt);
+      if (finished && typeof finished.durationMs === "number") {
+        // worker_finished lands after the attempt's final generation ran:
+        // attribute its duration only to that generation (the max gen seen
+        // for the attempt), never to handed-off predecessors.
+        let maxGen = generation;
+        for (const k of keys.values()) if (k.attempt === attempt && k.generation > maxGen) maxGen = k.generation;
+        if (generation === maxGen) row.durationMs = finished.durationMs;
+      }
+    }
+    return row;
+  });
 }
 
 /**
@@ -357,6 +494,7 @@ function sliceDetailFor(projectDir: string, runId: string, sliceId: string): Sli
     recentEvents: sliceEvents.slice(-2).reverse().map(formatEventLine),
     history: sliceEvents.slice(0, -2).slice(-8).reverse().map(formatEventLine),
     metrics: sliceMetrics(events, sliceId),
+    generations: sliceGenerations(projectDir, runId, sliceId, files, events),
     artifacts: {
       report: files.includes("report.json"),
       verdict: files.includes("verdict.json"),
