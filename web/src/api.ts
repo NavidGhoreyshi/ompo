@@ -89,6 +89,31 @@ export interface RunEvent {
 
 export type ControlKind = "retry" | "skip" | "park" | "kill" | "set-jobs" | "pause" | "resume";
 
+/** POST …/control body: ControlIntent verbatim (arch §5). */
+export interface ControlIntent {
+  kind: ControlKind;
+  sliceId?: string;
+  jobs?: number;
+  reason?: string;
+}
+
+/** Live run: the loop drains control_requested and the outcome arrives on the event stream. */
+export interface ControlQueued {
+  seq: number;
+  kind: ControlKind;
+  sliceId?: string;
+  applied: "queued";
+}
+
+/** Quiescent run: cmdCtl parity — drained and applied synchronously. */
+export interface ControlDirect {
+  ok: boolean;
+  message: string;
+  applied: "direct";
+}
+
+export type ControlResult = ControlQueued | ControlDirect;
+
 async function req<T>(path: string, init?: RequestInit): Promise<T> {
   const res = await fetch(path, init);
   if (!res.ok) {
@@ -130,8 +155,8 @@ export const api = {
   /** Canonical SSE live tail (arch §4): same RunEvent frames as `events` polling. Frames only signal *what* changed — state always refreshes via the read endpoints. */
   streamUrl: (runId: string, afterSeq = -1) => `/api/runs/${runId}/events/stream?afterSeq=${afterSeq}`,
   stats: (runId: string) => req<Record<string, unknown>>(`/api/runs/${runId}/stats`),
-  control: (runId: string, body: Record<string, unknown>) =>
-    req<Record<string, unknown>>(`/api/runs/${runId}/control`, {
+  control: (runId: string, body: ControlIntent) =>
+    req<ControlResult>(`/api/runs/${runId}/control`, {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify(body),
