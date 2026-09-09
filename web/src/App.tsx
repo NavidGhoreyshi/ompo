@@ -203,6 +203,8 @@ export default function App() {
               onClose={() => setSel(null)}
               onControlDone={() => void loadRun(runId)}
               slices={detail?.slices ?? []}
+              events={events}
+              live={detail?.live}
             />
           )}
         </aside>

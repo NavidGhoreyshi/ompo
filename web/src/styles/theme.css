@@ -612,6 +612,36 @@ details .omp-code {
   border-color: var(--omp-cyan-dim);
   color: #fff;
 }
+.omp-control-group {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  align-items: center;
+  margin-bottom: 8px;
+}
+
+.omp-control-label {
+  color: var(--omp-muted);
+  font-size: 12px;
+  font-family: var(--omp-mono);
+}
+
+.omp-btn[data-armed="true"] {
+  border-color: var(--omp-amber);
+  color: var(--omp-amber);
+}
+
+.omp-control-status p {
+  margin: 8px 0 0;
+  display: flex;
+  gap: 8px;
+  align-items: baseline;
+  flex-wrap: wrap;
+}
+
+.omp-control-status .omp-list {
+  margin-top: 8px;
+}
 
 .omp-filter-chips {
   display: flex;
