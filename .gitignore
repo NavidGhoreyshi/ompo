@@ -3,6 +3,8 @@ ompo
 # deps + lockfile artifacts
 node_modules/
 web/dist/
+test-results/
+playwright-report/
 # local pilot / scratch dirs live outside the repo; ignore any stray run state
 .omp/
 *.log

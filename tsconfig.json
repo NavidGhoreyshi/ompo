@@ -8,7 +8,10 @@
     "allowImportingTsExtensions": true,
     "resolveJsonModule": true,
     "skipLibCheck": true,
-    "types": ["bun"]
+    "types": ["bun"],
+    "paths": {
+      "@/*": ["./web/src/*"]
+    }
   },
   "include": ["src/**/*", "tests/**/*"]
 }

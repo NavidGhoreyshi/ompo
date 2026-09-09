@@ -1,4 +1,6 @@
-/** Semantic status indicator: symbol + word, never color alone. Flat typographic treatment — pills are reserved for genuinely interactive chips. */
+import { Badge } from "./ui/badge.tsx";
+
+/** Semantic status indicator: symbol + word, never color alone. */
 
 export type Tone = "cyan" | "green" | "amber" | "red" | "muted";
 
@@ -51,13 +53,25 @@ export function symbolForStatus(status: string): string {
   }
 }
 
+const BADGE_BY_TONE = {
+  cyan: "info",
+  green: "success",
+  amber: "warning",
+  red: "destructive",
+  muted: "secondary",
+} as const;
+
+/**
+ * Table/cell status pill: the same symbol + word language as the flat board
+ * rows, set as a shadcn Badge so dense surfaces (runs, roadmap, verify
+ * gates, output meta) scan without widening their columns.
+ */
 export default function StatusBadge({ status }: { status: string }) {
+  const tone = toneForStatus(status);
   return (
-    <span className="omp-status" data-tone={toneForStatus(status)}>
-      <span aria-hidden="true" className="omp-status-sym" data-tone={toneForStatus(status)}>
-        {symbolForStatus(status)}
-      </span>
+    <Badge variant={BADGE_BY_TONE[tone]} data-tone={tone}>
+      <span aria-hidden="true">{symbolForStatus(status)}</span>
       {status}
-    </span>
+    </Badge>
   );
 }

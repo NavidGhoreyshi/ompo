@@ -120,15 +120,21 @@ through `store.ts`/`forensics.ts` path builders — no client paths, no
 `..`. Read endpoints inherit the TUI caps (log tail, diff cap, inspector
 caps).
 
-## 3. Frontend: `web/` (React + Vite, no framework beyond React)
+## 3. Frontend: `web/` (React + Vite + Tailwind v4 + shadcn primitives)
 
-Entry: `web/src/main.tsx` mounts `App` with the single stylesheet
-`web/src/styles/theme.css` (self-contained bundle: local woff2 fonts, no
-CDN — the dashboard works offline like the TUI). `web/src/api.ts` is the
-typed client; its interfaces mirror §2.2 (`RunSummary`, `SliceDetail`
-with capped fields, `AgentRow`, `ControlQueued`/`ControlDirect`, plan
-envelope). `vite.config.ts` builds to `web/dist/`; dev proxies `/api` to
-a local server on 127.0.0.1:4317. `web/src` has no separate tsconfig —
+Entry: `web/src/main.tsx` mounts `App` with two stylesheets:
+`web/src/styles/tokens.css` first (Tailwind v4 + shadcn theme tokens mapped
+to the charcoal-navy palette, dark-first via `:root` and `.dark`), then
+`web/src/styles/theme.css` (viewport app shell + `omp-` composition
+classes). Self-contained bundle: local woff2 fonts, no CDN — the dashboard
+works offline like the TUI. `web/components.json` is the shadcn config
+(`new-york` style, `neutral` base, `lucide` icons) so future `shadcn add`
+commands land in `web/src/components/ui/`; `web/src/lib/utils.ts` is the
+`cn()` helper. `web/src/api.ts` is the typed client; its interfaces mirror
+§2.2 (`RunSummary`, `SliceDetail` with capped fields, `AgentRow`,
+`ControlQueued`/`ControlDirect`, plan envelope). `vite.config.ts` builds to
+`web/dist/` (Tailwind v4 vite plugin, `@` → `web/src`); dev proxies `/api`
+to a local server on 127.0.0.1:4317. `web/src` has no separate tsconfig —
 it ships via the vite build, not `tsc`.
 
 ### 3.1 `App.tsx`: state ownership and freshness
@@ -258,17 +264,22 @@ rendering), `format.ts` (durations/tokens shared with TUI compact forms),
 failed/aborted, then blocked, then most-recent done, else roadmap order).
 All are pure and unit-tested against their `src/` counterparts
 (`surface-consistency.test.ts` asserts web/TUI agreement).
+### 3.7 Style, component library, and accessibility
 
-### 3.7 Style and accessibility
-
-One `theme.css` (custom properties, `omp-` prefix): charcoal-navy
-background (`#0e131a`), brighter panels (`#151d29`), bright text
-(`#e8eef5`), restrained accents via `data-tone` (cyan live, green done,
-amber blocked, red failed, muted rest). Flat sections and dividers over
-card nesting; status is symbol + word, never color alone. Viewport app
-shell (`100dvh`, shell clips page scroll; board/inspector/activity scroll
-internally); rail collapses at 1180px, shell stacks at 900px.
-Panels use `aria-label`s, tabs are real `tablist`/`tab`/`tabpanel` roles,
+Two layers. `tokens.css` is the shadcn token layer (semantic `background` /
+`card` / `primary` / `muted` / `border` / `ring` tokens plus `success` /
+`info` / `warning` status extensions, all pointing at the charcoal-navy
+workstation values); `theme.css` keeps the viewport app shell and the `omp-`
+composition classes the redesign tests pin. `web/src/components/ui/` holds
+the shadcn primitives in use (`button`, `badge`, `card`, `tabs`,
+`separator`, `input`, `select`, `skeleton`) with `lucide-react` icons —
+status pills in tables, control buttons/inputs/selects, the run picker, the
+board/graph and inspector tab bars, and loading skeletons. Flat execution
+surfaces (board rows, hero, lanes) deliberately stay flat symbol + word,
+never color alone. Viewport app shell (`100dvh`, shell clips page scroll;
+board/inspector/activity scroll internally); rail collapses at 1180px,
+shell stacks at 900px. Panels use `aria-label`s, tabs are real
+`tablist`/`tab`/`tabpanel` roles (radix `Tabs` with free arrow-key nav),
 control outcomes use `aria-live="polite"`, and full payloads sit behind
 `title` tooltips rather than truncation.
 
@@ -335,3 +346,10 @@ when the bundle version differs from `/api/health`.
   captures under `captures/` (regenerate after UI changes). The narrow
   CSS contract pins the viewport shell (100dvh + hidden page scroll +
   internal panel scroll + 900px stacked breakpoint).
+- `bun run test:e2e` (`tests/e2e/`, Playwright + Chromium) — real-browser
+  suite over a fixture server (`serve.ts`) with overflow-stressing strings
+  (200-char titles, unbroken reason/log tokens). `overflow.e2e.ts` asserts
+  zero client errors on boot and no text escaping its container across all
+  five views and all eight inspector tabs at 1440px and 390px; the detector
+  treats designed scrollers (tables, code, lane strip, tab strips) as
+  intentional and flags spills, cuts, and unintended scroll regions.

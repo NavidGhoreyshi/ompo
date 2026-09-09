@@ -1,4 +1,5 @@
 import type { AgentRow } from "../api.ts";
+import { Lock } from "lucide-react";
 import { symbolForStatus, toneForStatus } from "./StatusBadge.tsx";
 
 /**
@@ -49,7 +50,11 @@ export default function WorkerLanes({
                   <span className="omp-lane-state">{locked ? "VERIFY" : a.status.toUpperCase()}</span>
                   <span className="omp-hint">
                     attempt {a.attempt} · gen {a.generation}
-                    {locked ? " · 🔒 commit" : ""}
+                    {locked && (
+                      <span className="inline-flex items-center gap-1">
+                        {" "}· <Lock aria-hidden="true" className="size-3 shrink-0" strokeWidth={2} /> commit
+                      </span>
+                    )}
                   </span>
                   <span className="omp-ellipsis omp-lane-last" title={a.lastLine || undefined}>
                     {a.lastLine || "—"}

@@ -9,6 +9,8 @@ import OutputView from "./OutputView.tsx";
 import PromptView from "./PromptView.tsx";
 import ReviewView from "./ReviewView.tsx";
 import { symbolForStatus, toneForStatus } from "./StatusBadge.tsx";
+import { Separator } from "./ui/separator.tsx";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "./ui/tabs.tsx";
 import Usage from "./Usage.tsx";
 import VerifyView from "./VerifyView.tsx";
 
@@ -39,11 +41,11 @@ export default function Inspector({
   events?: RunEvent[];
   live?: boolean;
 }) {
-  const [tab, setTab] = useState(0);
+  const [tab, setTab] = useState<(typeof TABS)[number]>("Output");
 
   // New selection starts on Output; tab state never leaks across slices.
   useEffect(() => {
-    setTab(0);
+    setTab("Output");
   }, [selected?.id]);
 
   if (!selected) {
@@ -82,38 +84,44 @@ export default function Inspector({
         {sel.reason && <p className="omp-inspector-reason">{sel.reason}</p>}
       </div>
 
+      <Separator className="my-1" />
+
       <ExecutionTrace selected={sel} detail={d} />
 
-      <div className="omp-tabs" role="tablist" aria-label="Inspector views">
-        {TABS.map((t, i) => (
-          <button
-            key={t}
-            role="tab"
-            aria-selected={tab === i}
-            aria-label={`${i + 1}:${t}`}
-            className="omp-tab"
-            data-active={tab === i ? "true" : "false"}
-            onClick={() => setTab(i)}
-            onKeyDown={(e) => {
-              if (e.key === "ArrowRight") setTab((i + 1) % TABS.length);
-              if (e.key === "ArrowLeft") setTab((i + TABS.length - 1) % TABS.length);
-            }}
-          >
-            {t}
-          </button>
-        ))}
-      </div>
+      <Tabs value={tab} onValueChange={(v) => setTab(v as (typeof TABS)[number])}>
+        <TabsList className="omp-tabs" aria-label="Inspector views">
+          {TABS.map((t) => (
+            <TabsTrigger key={t} value={t} className="omp-tab">
+              {t}
+            </TabsTrigger>
+          ))}
+        </TabsList>
 
-      <div role="tabpanel" aria-label={TABS[tab]}>
-        {tab === 0 && <OutputView selected={sel} detail={d} />}
-        {tab === 1 && <DiffView runId={runId} sliceId={sel.id} detail={d} />}
-        {tab === 2 && <VerifyView detail={d} />}
-        {tab === 3 && <ReviewView detail={d} />}
-        {tab === 4 && <PromptView selected={sel} detail={d} />}
-        {tab === 5 && <EventsView runId={runId} sliceId={sel.id} detail={d} />}
-        {tab === 6 && <Usage detail={d} />}
-        {tab === 7 && <LogView runId={runId} sliceId={sel.id} active={sel.status === "running" || sel.status === "verifying"} />}
-      </div>
+        <TabsContent value="Output">
+          <OutputView selected={sel} detail={d} />
+        </TabsContent>
+        <TabsContent value="Diff">
+          <DiffView runId={runId} sliceId={sel.id} detail={d} />
+        </TabsContent>
+        <TabsContent value="Verify">
+          <VerifyView detail={d} />
+        </TabsContent>
+        <TabsContent value="Review">
+          <ReviewView detail={d} />
+        </TabsContent>
+        <TabsContent value="Prompt">
+          <PromptView selected={sel} detail={d} />
+        </TabsContent>
+        <TabsContent value="Events">
+          <EventsView runId={runId} sliceId={sel.id} detail={d} />
+        </TabsContent>
+        <TabsContent value="Usage">
+          <Usage detail={d} />
+        </TabsContent>
+        <TabsContent value="Log">
+          <LogView runId={runId} sliceId={sel.id} active={sel.status === "running" || sel.status === "verifying"} />
+        </TabsContent>
+      </Tabs>
 
       <h3 className="omp-section-label">Control</h3>
       <ControlPanel runId={runId} slices={slices} initialSliceId={sel.id} onDone={onControlDone} events={events} live={live} />

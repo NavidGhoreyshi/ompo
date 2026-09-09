@@ -37,7 +37,7 @@ export default function ReviewView({ detail }: { detail: SliceDetail | null }) {
             </ul>
           )}
           {review.notes && (
-            <p style={{ whiteSpace: "pre-wrap", margin: "4px 0" }}>{review.notes}</p>
+            <p style={{ whiteSpace: "pre-wrap", overflowWrap: "anywhere", margin: "4px 0" }}>{review.notes}</p>
           )}
         </>
       )}
@@ -45,7 +45,7 @@ export default function ReviewView({ detail }: { detail: SliceDetail | null }) {
       {detail?.reviewNotes && (
         <>
           <h3>Prior rejection (next-attempt input)</h3>
-          <p style={{ whiteSpace: "pre-wrap", margin: "4px 0" }}>{detail.reviewNotes}</p>
+          <p style={{ whiteSpace: "pre-wrap", overflowWrap: "anywhere", margin: "4px 0" }}>{detail.reviewNotes}</p>
         </>
       )}
 

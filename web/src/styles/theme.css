@@ -14,7 +14,7 @@
 
 @font-face {
   font-family: "Plus Jakarta Sans";
-  src: url("../assets/fonts/plus-jakarta-sans.woff2") format("woff2");
+  src: url("../assets/fonts/PlusJakartaSans-var.woff2") format("woff2");
   font-weight: 100 900;
   font-style: normal;
   font-display: swap;
@@ -22,7 +22,7 @@
 
 @font-face {
   font-family: "Space Grotesk";
-  src: url("../assets/fonts/space-grotesk.woff2") format("woff2");
+  src: url("../assets/fonts/SpaceGrotesk-var.woff2") format("woff2");
   font-weight: 300 700;
   font-style: normal;
   font-display: swap;
@@ -504,6 +504,7 @@ input:focus-visible,
   font-size: 12px;
   white-space: nowrap;
   max-width: 340px;
+  overflow: hidden;
 }
 
 .omp-lane:hover {
@@ -547,10 +548,10 @@ input:focus-visible,
 .omp-lane[data-tone="red"] .omp-lane-state {
   color: var(--omp-red);
 }
-
 .omp-lane-last {
   color: var(--omp-muted);
   max-width: 140px;
+  min-width: 0;
 }
 
 /* Inline attention banner: failures attract eyes without a side panel. */
@@ -570,6 +571,9 @@ input:focus-visible,
 }
 
 .omp-attention-link {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
   border: 1px solid var(--omp-border);
   border-radius: var(--omp-radius-sm);
   background: var(--omp-panel);
@@ -817,6 +821,7 @@ input:focus-visible,
 /* ---------- inspector column: always populated ---------- */
 
 .omp-inspector {
+  min-width: 0;
   min-height: 0;
   overflow-y: auto;
   background: var(--omp-bg-2);
@@ -1756,6 +1761,44 @@ input:focus-visible,
 
   .omp-board-meta {
     white-space: normal;
+  }
+
+  .omp-header {
+    gap: 8px;
+    padding: 0 10px;
+  }
+
+  .omp-version {
+    display: none;
+  }
+
+  .omp-header-run [data-slot="select-trigger"] {
+    width: 7.5rem;
+  }
+
+  .omp-activity-list li {
+    flex-wrap: wrap;
+    row-gap: 0;
+  }
+
+  .omp-activity-line {
+    flex: 1 1 100%;
+    white-space: normal;
+    overflow-wrap: anywhere;
+  }
+}
+
+@media (max-width: 600px) {
+  .omp-brand-name {
+    display: none;
+  }
+
+  .omp-live {
+    display: none;
+  }
+
+  .omp-header-run [data-slot="select-trigger"] {
+    width: 6.5rem;
   }
 }
 

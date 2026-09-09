@@ -1,11 +1,13 @@
+import { Bot, ChartColumn, Layers, LayoutDashboard, Route, type LucideIcon } from "lucide-react";
+
 export type View = "overview" | "runs" | "roadmap" | "agents" | "stats";
 
-export const VIEWS: { id: View; label: string; icon: string }[] = [
-  { id: "overview", label: "Overview", icon: "◈" },
-  { id: "runs", label: "Runs", icon: "▤" },
-  { id: "roadmap", label: "Roadmap", icon: "☰" },
-  { id: "agents", label: "Agents", icon: "⚙" },
-  { id: "stats", label: "Stats", icon: "∑" },
+export const VIEWS: { id: View; label: string; icon: LucideIcon }[] = [
+  { id: "overview", label: "Overview", icon: LayoutDashboard },
+  { id: "runs", label: "Runs", icon: Layers },
+  { id: "roadmap", label: "Roadmap", icon: Route },
+  { id: "agents", label: "Agents", icon: Bot },
+  { id: "stats", label: "Stats", icon: ChartColumn },
 ];
 
 /**
@@ -32,20 +34,23 @@ export default function Sidebar({
           <code className="omp-ellipsis">{runId}</code>
         </p>
       )}
-      {VIEWS.map((v) => (
-        <button
-          key={v.id}
-          className="omp-nav-btn"
-          aria-current={view === v.id ? "page" : undefined}
-          onClick={() => onNavigate(v.id)}
-        >
-          <span aria-hidden="true">{v.icon}</span>
-          <span className="omp-nav-label">{v.label}</span>
-          {typeof counts[v.id] === "number" && (
-            <span className="omp-nav-count">{counts[v.id]}</span>
-          )}
-        </button>
-      ))}
+      {VIEWS.map((v) => {
+        const Icon = v.icon;
+        return (
+          <button
+            key={v.id}
+            className="omp-nav-btn"
+            aria-current={view === v.id ? "page" : undefined}
+            onClick={() => onNavigate(v.id)}
+          >
+            <Icon aria-hidden="true" className="size-4 shrink-0" strokeWidth={1.75} />
+            <span className="omp-nav-label">{v.label}</span>
+            {typeof counts[v.id] === "number" && (
+              <span className="omp-nav-count">{counts[v.id]}</span>
+            )}
+          </button>
+        );
+      })}
     </nav>
   );
 }

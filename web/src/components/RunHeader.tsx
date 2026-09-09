@@ -3,6 +3,7 @@ import { formatElapsed, formatTokens } from "../lib/format.ts";
 import { describeEvent } from "../lib/events.ts";
 import { heroAction, preferredSliceId } from "../lib/selection.ts";
 import { symbolForStatus, toneForStatus } from "./StatusBadge.tsx";
+import { Separator } from "./ui/separator.tsx";
 
 /**
  * Run hero, not telemetry: first glance answers "s5a is running,
@@ -93,6 +94,7 @@ export default function RunHeader({
       ) : (
         <p className="omp-hint">No slices yet.</p>
       )}
+      {hero && <Separator className="my-0.5 opacity-70" />}
       <p className="omp-runline-telemetry" aria-label="Run counts">
         <span className="omp-stat">
           <strong>{counts.done}</strong> done

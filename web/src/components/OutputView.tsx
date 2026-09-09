@@ -57,7 +57,7 @@ export default function OutputView({
 
       <h3>Summary</h3>
       {d?.reportSummary ? (
-        <p style={{ whiteSpace: "pre-wrap", margin: "4px 0" }}>{d.reportSummary}</p>
+        <p style={{ whiteSpace: "pre-wrap", overflowWrap: "anywhere", margin: "4px 0" }}>{d.reportSummary}</p>
       ) : (
         <p className="omp-hint">
           {selected.status === "running" || selected.status === "verifying"
@@ -81,7 +81,7 @@ export default function OutputView({
       {d?.note && (
         <>
           <h3>Latest signal</h3>
-          <p className="omp-hint" style={{ whiteSpace: "pre-wrap", margin: "4px 0" }}>{d.note}</p>
+          <p className="omp-hint" style={{ whiteSpace: "pre-wrap", overflowWrap: "anywhere", margin: "4px 0" }}>{d.note}</p>
         </>
       )}
 

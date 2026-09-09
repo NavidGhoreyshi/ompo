@@ -1,9 +1,12 @@
 import { useState } from "react";
+import { CircleX, TriangleAlert } from "lucide-react";
 import type { AgentRow, RunDetail, RunEvent } from "../api.ts";
 import Dag from "../components/Dag.tsx";
 import RunHeader from "../components/RunHeader.tsx";
 import SliceTable from "../components/SliceTable.tsx";
 import WorkerLanes from "../components/WorkerLanes.tsx";
+import { Skeleton } from "../components/ui/skeleton.tsx";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "../components/ui/tabs.tsx";
 
 /**
  * Overview workspace: RUN STATUS / BOARD-or-DAG + INSPECTOR (aside, owned
@@ -32,7 +35,11 @@ export default function Overview({
   if (!detail) {
     return (
       <div className="omp-workspace" aria-label="Overview workspace">
-        <p className="omp-hint">Loading run…</p>
+        <div className="flex flex-col gap-2" aria-label="Loading run">
+          <Skeleton className="h-16 w-full" />
+          <Skeleton className="h-8 w-2/3" />
+          <Skeleton className="h-40 w-full" />
+        </div>
       </div>
     );
   }
@@ -48,46 +55,39 @@ export default function Overview({
           <strong>
             {attention.length} need{attention.length === 1 ? "s" : ""} attention
           </strong>{" "}
-          {attention.slice(0, 4).map((s) => (
-            <button key={s.id} type="button" className="omp-attention-link" onClick={() => onInspect(s.id)} title={s.reason ?? s.title}>
-              {s.status === "failed" ? "✕" : "▲"} {s.id}
-            </button>
-          ))}
+          {attention.slice(0, 4).map((s) => {
+            const Icon = s.status === "failed" ? CircleX : TriangleAlert;
+            return (
+              <button key={s.id} type="button" className="omp-attention-link" onClick={() => onInspect(s.id)} title={s.reason ?? s.title}>
+                <Icon aria-hidden="true" className="size-3.5 shrink-0" strokeWidth={2} />
+                {s.id}
+              </button>
+            );
+          })}
           {attention.length > 4 && <span className="omp-hint">+{attention.length - 4} more</span>}
         </p>
       )}
-      <div className="omp-board-bar">
-        <span className="omp-section-label">Execution board — {detail.slices.length} slices</span>
-        <div className="omp-tabs" role="tablist" aria-label="Board mode">
-          <button
-            type="button"
-            role="tab"
-            aria-selected={mode === "board"}
-            className="omp-tab"
-            data-active={mode === "board" ? "true" : "false"}
-            onClick={() => setMode("board")}
-          >
-            Board
-          </button>
-          <button
-            type="button"
-            role="tab"
-            aria-selected={mode === "dag"}
-            className="omp-tab"
-            data-active={mode === "dag" ? "true" : "false"}
-            onClick={() => setMode("dag")}
-          >
-            Graph
-          </button>
+      <Tabs value={mode} onValueChange={(v) => setMode(v as "board" | "dag")}>
+        <div className="omp-board-bar">
+          <span className="omp-section-label">Execution board — {detail.slices.length} slices</span>
+          <TabsList className="omp-tabs" aria-label="Board mode">
+            <TabsTrigger value="board" className="omp-tab">
+              Board
+            </TabsTrigger>
+            <TabsTrigger value="dag" className="omp-tab">
+              Graph
+            </TabsTrigger>
+          </TabsList>
         </div>
-      </div>
-      <div className="omp-board-scroll">
-        {mode === "board" ? (
-          <SliceTable slices={detail.slices} selected={selected} onSelect={onInspect} events={events} />
-        ) : (
-          <Dag slices={detail.slices} selected={selected} onSelect={onInspect} />
-        )}
-      </div>
+        <div className="omp-board-scroll">
+          <TabsContent value="board">
+            <SliceTable slices={detail.slices} selected={selected} onSelect={onInspect} events={events} />
+          </TabsContent>
+          <TabsContent value="dag">
+            <Dag slices={detail.slices} selected={selected} onSelect={onInspect} />
+          </TabsContent>
+        </div>
+      </Tabs>
     </div>
   );
 }
