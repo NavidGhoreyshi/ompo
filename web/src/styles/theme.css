@@ -1660,6 +1660,248 @@ input:focus-visible,
   background: transparent;
 }
 
+/* ---------- motion system: purposeful, restrained ---------- */
+/*
+ * Personality: calm control room, not playful. One entrance choreography
+ * (workspace stagger), fast feedback (press/hover), smooth state changes
+ * (selection, tabs, new activity rows). Everything is transform + opacity
+ * only (GPU), durations from the motion spec, exits faster than entrances.
+ * No bounce/elastic curves — decisive deceleration only.
+ */
+
+:root {
+  --omp-ease-out: cubic-bezier(0.25, 1, 0.5, 1);
+  --omp-ease-snappy: cubic-bezier(0.22, 1, 0.36, 1);
+  --omp-ease-decisive: cubic-bezier(0.16, 1, 0.3, 1);
+  --omp-dur-instant: 120ms;
+  --omp-dur-state: 220ms;
+  --omp-dur-layout: 350ms;
+  --omp-dur-enter: 550ms;
+}
+
+@keyframes omp-rise {
+  from {
+    opacity: 0;
+    transform: translateY(8px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@keyframes omp-fade {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+@keyframes omp-row-in {
+  from {
+    opacity: 0;
+    transform: translateY(6px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+@keyframes omp-confirm {
+  from {
+    opacity: 0.4;
+    transform: scale(0.98);
+  }
+  to {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+
+@keyframes omp-shake {
+  10%,
+  90% {
+    transform: translateX(-1px);
+  }
+  20%,
+  80% {
+    transform: translateX(2px);
+  }
+  30%,
+  50%,
+  70% {
+    transform: translateX(-3px);
+  }
+  40%,
+  60% {
+    transform: translateX(3px);
+  }
+}
+
+/* Hero moment: workspace entrance choreography. Run hero first, then lanes, */
+/* then attention/board — 80–100ms stagger, fade + rise, once per mount. */
+.omp-workspace > :nth-child(1) {
+  animation: omp-rise var(--omp-dur-enter) var(--omp-ease-out) both;
+}
+
+.omp-workspace > :nth-child(2) {
+  animation: omp-rise var(--omp-dur-enter) var(--omp-ease-out) 80ms both;
+}
+
+.omp-workspace > :nth-child(3) {
+  animation: omp-rise var(--omp-dur-enter) var(--omp-ease-out) 160ms both;
+}
+
+.omp-workspace > :nth-child(n + 4) {
+  animation: omp-rise var(--omp-dur-enter) var(--omp-ease-out) 240ms both;
+}
+
+/* View switching: secondary pages settle with a short fade, never a jump. */
+.omp-main > .omp-panel,
+.omp-main > section {
+  animation: omp-fade var(--omp-dur-state) var(--omp-ease-out) both;
+}
+
+/* Inspector + board tab content: crossfade on switch (exit unmounts, so */
+/* entrance-only at ~75% of layout duration reads as a transition). */
+.omp-inspector-panel [role="tabpanel"][data-state="active"],
+.omp-board-scroll [role="tabpanel"][data-state="active"] {
+  animation: omp-fade 260ms var(--omp-ease-out) both;
+}
+
+/* Board + lanes: selection is a color transition, hover is a 2px nudge. */
+/* Transform + background-color/border-color only — no layout properties. */
+.omp-board-row,
+.omp-lane {
+  transition:
+    background-color var(--omp-dur-state) var(--omp-ease-out),
+    border-color var(--omp-dur-state) var(--omp-ease-out),
+    transform var(--omp-dur-instant) var(--omp-ease-snappy);
+}
+
+.omp-board-row:hover,
+.omp-lane:hover {
+  transform: translateX(2px);
+}
+
+.omp-board-row:active,
+.omp-lane:active {
+  transform: translateX(1px) scale(0.995);
+}
+
+/* New activity rows announce themselves once; hover stays instant-readable. */
+.omp-activity-list li {
+  transition: background-color var(--omp-dur-state) var(--omp-ease-out);
+}
+
+.omp-activity-list li:first-child {
+  animation: omp-row-in var(--omp-dur-state) var(--omp-ease-decisive) both;
+}
+
+/* Attention banner: slides in with the board, links lift on hover. */
+.omp-attention {
+  animation: omp-row-in var(--omp-dur-layout) var(--omp-ease-out) both;
+}
+
+.omp-attention-link {
+  transition:
+    border-color var(--omp-dur-state) var(--omp-ease-out),
+    background-color var(--omp-dur-state) var(--omp-ease-out),
+    transform var(--omp-dur-instant) var(--omp-ease-snappy);
+}
+
+.omp-attention-link:hover {
+  transform: translateY(-1px);
+}
+
+.omp-attention-link:active {
+  transform: translateY(0) scale(0.97);
+}
+
+/* Feedback layer: every pressable acknowledges in ≤150ms. Hover lifts */
+/* 1px with a shadow; press settles to 0.97; disabled never moves. */
+.omp-btn,
+.omp-chip,
+.omp-icon-btn,
+.omp-nav-btn,
+button[data-slot="button"] {
+  transition:
+    transform var(--omp-dur-instant) var(--omp-ease-snappy),
+    background-color var(--omp-dur-state) var(--omp-ease-out),
+    border-color var(--omp-dur-state) var(--omp-ease-out),
+    color var(--omp-dur-state) var(--omp-ease-out),
+    box-shadow var(--omp-dur-state) var(--omp-ease-out),
+    opacity var(--omp-dur-state) var(--omp-ease-out);
+}
+
+.omp-btn:hover:not(:disabled),
+.omp-icon-btn:hover,
+button[data-slot="button"]:hover:not(:disabled) {
+  transform: translateY(-1px);
+}
+
+.omp-btn:active:not(:disabled),
+.omp-chip:active,
+.omp-icon-btn:active,
+.omp-nav-btn:active,
+button[data-slot="button"]:active:not(:disabled) {
+  transform: scale(0.97);
+}
+
+.omp-btn:disabled,
+button[data-slot="button"]:disabled {
+  transform: none;
+}
+
+/* Armed confirm + control outcome: gentle scale pulse, never a color snap. */
+.omp-btn[data-armed="true"] {
+  animation: omp-confirm var(--omp-dur-state) var(--omp-ease-out) both;
+}
+
+.omp-control-status {
+  animation: omp-confirm 300ms var(--omp-ease-out) both;
+}
+
+/* Form focus: border + ring glow transition; validation error shakes once. */
+.omp-select,
+.omp-input,
+input[data-slot="input"],
+button[data-slot="select-trigger"] {
+  transition:
+    border-color var(--omp-dur-state) var(--omp-ease-out),
+    box-shadow var(--omp-dur-state) var(--omp-ease-out),
+    background-color var(--omp-dur-state) var(--omp-ease-out);
+}
+
+.omp-error {
+  animation: omp-shake 300ms var(--omp-ease-out) both;
+}
+
+/* Tabs + lists + graph: color transitions, no layout animation. */
+.omp-tab {
+  transition:
+    color var(--omp-dur-state) var(--omp-ease-out),
+    border-color var(--omp-dur-state) var(--omp-ease-out),
+    background-color var(--omp-dur-state) var(--omp-ease-out);
+}
+
+.omp-list-item,
+.omp-table tbody tr,
+.omp-timeline-row {
+  transition: background-color var(--omp-dur-state) var(--omp-ease-out);
+}
+
+.omp-dag-node {
+  transition: opacity var(--omp-dur-state) var(--omp-ease-out);
+}
+
+.omp-dag-node:hover {
+  opacity: 0.85;
+}
+
 /* ---------- responsive: shell stays viewport-sized ---------- */
 
 @media (max-width: 1180px) {
@@ -1803,14 +2045,31 @@ input:focus-visible,
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .omp-live[data-live="true"] .omp-live-dot,
-  .omp-board-row[data-live="true"] > .omp-status-sym {
-    animation: none;
-  }
-
   *,
   *::before,
   *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
     transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+
+  .omp-live[data-live="true"] .omp-live-dot,
+  .omp-board-row[data-live="true"] > .omp-status-sym,
+  .omp-workspace > *,
+  .omp-attention,
+  .omp-activity-list li:first-child,
+  .omp-btn[data-armed="true"],
+  .omp-control-status,
+  .omp-error {
+    animation: none !important;
+  }
+
+  .omp-board-row:hover,
+  .omp-lane:hover,
+  .omp-attention-link:hover,
+  .omp-btn:hover:not(:disabled),
+  button[data-slot="button"]:hover:not(:disabled) {
+    transform: none !important;
   }
 }
