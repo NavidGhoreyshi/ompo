@@ -153,6 +153,48 @@ export interface ControlDirect {
 }
 
 export type ControlResult = ControlQueued | ControlDirect;
+/** One lint finding, verbatim from `lintRoadmap` (docs/web-dashboard-architecture.md §3). */
+export interface LintFinding {
+  level: "error" | "warn";
+  slice?: string;
+  code: string;
+  message: string;
+}
+
+/** One proposed slice in the plan preview — the `PlanPreviewRow` shape from src/planPreview.ts. */
+export interface PlanPreviewRow {
+  id: string;
+  title: string;
+  effort: string;
+  verifyCount: number;
+  verify: string[];
+  files: string[];
+  deps: string[];
+  errors: LintFinding[];
+  warnings: LintFinding[];
+}
+
+/** GET /api/plan/preview envelope: preview plus the planner inputs surveyed. */
+export interface PlanPreviewEnvelope {
+  roadmapPath: string;
+  exists: boolean;
+  sourceHash?: string;
+  status: "ready" | "warnings" | "blocked";
+  summary: string;
+  rows: PlanPreviewRow[];
+  errors: LintFinding[];
+  warnings: LintFinding[];
+  surveyed: { path: string; mtimeMs: number }[];
+}
+
+export type PlanDecision = "accept" | "abort" | "edit";
+
+export interface PlanDecisionResult {
+  ok: boolean;
+  decision: PlanDecision;
+  status: PlanPreviewEnvelope["status"];
+  summary: string;
+}
 
 async function req<T>(path: string, init?: RequestInit): Promise<T> {
   const res = await fetch(path, init);
@@ -200,5 +242,13 @@ export const api = {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify(body),
+    }),
+  planPreview: () => req<PlanPreviewEnvelope>("/api/plan/preview"),
+  planRoadmap: () => req<{ path: string; markdown: string }>("/api/plan/roadmap"),
+  planDecision: (decision: PlanDecision) =>
+    req<PlanDecisionResult>("/api/plan/decision", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ decision }),
     }),
 };

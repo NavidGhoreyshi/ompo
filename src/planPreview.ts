@@ -3,7 +3,7 @@
  *
  * Execution is more mature than planning: the planner exposes too little
  * before the loop starts spending model calls. This module surfaces what is
- * already computable — slice ids/titles, Effort, Verify presence, Depends,
+ * already computable — slice ids/titles, Effort, Verify gates, Files, Depends,
  * and the existing lint findings — with no invented metrics (no ETA, cost,
  * or success forecasts).
  *
@@ -27,6 +27,10 @@ export interface PlanPreviewRow {
   /** Effort trailer, or "(none)" when the slice omits it. */
   effort: string;
   verifyCount: number;
+  /** Full Verify: gate commands in slice order (empty when the slice omits them). */
+  verify: string[];
+  /** Files: allowlist declared by the slice (advisory for spec-builder). */
+  files: string[];
   deps: string[];
   errors: LintFinding[];
   warnings: LintFinding[];
@@ -54,6 +58,8 @@ export function buildPlanPreview(markdown: string, opts: LintOptions = {}): Plan
       title: s.title,
       effort: s.effort ?? "(none)",
       verifyCount: s.verify.length,
+      verify: [...s.verify],
+      files: [...s.files],
       deps: [...s.deps],
       errors: linted.errors.filter((f) => f.slice === s.id),
       warnings: linted.warnings.filter((f) => f.slice === s.id),
