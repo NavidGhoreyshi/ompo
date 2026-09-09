@@ -9,7 +9,8 @@ with a durable store, verifier gates, retries, and crash resume.
 
 ```bash
 cd <project>
-ompo                 # unified TUI: plan (if needed) → run → done
+ompo                 # local dashboard: web UI + API on 127.0.0.1 (auto port)
+ompo --tui           # unified TUI: plan (if needed) → run → done
 # …or step by step:
 ompo init            # planner session surveys docs → ROADMAP.md (+ .omp/roadmap.yml)
 # review ROADMAP.md — one ## [id] section per slice (--template for blank, --replan to redo)
