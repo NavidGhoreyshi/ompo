@@ -23,7 +23,7 @@ import { diffSliceBranch, tailSliceLog } from "./forensics.ts";
 import { resolveRunId } from "./log.ts";
 import { computeStats, queryEvents, replayRun } from "./stats.ts";
 import { listRuns, loadRun, lockHeld, readEvents } from "./store.ts";
-import type { RunEvent, SliceStatus } from "./types.ts";
+import type { Effort, RunEvent, SliceStatus } from "./types.ts";
 import { EMBEDDED_WEB_DIST, EMBEDDED_WEB_VERSION } from "./webAssets.generated.ts";
 import pkg from "../package.json";
 
@@ -60,6 +60,8 @@ export interface RunSummary {
   updatedAt: string;
   live: boolean;
   counts: Counts;
+  /** Live workers (slices with status running/verifying). Mirrors counts.active. */
+  workers: number;
 }
 
 export interface SliceSummary {
@@ -70,6 +72,13 @@ export interface SliceSummary {
   updatedAt: string;
   reason?: string;
   deps: string[];
+  effort?: Effort;
+  /** Worker agent/lane selector from the roadmap (e.g. "task", "sonic"). */
+  agent?: string;
+  /** Fresh-context generation within the current attempt (handoffs, 0-based). */
+  generation: number;
+  /** Verifier gate commands declared by the slice. */
+  verify: string[];
 }
 
 export type RunDetail = RunSummary & { slices: SliceSummary[] };
@@ -80,6 +89,11 @@ export interface SliceDetail {
   status: SliceStatus;
   attempts: number;
   reason?: string;
+  effort?: Effort;
+  agent?: string;
+  generation: number;
+  verify: string[];
+  deps: string[];
   reportSummary?: string;
   metrics?: { turns: number; tools: number; durationMs?: number };
   recentEvents: string[];
@@ -94,6 +108,8 @@ export interface SliceDetail {
   promptName?: string;
   workerTail?: string;
   workerLogName?: string;
+  /** Artifact availability (booleans only — never filesystem paths). */
+  artifacts: { report: boolean; verdict: boolean; review: boolean; workerLog: boolean; prompt: boolean };
   reportFull?: {
     filesChanged: string[];
     testsRun: string[];
@@ -102,6 +118,28 @@ export interface SliceDetail {
     verificationNotes?: string;
     followUps: string[];
   };
+}
+
+/**
+ * Live-worker row derived from the cursor + event log + worker-log tails
+ * (arch §1: no persisted agent model — point-in-time derivation like
+ * `agentStates` in watch.tsx, but over durable state the server can read).
+ * Browser-safe: ids and formatted lines only, never filesystem paths.
+ */
+export interface AgentRow {
+  /** Slice id this worker is (or was most recently) attached to. */
+  id: string;
+  /** Lane index among the live workers in board order (0-based). */
+  lane: number;
+  status: SliceStatus;
+  attempt: number;
+  generation: number;
+  agent?: string;
+  effort?: Effort;
+  /** Last formatted event line for the slice ("" when no events yet). */
+  lastLine: string;
+  /** Last finished worker counters where available (turns/tools/durationMs). */
+  metrics?: { turns: number; tools: number; durationMs?: number };
 }
 
 // ---- small pure projections (ported from watch.tsx — no ink import here) ----
@@ -150,6 +188,70 @@ function sliceMetrics(events: RunEvent[], sliceId: string): SliceDetail["metrics
   return undefined;
 }
 
+/**
+ * Current fresh-context generation within an attempt, from worker log names
+ * (`worker-<attempt>-g<gen>.log`). 0 when no log exists yet for the attempt
+ * (claimed but not spawned) or the slice dir is absent. Never throws.
+ */
+function generationFromFiles(files: string[], attempt: number): number {
+  let gen = 0;
+  let found = false;
+  for (const f of files) {
+    const m = f.match(/^worker-(\d+)-g(\d+)\.log$/);
+    if (!m || Number(m[1]) !== attempt) continue;
+    found = true;
+    if (Number(m[2]) > gen) gen = Number(m[2]);
+  }
+  return found ? gen : 0;
+}
+
+function sliceGeneration(projectDir: string, runId: string, sliceId: string, attempt: number): number {
+  try {
+    const dir = join(projectDir, ".omp", "roadmap", "runs", runId, "slices", sliceId);
+    return generationFromFiles(readdirSync(dir), attempt);
+  } catch {
+    return 0;
+  }
+}
+
+/**
+ * Live-worker rows: one per running/verifying slice in board order.
+ * Derived from the cursor + event log (arch §1: point-in-time derivation,
+ * never a new agent model). Null when the run cursor is missing.
+ */
+function agentsForRun(projectDir: string, runId: string): AgentRow[] | null {
+  let cursor;
+  try {
+    cursor = loadRun(projectDir, runId);
+  } catch {
+    return null;
+  }
+  let events: RunEvent[] = [];
+  try {
+    events = readEvents(projectDir, runId);
+  } catch {
+    events = [];
+  }
+  const active = cursor.doc.slices.filter((s) => s.status === "running" || s.status === "verifying");
+  return active.map((s, lane) => {
+    const sliceEvents = events.filter((e) => e.sliceId === s.id);
+    const last = sliceEvents.at(-1);
+    const metrics = sliceMetrics(events, s.id);
+    const row: AgentRow = {
+      id: s.id,
+      lane,
+      status: s.status,
+      attempt: s.attempts,
+      generation: sliceGeneration(projectDir, runId, s.id, s.attempts),
+      lastLine: last ? formatEventLine(last) : "",
+    };
+    if (s.workerAgent) row.agent = s.workerAgent;
+    if (s.effort) row.effort = s.effort;
+    if (metrics) row.metrics = metrics;
+    return row;
+  });
+}
+
 function readJson<T>(path: string): T | null {
   try {
     return JSON.parse(readFileSync(path, "utf8")) as T;
@@ -175,6 +277,7 @@ function summarizeRun(projectDir: string, runId: string): RunSummary | null {
     return null;
   }
   const count = (s: SliceStatus) => cursor.doc.slices.filter((x) => x.status === s).length;
+  const active = count("running") + count("verifying");
   return {
     runId,
     createdAt: cursor.createdAt,
@@ -182,12 +285,13 @@ function summarizeRun(projectDir: string, runId: string): RunSummary | null {
     live: lockHeld(projectDir, runId),
     counts: {
       done: count("done"),
-      active: count("running") + count("verifying"),
+      active,
       failed: count("failed"),
       skipped: count("skipped"),
       blockedEnv: count("blocked-env"),
       pending: cursor.doc.slices.filter((x) => !["done", "failed", "skipped"].includes(x.status)).length,
     },
+    workers: active,
   };
 }
 
@@ -204,15 +308,22 @@ function detailForRun(projectDir: string, runId: string): RunDetail | null {
   const reasons = reasonsBySlice(events);
   return {
     ...summary,
-    slices: cursor.doc.slices.map((s) => ({
-      id: s.id,
-      title: s.title,
-      status: s.status,
-      attempts: s.attempts,
-      updatedAt: s.updatedAt,
-      reason: s.status === "failed" ? reasons.get(s.id) : undefined,
-      deps: [...s.deps],
-    })),
+    slices: cursor.doc.slices.map((s) => {
+      const row: SliceSummary = {
+        id: s.id,
+        title: s.title,
+        status: s.status,
+        attempts: s.attempts,
+        updatedAt: s.updatedAt,
+        reason: s.status === "failed" ? reasons.get(s.id) : undefined,
+        deps: [...s.deps],
+        generation: sliceGeneration(projectDir, runId, s.id, s.attempts),
+        verify: [...s.verify],
+      };
+      if (s.effort) row.effort = s.effort;
+      if (s.workerAgent) row.agent = s.workerAgent;
+      return row;
+    }),
   };
 }
 
@@ -231,16 +342,30 @@ function sliceDetailFor(projectDir: string, runId: string, sliceId: string): Sli
   }
   const events = readEvents(projectDir, runId);
   const sliceEvents = events.filter((e) => e.sliceId === sliceId);
+  const promptFile = files.filter((f) => /^(review-prompt|debug-prompt|prompt)-\d+\.md$/.test(f)).sort().at(-1);
+  const workerLog = files.filter((f) => /^(worker|debug)-\d+\.log$/.test(f)).sort().at(-1);
   const detail: SliceDetail = {
     sliceId: slice.id,
     title: slice.title,
     status: slice.status,
     attempts: slice.attempts,
     reason: slice.reason,
+    generation: slice.generation,
+    verify: [...slice.verify],
+    deps: [...slice.deps],
     recentEvents: sliceEvents.slice(-2).reverse().map(formatEventLine),
     history: sliceEvents.slice(0, -2).slice(-8).reverse().map(formatEventLine),
     metrics: sliceMetrics(events, sliceId),
+    artifacts: {
+      report: files.includes("report.json"),
+      verdict: files.includes("verdict.json"),
+      review: files.includes("review.json"),
+      workerLog: workerLog !== undefined,
+      prompt: promptFile !== undefined,
+    },
   };
+  if (slice.effort) detail.effort = slice.effort;
+  if (slice.agent) detail.agent = slice.agent;
 
   const report = readJson<{
     summary?: string;
@@ -307,13 +432,11 @@ function sliceDetailFor(projectDir: string, runId: string, sliceId: string): Sli
     /* advisory only */
   }
 
-  const promptFile = files.filter((f) => /^(review-prompt|debug-prompt|prompt)-\d+\.md$/.test(f)).sort().at(-1);
   if (promptFile) {
     detail.promptName = promptFile;
     const tail = tailOf(join(dir, promptFile), 30);
     if (tail.trim()) detail.promptTail = tail;
   }
-  const workerLog = files.filter((f) => /^(worker|debug)-\d+\.log$/.test(f)).sort().at(-1);
   if (workerLog) {
     detail.workerLogName = workerLog;
     const tail = tailOf(join(dir, workerLog), 60);
@@ -604,6 +727,11 @@ async function route(projectDir: string, req: Request): Promise<Response> {
       if (req.method === "GET" && tail === "diff") {
         return json(diffSliceBranch(projectDir, runId, sliceId));
       }
+    }
+    if (req.method === "GET" && rest === "agents") {
+      const missing = requireRun(projectDir, runId);
+      if (missing) return missing;
+      return json(agentsForRun(projectDir, runId) ?? []);
     }
     if (req.method === "GET" && rest === "events") {
       const missing = requireRun(projectDir, runId);
