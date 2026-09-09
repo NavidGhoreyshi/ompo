@@ -20,6 +20,64 @@ ompo run             # live TUI: board + inspector + scrollable log panel (PgUp/
 ompo status          # read-only progress dump
 ```
 
+## Browser dashboard (`ompo` — the default operator surface)
+
+```bash
+ompo                  # dashboard: serve the web UI + API on 127.0.0.1 (auto port), open browser
+ompo --port 4317      # same dashboard on a fixed port
+ompo --no-open        # serve without launching a browser (headless boxes, SSH)
+ompo --tui            # TUI fallback: plan (if needed) → run → done in the terminal
+```
+
+- **Local-only by default.** Binds `127.0.0.1` with an automatically selected
+  port unless `--port N` pins one. `--host 0.0.0.0` exposes the dashboard
+  beyond this machine with no auth — it prints a warning; prefer loopback.
+  There is no remote access by default and no auth on loopback (same trust as
+  pressing a TUI key). Cross-origin POSTs are rejected (`403`), the shell
+  ships a restrictive CSP + `nosniff`, and `/api/*` is reserved (unknown API
+  paths `404`; anything else serves the SPA shell).
+- **Views.** `Overview` (run header + slice board + timeline + needs-attention
+  + up-next), `Runs` (one row per run — status, slices, retries, handoffs,
+  tokens, cost; selecting a row switches the whole workspace to that run),
+  `Roadmap` (slice list), `Agents` (worker states derived from live log
+  lines), `Stats` (pass rate, mean turns/tools/duration, per-Effort, top
+  failing gates, fallbacks), plus the `Inspector` column (per-slice tabs
+  `Output`/`Diff`/`Verify`/`Review`/`Prompt`/`Events`/`Usage`) and the
+  `Activity` event tail. The header holds the run picker, the live badge
+  (run lock held), and the version; a stale-bundle banner tells you to
+  rebuild when the UI and the server disagree on versions.
+- **Live updates.** The UI opens an SSE event stream at the TUI cadence
+  (~900ms) with same-cadence polling fallback — SSE is an optimization, not
+  a second model. Board and slice state always re-derive from the read
+  endpoints; the stream only signals *what* changed. Reconnect replays from
+  the last seen sequence number.
+- **Controls.** Contextual `retry`/`skip`/`park`/`kill` per slice and
+  `pause`/`resume` for the run (`set-jobs` via `ompo ctl` / API) — the exact
+  `ompo ctl` intents over HTTP `POST …/control`, no new semantics.
+  Destructive actions (`skip`, `kill`) arm an inline confirm. Against a live
+  run the intent queues (`202`) and the outcome (`applied`/`rejected`)
+  arrives on the event stream within ~2s — a queued intent is never reported
+  as success first. Against a quiescent run it applies synchronously, like
+  `ctl`. See `Live control plane` below for the CLI twins and guards.
+- **TUI fallback.** `ompo --tui` (unified plan → run → done), `ompo run`
+  headless logs, and `ompo watch` (read-only board) all still work. The
+  dashboard changes nothing about the store — same runs, same events, same
+  CLI forensics (`show`/`diff`/`logs`/`stats`/`query`).
+- **Compiled binary.** The dashboard ships inside the compiled `ompo`
+  executable (embedded bundle, built with `bun run web:build`): the binary
+  serves the UI with no sibling files, including a copy relocated outside
+  the repo. From source it serves `web/dist/` off disk instead. With no
+  bundle at all `/` returns an explanatory `503` (`run bun run web:build,
+  then restart ompo`) while `/api/*` keeps working.
+- **Browser limitations.** Read + control only: no shell, no file writes, no
+  replan/import/checkout, no generic exec. Reads are capped like their TUI
+  counterparts (log tails ≤ 500 lines, diffs ≤ 20000 chars, capped inspector
+  tails); unknown token/cost data renders `—`, never `0` or an estimate; old
+  runs render absent fields as absent.
+- Architecture contract (endpoints, DTOs, stream and control semantics):
+  [`docs/web-dashboard-architecture.md`](docs/web-dashboard-architecture.md).
+
+
 ## Adopt a foreign roadmap (any template, mid-progress)
 
 ```bash
