@@ -133,6 +133,43 @@ describe("dashboard server", () => {
     }
   });
 
+  test("events/stream is the canonical SSE tail (legacy /stream alias kept)", async () => {
+    const { stop, url } = fixture();
+    try {
+      for (const tail of ["events/stream", "stream"]) {
+        const ctrl = new AbortController();
+        const res = await fetch(`${url}/api/runs/r1/${tail}?afterSeq=-1`, { signal: ctrl.signal });
+        expect(res.status).toBe(200);
+        expect(res.headers.get("content-type")).toContain("text/event-stream");
+        const reader = res.body!.getReader();
+        const first = await reader.read();
+        ctrl.abort();
+        await reader.cancel().catch(() => {});
+        const text = new TextDecoder().decode(first.value);
+        // Existing event semantics verbatim: replayed RunEvent frames carry `id:` = seq.
+        expect(text).toContain("event: event");
+        expect(text).toContain("run_started");
+      }
+      // Last-Event-ID resume skips already-seen seqs (only the `run` meta frame is new).
+      const resumeCtrl = new AbortController();
+      const resumed = await fetch(`${url}/api/runs/r1/events/stream`, {
+        headers: { "last-event-id": "0" },
+        signal: resumeCtrl.signal,
+      });
+      expect(resumed.status).toBe(200);
+      const resumeReader = resumed.body!.getReader();
+      const resumeFirst = await resumeReader.read();
+      resumeCtrl.abort();
+      await resumeReader.cancel().catch(() => {});
+      const resumeText = new TextDecoder().decode(resumeFirst.value);
+      expect(resumeText).toContain("event: run");
+      expect((await getJSON(`${url}/api/runs/nope/events/stream`)).status).toBe(404);
+      expect((await getJSON(`${url}/api/runs/r1/events/stream?afterSeq=bogus`)).status).toBe(400);
+    } finally {
+      stop();
+    }
+  });
+
   test("serves the dashboard shell", async () => {
     const { stop, url } = fixture();
     try {

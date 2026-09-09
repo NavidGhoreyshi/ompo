@@ -97,7 +97,7 @@ GET  /api/runs/:runId/events?afterSeq=N&types=a,b&sliceId=X&limit=N
 GET  /api/runs/:runId/stats                       # RunStats
 GET  /api/runs/:runId/query?q=<dsl>               # { events: RunEvent[] }
 GET  /api/runs/:runId/replay                      # ReplayResult
-GET  /api/runs/:runId/stream                      # SSE (§4)
+GET  /api/runs/:runId/events/stream           # SSE (§4; …/stream is a legacy alias)
 POST /api/runs/:runId/control                     # (§5)
 ```
 
@@ -106,7 +106,7 @@ arrays are fine. Events page by `afterSeq` + `limit` (default 200, max 2000).
 
 ## 4. Event stream semantics (SSE, no WebSockets)
 
-- Transport: `GET /api/runs/:runId/stream` as Server-Sent Events
+- Transport: `GET /api/runs/:runId/events/stream` (`/api/runs/:runId/stream` kept as a legacy alias) as Server-Sent Events
   (`text/event-stream`). No WebSockets: the channel is server→client only
   (control goes over HTTP POST, §5); SSE gives replay, backpressure-free
   text frames, and `Last-Event-ID` resume with zero protocol work. Only if a
