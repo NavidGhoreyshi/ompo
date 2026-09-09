@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { api, type AgentRow, type RunDetail, type RunEvent, type RunSummary, type SliceDetail } from "./api.ts";
+import { api, type AgentRow, type RunDetail, type RunEvent, type RunStats, type RunSummary, type SliceDetail } from "./api.ts";
 import Activity from "./components/Activity.tsx";
 import Header from "./components/Header.tsx";
 import Inspector from "./components/Inspector.tsx";
@@ -39,7 +39,7 @@ export default function App() {
   const [detail, setDetail] = useState<RunDetail | null>(null);
   const [events, setEvents] = useState<RunEvent[]>([]);
   const [agents, setAgents] = useState<AgentRow[]>([]);
-  const [stats, setStats] = useState<Record<string, unknown> | null>(null);
+  const [stats, setStats] = useState<RunStats | null>(null);
   const [sel, setSel] = useState<string | null>(null);
   const [sliceDetail, setSliceDetail] = useState<SliceDetail | Record<string, unknown> | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -192,7 +192,7 @@ export default function App() {
           {view === "agents" && (
             <AgentsPage agents={agents} live={detail?.live ?? false} selected={sel} onSelect={setSel} />
           )}
-          {view === "stats" && <StatsPage stats={stats} />}
+          {view === "stats" && <StatsPage stats={stats} runId={runId} />}
         </main>
         <aside className="omp-inspector" aria-label="Inspector column">
           {runId && (

@@ -119,6 +119,33 @@ export interface AgentRow {
   metrics?: { turns: number; tools: number; durationMs?: number; tokens?: TokenUsage };
 }
 
+export interface EffortStats {
+  count: number;
+  done: number;
+  meanDurationMs: number | null;
+  meanTurns: number | null;
+  meanTools: number | null;
+  meanTokens?: number | null;
+}
+
+/** Verbatim RunStats DTO from computeStats (src/stats.ts): 200 + partial body, never throws. */
+export interface RunStats {
+  runId: string;
+  totals: Record<string, number>;
+  passRate: number | null;
+  attempts: { total: number; perSlice: Record<string, number> };
+  meanAttempts?: number | null;
+  meanTurns: number | null;
+  meanTools: number | null;
+  meanDurationMs: number | null;
+  meanTokens?: number | null;
+  tokensTotal?: number | null;
+  handoffs?: number;
+  byEffort: Record<string, EffortStats>;
+  topFailingGates: { command: string; fails: number }[];
+  modelFallbacks: Record<string, number>;
+}
+
 export interface RunEvent {
   seq: number;
   at: string;
@@ -242,7 +269,13 @@ export const api = {
   },
   /** Canonical SSE live tail (arch §4): same RunEvent frames as `events` polling. Frames only signal *what* changed — state always refreshes via the read endpoints. */
   streamUrl: (runId: string, afterSeq = -1) => `/api/runs/${runId}/events/stream?afterSeq=${afterSeq}`,
-  stats: (runId: string) => req<Record<string, unknown>>(`/api/runs/${runId}/stats`),
+  stats: (runId: string) => req<RunStats>(`/api/runs/${runId}/stats`),
+  query: (runId: string, q: string) =>
+    req<{ events: RunEvent[] }>(`/api/runs/${runId}/query?q=${encodeURIComponent(q)}`),
+  replay: (runId: string) =>
+    req<{ expected: Record<string, string>; actual: Record<string, string>; mismatches: string[]; events: number }>(
+      `/api/runs/${runId}/replay`,
+    ),
   control: (runId: string, body: ControlIntent) =>
     req<ControlResult>(`/api/runs/${runId}/control`, {
       method: "POST",
