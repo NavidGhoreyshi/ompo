@@ -181,7 +181,7 @@ export default function App() {
           {stale && <p className="omp-warn">Bundle built against a different ompo version — rebuild the dashboard (`bun run web:build`).</p>}
           {(error ?? runsError) && <p className="omp-error" role="alert">{error ?? runsError}</p>}
           {view === "overview" && (
-            <Overview detail={detail} events={events} onInspect={inspect} onNavigate={setView} />
+            <Overview detail={detail} events={events} selected={sel} onInspect={inspect} onNavigate={setView} />
           )}
           {view === "runs" && (
             <RunsPage runs={runs} activeRunId={runId} onOpen={openRun} />

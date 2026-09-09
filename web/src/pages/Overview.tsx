@@ -1,15 +1,19 @@
 import type { RunDetail, RunEvent } from "../api.ts";
+import RunHeader from "../components/RunHeader.tsx";
+import SliceTable from "../components/SliceTable.tsx";
 import StatusBadge from "../components/StatusBadge.tsx";
 import type { View } from "../components/Sidebar.tsx";
 
 export default function Overview({
   detail,
   events,
+  selected,
   onInspect,
   onNavigate,
 }: {
   detail: RunDetail | null;
   events: RunEvent[];
+  selected?: string | null;
   onInspect: (sliceId: string) => void;
   onNavigate: (v: View) => void;
 }) {
@@ -28,50 +32,14 @@ export default function Overview({
 
   return (
     <>
-      <section className="omp-panel" aria-label="Overview">
-        <h2>
-          {detail.runId}{" "}
-          <span className="omp-hint">
-            · {detail.slices.length} slices · {detail.workers} workers · updated{" "}
-            {new Date(detail.updatedAt).toLocaleString()}
-          </span>
-        </h2>
-        <div className="omp-cards" role="list">
-          <div className="omp-stat-card" data-tone="green" role="listitem">
-            <div className="omp-stat-num">{detail.counts.done}</div>
-            <div className="omp-stat-label">done</div>
-          </div>
-          <div className="omp-stat-card" data-tone="cyan" role="listitem">
-            <div className="omp-stat-num">{detail.counts.active}</div>
-            <div className="omp-stat-label">active</div>
-          </div>
-          <div className="omp-stat-card" data-tone="red" role="listitem">
-            <div className="omp-stat-num">{detail.counts.failed}</div>
-            <div className="omp-stat-label">failed</div>
-          </div>
-          <div className="omp-stat-card" data-tone="amber" role="listitem">
-            <div className="omp-stat-num">{detail.counts.blockedEnv}</div>
-            <div className="omp-stat-label">blocked-env</div>
-          </div>
-          <div className="omp-stat-card" role="listitem">
-            <div className="omp-stat-num">{detail.counts.skipped}</div>
-            <div className="omp-stat-label">skipped</div>
-          </div>
-          <div className="omp-stat-card" role="listitem">
-            <div className="omp-stat-num">{detail.counts.pending}</div>
-            <div className="omp-stat-label">pending</div>
-          </div>
-        </div>
-        <p className="omp-hint">
-          <button className="omp-btn" onClick={() => onNavigate("roadmap")}>Open roadmap</button>{" "}
-          <button className="omp-btn" onClick={() => onNavigate("stats")}>View stats</button>
-        </p>
-      </section>
+      <RunHeader detail={detail} events={events} />
+
+      <SliceTable slices={detail.slices} selected={selected} onSelect={onInspect} events={events} />
 
       <section className="omp-panel" aria-label="Needs attention">
         <h2>Needs attention ({attention.length})</h2>
         {attention.length === 0 ? (
-          <p className="omp-hint">Nothing failed or blocked. 🎉</p>
+          <p className="omp-hint">Nothing failed or blocked.</p>
         ) : (
           <ul className="omp-list">
             {attention.map((s) => (
@@ -118,6 +86,11 @@ export default function Overview({
           )}
         </section>
       </div>
+
+      <p className="omp-hint">
+        <button className="omp-btn" onClick={() => onNavigate("roadmap")}>Open roadmap</button>{" "}
+        <button className="omp-btn" onClick={() => onNavigate("stats")}>View stats</button>
+      </p>
     </>
   );
 }
