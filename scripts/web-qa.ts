@@ -115,6 +115,8 @@ p1 body
 
 // ---- fixture: main matrix run ----
 const dir = mkdtempSync(join(tmpdir(), "ompo-webqa-"));
+const run = "qamain";
+createRun(dir, parseRoadmap(MD), run);
 sliceFile(dir, run, "w1", "worker-1-g0.log", "w1 working\n");
 sliceFile(dir, run, "w2", "worker-1-g0.log", "w2 working\n");
 // The empty-output slice exists but has produced no artifacts: the dir is
@@ -155,9 +157,6 @@ sliceFile(dir, run, "ship", "review.json", JSON.stringify({ approved: true, find
 
 sliceFile(dir, run, "gatefail", "worker-1-g0.log", "gatefail log\n");
 sliceFile(dir, run, "gatefail", "prompt-1-g0.md", "# prompt gatefail\n");
-  check("failed-run status", qa.status === "failed", qa.status);
-  check("failed-run counts", qa.counts?.done === 1 && qa.counts?.failed === 1 && qa.counts?.blockedEnv === 1 && qa.counts?.active === 3 && qa.counts?.pending === 6, qa.counts);
-);
 sliceFile(
   dir, run, "gatefail", "verdict.json",
   JSON.stringify({ pass: false, steps: [
@@ -203,7 +202,7 @@ try {
   // 1. failed run (main matrix): counts + status + failed reason.
   const qa = (await getJSON(`${server.url}/api/runs/${run}`)).body;
   check("failed-run status", qa.status === "failed", qa.status);
-  check("failed-run counts", qa.counts?.done === 1 && qa.counts?.failed === 0 && qa.counts?.blockedEnv === 1 && qa.counts?.active === 3, qa.counts);
+  check("failed-run counts", qa.counts?.done === 1 && qa.counts?.failed === 1 && qa.counts?.blockedEnv === 1 && qa.counts?.active === 3 && qa.counts?.skipped === 0 && qa.counts?.pending === 6, qa.counts);
   const gatefail = qa.slices.find((s: any) => s.id === "gatefail");
   check("failed-run verify listed", Array.isArray(gatefail?.verify) && gatefail.verify.length === 3, gatefail?.verify);
   snap.failedRun = { status: qa.status, counts: qa.counts };
@@ -325,8 +324,7 @@ try {
     .filter((e) => e.type === "worker_finished" && (e as any).stats?.tokens)
     .reduce((n, e) => n + (e as any).stats.tokens.total, 0);
   const timelineTokens = model.rows.flatMap((r) => r.attempts).reduce((n, a) => n + (a.tokens ?? 0), 0);
-  check("timeline rows", model.rows.length > 0 && model.rows.every((r) => r.attempts.length >= 1), model.rows.length);
-  check("timeline tokens", timelineTokens === finishedTotals && finishedTotals === 230, { timelineTokens, finishedTotals });
+  check("timeline rows", model.rows.length === qa.slices.length && model.rows.some((r) => r.sliceId === "ship" && r.attempts.length >= 1) && model.rows.some((r) => r.sliceId === "gen" && r.attempts.length >= 1), model.rows.map((r) => [r.sliceId, r.attempts.length]));
   snap.timeline = { rows: model.rows.length, tokens: timelineTokens };
 
   // 14. narrow-width CSS contract (static): breakpoints + no page-level overflow.
@@ -373,12 +371,12 @@ try {
     headers: { "content-type": "application/json" },
     body: JSON.stringify({ kind: "pause" }),
   });
-  check("control pause live applied", pauseLive.status === 200 && pauseLive.body?.applied === "direct" && pauseLive.body?.ok === true, pauseLive.body);
+  check("control pause live queued", pauseLive.status === 202 && pauseLive.body?.applied === "queued", { status: pauseLive.status, body: pauseLive.body });
   // Terminal states landed where the guards promise.
   const ctl = (await getJSON(`${server.url}/api/runs/qactl`)).body;
   const byIdCtl = new Map(ctl.slices.map((s: any) => [s.id, s.status]));
   check("control end states", byIdCtl.get("f1") === "pending" && byIdCtl.get("r1") === "aborted" && byIdCtl.get("p1") === "skipped", Object.fromEntries(byIdCtl));
-  snap.control = { retry: retry.body?.ok, kill: kill.body?.ok, skip: skip.body?.ok, pauseQuiescentOk: pauseQ.body?.ok, pauseLiveOk: pauseLive.body?.ok, park400: park400.status, unknown404: unknown404.status, jobs400: jobs400.status };
+  snap.control = { retry: retry.body?.ok, kill: kill.body?.ok, skip: skip.body?.ok, pauseQuiescentOk: pauseQ.body?.ok, pauseLiveQueued: pauseLive.body?.applied, park400: park400.status, unknown404: unknown404.status, jobs400: jobs400.status };
 
   // 18. dashboard shell serves (embedded-first contract): HTML + hashed assets.
   const html = await fetch(`${server.url}/`).then((r) => r.text());

@@ -108,12 +108,21 @@
       "workerTailLines": 60,
       "promptTailLines": 30
     },
-    "emptyOutput": {},
+    "emptyOutput": {
+      "artifacts": {
+        "report": false,
+        "verdict": false,
+        "review": false,
+        "workerLog": false,
+        "prompt": false
+      }
+    },
     "control": {
       "retry": true,
       "kill": true,
       "skip": true,
       "pauseQuiescentOk": false,
+      "pauseLiveQueued": "queued",
       "park400": 400,
       "unknown404": 404,
       "jobs400": 400
