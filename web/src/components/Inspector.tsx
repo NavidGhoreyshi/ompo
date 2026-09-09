@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import type { SliceDetail, SliceSummary } from "../api.ts";
+import type { RunEvent, SliceDetail, SliceSummary } from "../api.ts";
 import ControlPanel from "./ControlPanel.tsx";
 import DiffView from "./DiffView.tsx";
 import EventsView from "./EventsView.tsx";
@@ -20,6 +20,8 @@ export default function Inspector({
   onClose,
   onControlDone,
   slices,
+  events = [],
+  live,
 }: {
   runId: string;
   selected: SliceSummary | undefined;
@@ -27,6 +29,8 @@ export default function Inspector({
   onClose: () => void;
   onControlDone: () => void;
   slices: SliceSummary[];
+  events?: RunEvent[];
+  live?: boolean;
 }) {
   const [tab, setTab] = useState(0);
 
@@ -120,7 +124,7 @@ export default function Inspector({
       </div>
 
       <h3>Control</h3>
-      <ControlPanel runId={runId} slices={slices} initialSliceId={sel.id} onDone={onControlDone} />
+      <ControlPanel runId={runId} slices={slices} initialSliceId={sel.id} onDone={onControlDone} events={events} live={live} />
 
       {d && (
         <details>
