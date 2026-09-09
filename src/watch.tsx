@@ -22,7 +22,7 @@ import React, { useEffect, useRef, useState } from "react";
 import { Box, Text, useInput } from "ink";
 import { readFileSync, readdirSync, existsSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { listRuns, loadRun, lockHeld } from "./store.ts";
+import { listRuns, loadRun, lockHeld, readEvents } from "./store.ts";
 import type { RunEvent, Slice, SliceStatus } from "./types.ts";
 import { formatTokenCount, formatTokens } from "./worker.ts";
 
@@ -376,16 +376,16 @@ function buildDetail(project: string, runId: string, slice: SliceLine, events: R
     /* advisory only */
   }
 
-  // Newest prompt (Prompt tab): worker, review, or debug prompt.
-  const promptFile = files.filter((f) => /^(review-prompt|debug-prompt|prompt)-\d+\.md$/.test(f)).sort().at(-1);
+  // Newest prompt (Prompt tab): worker, review, or debug prompt. Generation-aware (-gN) like server sliceDetailFor — keep in sync.
+  const promptFile = files.filter((f) => /^(review-fix-prompt|review-prompt|debug-prompt|prompt)-\d+(-g\d+)?\.md$/.test(f)).sort().at(-1);
   if (promptFile) {
     detail.promptName = promptFile;
     const tail = tailOf(join(dir, promptFile), 30);
     if (tail.trim()) detail.promptTail = tail;
   }
 
-  // Newest worker/diagnosis log: short tail for Output, longer tail for forensics.
-  const workerLog = files.filter((f) => /^(worker|debug)-\d+\.log$/.test(f)).sort().at(-1);
+  // Newest worker/diagnosis log: short tail for Output, longer tail for forensics. Generation-aware (-gN) like server — keep in sync.
+  const workerLog = files.filter((f) => /^(worker|debug)-\d+(-g\d+)?\.log$/.test(f)).sort().at(-1);
   if (workerLog) {
     detail.workerLogName = workerLog;
     const tail = tailOf(join(dir, workerLog), 60);
@@ -456,13 +456,8 @@ function loadView(project: string, runIdx: number, sel: number): RunView | null 
 
 function readEventsSafe(project: string, runId: string): RunEvent[] {
   try {
-    const path = join(project, ".omp", "roadmap", "runs", runId, "events.jsonl");
-    if (!existsSync(path)) return [];
-    return readFileSync(path, "utf8")
-      .split("\n")
-      .filter((l) => l.trim())
-      .map((l) => JSON.parse(l) as RunEvent)
-      .filter((e) => typeof e?.seq === "number");
+    // Single durable-log reader (store.ts) shared with the server/CLI — the seq filter only drops malformed lines.
+    return readEvents(project, runId).filter((e) => typeof e?.seq === "number");
   } catch {
     return [];
   }
