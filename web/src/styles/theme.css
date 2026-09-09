@@ -400,6 +400,18 @@ input:focus-visible,
 .omp-badge[data-tone="muted"] {
   color: var(--omp-muted);
 }
+.omp-badge-sym {
+  display: inline-block;
+  min-width: 1ch;
+  text-align: center;
+}
+
+.omp-sub {
+  color: var(--omp-faint);
+  font-size: 12px;
+  margin-top: 2px;
+}
+
 
 /* ---------- tables (readable, never force page overflow) ---------- */
 
