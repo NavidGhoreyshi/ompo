@@ -102,6 +102,23 @@ describe("viewport app shell (no page-level scroll)", () => {
     expect(css).toMatch(/\.omp-activity-list\s*\{[^}]*overflow-y:\s*auto/s);
   });
 
+  test("board tabs root is the flex parent that enables board scrolling", () => {
+    // Regression: .omp-board-scroll is flex:1, which is inert unless its
+    // parent is flex — without this the board grew with content and clipped
+    // under .omp-workspace overflow:hidden with no scroll.
+    expect(css).toMatch(/\.omp-board-tabs\s*\{[^}]*display:\s*flex/s);
+    expect(css).toMatch(/\.omp-board-tabs\s*\{[^}]*flex-direction:\s*column/s);
+    expect(css).toMatch(/\.omp-board-tabs\s*\{[^}]*overflow:\s*hidden/s);
+    expect(src("web/src/pages/Overview.tsx")).toContain("omp-board-tabs");
+  });
+
+  test("secondary pages scroll as a whole inside .omp-page", () => {
+    expect(css).toMatch(/\.omp-page\s*\{[^}]*overflow-y:\s*auto/s);
+    for (const p of ["RunsPage", "AgentsPage", "StatsPage", "RoadmapPage"]) {
+      expect(src(`web/src/pages/${p}.tsx`)).toContain("omp-page");
+    }
+  });
+
   test("activity is a fixed-height strip, not page content", () => {
     expect(css).toMatch(/\.omp-activity\s*\{[^}]*height:\s*\d+px/s);
   });

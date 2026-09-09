@@ -67,7 +67,7 @@ export default function Overview({
           {attention.length > 4 && <span className="omp-hint">+{attention.length - 4} more</span>}
         </p>
       )}
-      <Tabs value={mode} onValueChange={(v) => setMode(v as "board" | "dag")}>
+      <Tabs value={mode} onValueChange={(v) => setMode(v as "board" | "dag")} className="omp-board-tabs">
         <div className="omp-board-bar">
           <span className="omp-section-label">Execution board — {detail.slices.length} slices</span>
           <TabsList className="omp-tabs" aria-label="Board mode">

@@ -42,6 +42,7 @@ export default function RunsPage({
     }
   }
   return (
+    <div className="omp-page" aria-label="Runs workspace">
     <section className="omp-panel" aria-label="Runs">
       <h2>Runs ({runs.length})</h2>
       <p className="omp-hint">Selecting a run switches the entire workspace to that run.</p>
@@ -146,5 +147,6 @@ export default function RunsPage({
         </p>
       )}
     </section>
+    </div>
   );
 }

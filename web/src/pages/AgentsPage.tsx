@@ -13,6 +13,7 @@ export default function AgentsPage({
   onSelect?: (sliceId: string) => void;
 }) {
   return (
+    <div className="omp-page" aria-label="Agents workspace">
     <section className="omp-panel" aria-label="Agents">
       <h2>Agents ({agents.length})</h2>
       {!live && agents.length === 0 ? (
@@ -46,5 +47,6 @@ export default function AgentsPage({
         </>
       )}
     </section>
+    </div>
   );
 }
