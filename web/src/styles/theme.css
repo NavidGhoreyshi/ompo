@@ -808,6 +808,67 @@ details .omp-code {
   margin-left: auto;
   min-width: 0;
 }
+.omp-dag-scroll {
+  overflow: auto;
+  max-width: 100%;
+  border: 1px solid var(--omp-border);
+  border-radius: 6px;
+  background: var(--omp-bg);
+  margin-top: 8px;
+}
+
+.omp-dag-scroll svg {
+  display: block;
+  min-width: 100%;
+}
+
+.omp-dag-node {
+  cursor: pointer;
+  outline: none;
+}
+
+.omp-dag-node[data-ghost="true"] {
+  cursor: default;
+}
+
+.omp-dag-node:focus-visible rect {
+  stroke: var(--omp-focus);
+  stroke-width: 2.4;
+}
+
+.omp-dag-id {
+  font-family: var(--omp-mono);
+  font-size: 12px;
+  font-weight: 700;
+  fill: var(--omp-text);
+}
+
+.omp-dag-title {
+  font-size: 11.5px;
+  fill: var(--omp-muted);
+}
+
+.omp-dag-state {
+  font-family: var(--omp-mono);
+  font-size: 11px;
+  fill: var(--omp-muted);
+}
+
+.omp-dag-state[data-tone="cyan"] {
+  fill: var(--omp-cyan);
+}
+
+.omp-dag-state[data-tone="green"] {
+  fill: var(--omp-green);
+}
+
+.omp-dag-state[data-tone="amber"] {
+  fill: var(--omp-amber);
+}
+
+.omp-dag-state[data-tone="red"] {
+  fill: var(--omp-red);
+}
 
 /* ---------- responsive: browser widths, not TUI narrow-terminal ---------- */
 

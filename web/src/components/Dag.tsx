@@ -1,0 +1,217 @@
+import { useMemo } from "react";
+import type { SliceSummary } from "../api.ts";
+import {
+  DAG_NODE_H,
+  DAG_NODE_W,
+  layoutDag,
+  type DagEdge,
+} from "../lib/dag.ts";
+import { symbolForStatus, toneForStatus } from "./StatusBadge.tsx";
+
+const TONE_STROKE: Record<string, string> = {
+  cyan: "var(--omp-cyan)",
+  green: "var(--omp-green)",
+  amber: "var(--omp-amber)",
+  red: "var(--omp-red)",
+  muted: "var(--omp-border)",
+};
+
+const TITLE_CHARS = 26;
+
+function truncate(title: string): string {
+  return title.length > TITLE_CHARS ? `${title.slice(0, TITLE_CHARS - 1)}…` : title;
+}
+
+/** Orthogonal elbow path: horizontal out of the dep, vertical, horizontal in. */
+function edgePath(e: DagEdge): string {
+  const midX = (e.x1 + e.x2) / 2;
+  if (e.y1 === e.y2) return `M ${e.x1} ${e.y1} H ${e.x2}`;
+  return `M ${e.x1} ${e.y1} H ${midX} V ${e.y2} H ${e.x2}`;
+}
+
+function edgeStroke(e: DagEdge): string {
+  if (e.unknown) return "var(--omp-amber)";
+  if (e.inCycle) return "var(--omp-red)";
+  return "var(--omp-faint)";
+}
+
+/**
+ * Native-SVG dependency graph: one node per slice (id, title, state),
+ * one edge per `Depends:` entry. No graph library — layered layout comes
+ * from `lib/dag.ts`. Selecting a node selects the slice (Inspector).
+ * Unknown deps render as dashed ghost nodes; cycles render with a visible
+ * error banner and highlighted members instead of looping layout.
+ */
+export default function Dag({
+  slices,
+  selected,
+  onSelect,
+}: {
+  slices: SliceSummary[];
+  selected?: string | null;
+  onSelect: (sliceId: string) => void;
+}) {
+  const layout = useMemo(() => layoutDag(slices), [slices]);
+
+  if (slices.length === 0) {
+    return (
+      <section className="omp-panel" aria-label="Dependency graph">
+        <h2>Dependency graph</h2>
+        <p className="omp-hint">No slices yet.</p>
+      </section>
+    );
+  }
+
+  return (
+    <section className="omp-panel" aria-label="Dependency graph">
+      <h2>Dependency graph — {slices.length} slices</h2>
+      {layout.unknownIds.length > 0 && (
+        <p className="omp-warn" role="note">
+          Unknown {layout.unknownIds.length === 1 ? "dependency" : "dependencies"} (not in roadmap — blocks like a
+          pending dep): <code>{layout.unknownIds.join(", ")}</code>
+        </p>
+      )}
+      {layout.cycleIds.length > 0 && (
+        <p className="omp-error" role="alert">
+          Dependency cycle involving: <code>{layout.cycleIds.join(", ")}</code> — drawn as declared; the scheduler
+          makes no progress here.
+        </p>
+      )}
+      <div className="omp-dag-scroll">
+        <svg
+          width={layout.width}
+          height={layout.height}
+          viewBox={`0 0 ${layout.width} ${layout.height}`}
+          role="group"
+          aria-label="Roadmap dependency graph"
+        >
+          <defs>
+            <marker
+              id="omp-dag-arrow"
+              viewBox="0 0 10 10"
+              refX="8"
+              refY="5"
+              markerWidth="7"
+              markerHeight="7"
+              orient="auto-start-reverse"
+            >
+              <path d="M 0 1 L 9 5 L 0 9 z" fill="var(--omp-faint)" />
+            </marker>
+            <marker
+              id="omp-dag-arrow-warn"
+              viewBox="0 0 10 10"
+              refX="8"
+              refY="5"
+              markerWidth="7"
+              markerHeight="7"
+              orient="auto-start-reverse"
+            >
+              <path d="M 0 1 L 9 5 L 0 9 z" fill="var(--omp-amber)" />
+            </marker>
+            <marker
+              id="omp-dag-arrow-err"
+              viewBox="0 0 10 10"
+              refX="8"
+              refY="5"
+              markerWidth="7"
+              markerHeight="7"
+              orient="auto-start-reverse"
+            >
+              <path d="M 0 1 L 9 5 L 0 9 z" fill="var(--omp-red)" />
+            </marker>
+          </defs>
+          {layout.edges.map((e) => (
+            <path
+              key={e.key}
+              d={edgePath(e)}
+              fill="none"
+              stroke={edgeStroke(e)}
+              strokeWidth={e.unknown || e.inCycle ? 1.8 : 1.4}
+              strokeDasharray={e.unknown ? "6 4" : e.satisfied ? undefined : "2 3"}
+              markerEnd={
+                e.unknown
+                  ? "url(#omp-dag-arrow-warn)"
+                  : e.inCycle
+                    ? "url(#omp-dag-arrow-err)"
+                    : "url(#omp-dag-arrow)"
+              }
+              opacity={e.satisfied && !e.inCycle ? 0.55 : 1}
+            >
+              <title>{e.unknown ? `unknown dep ${e.key}` : e.key}</title>
+            </path>
+          ))}
+          {layout.nodes.map((n) => {
+            const isSel = selected === n.id && !n.ghost;
+            const tone = n.ghost ? "amber" : toneForStatus(n.status);
+            const stateLine = n.ghost
+              ? "▲ unknown dep"
+              : `${symbolForStatus(n.status)} ${n.status}${n.blocked ? " · blocked" : ""}${n.ready ? " · ready" : ""}`;
+            return (
+              <g
+                key={n.ghost ? `ghost:${n.id}` : n.id}
+                className="omp-dag-node"
+                data-selected={isSel ? "true" : "false"}
+                data-ghost={n.ghost ? "true" : "false"}
+                transform={`translate(${n.x} ${n.y})`}
+                role={n.ghost ? undefined : "button"}
+                tabIndex={n.ghost ? undefined : 0}
+                aria-label={
+                  n.ghost ? `unknown dependency ${n.id}` : `${n.id} ${n.title} — ${stateLine}${isSel ? " (selected)" : ""}`
+                }
+                aria-current={isSel ? "true" : undefined}
+                onClick={n.ghost ? undefined : () => onSelect(n.id)}
+                onKeyDown={
+                  n.ghost
+                    ? undefined
+                    : (e) => {
+                        if (e.key === "Enter" || e.key === " ") {
+                          e.preventDefault();
+                          onSelect(n.id);
+                        }
+                      }
+                }
+              >
+                <title>{n.ghost ? `unknown dependency ${n.id}` : `${n.id} — ${n.title}`}</title>
+                <rect
+                  width={DAG_NODE_W}
+                  height={DAG_NODE_H}
+                  rx={8}
+                  fill={isSel ? "var(--omp-row-active)" : "var(--omp-panel-2)"}
+                  stroke={
+                    isSel
+                      ? "var(--omp-focus)"
+                      : n.inCycle
+                        ? "var(--omp-red)"
+                        : n.hasUnknownDep
+                          ? "var(--omp-amber)"
+                          : TONE_STROKE[tone]
+                  }
+                  strokeWidth={isSel || n.inCycle ? 2.4 : 1.4}
+                  strokeDasharray={n.ghost ? "6 4" : n.inCycle ? "5 3" : undefined}
+                />
+                <text x={12} y={20} className="omp-dag-id">
+                  {n.ghost ? `? ${n.id}` : n.id}
+                </text>
+                <text x={12} y={38} className="omp-dag-title">
+                  {truncate(n.title)}
+                </text>
+                <text
+                  x={12}
+                  y={56}
+                  className="omp-dag-state"
+                  data-tone={n.ghost ? "amber" : toneForStatus(n.status)}
+                >
+                  {stateLine}
+                </text>
+              </g>
+            );
+          })}
+        </svg>
+      </div>
+      <p className="omp-hint">
+        Edges follow <code>Depends:</code> — done/skipped deps satisfy (scheduler rule); dashed edges are unsatisfied,
+        amber is unknown. Select a node to inspect it.
+      </p>
+    </section>
+  );
+}
