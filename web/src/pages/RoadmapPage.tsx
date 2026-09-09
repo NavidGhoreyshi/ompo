@@ -4,7 +4,7 @@ import Dag from "../components/Dag.tsx";
 import PlannerPreview from "../components/PlannerPreview.tsx";
 import StatusBadge from "../components/StatusBadge.tsx";
 
-const FILTERS = ["all", "pending", "running", "verifying", "failed", "blocked-env", "done", "skipped"] as const;
+const FILTERS = ["all", "pending", "blocked", "running", "verifying", "failed", "aborted", "blocked-env", "done", "skipped"] as const;
 
 export default function RoadmapPage({
   detail,
