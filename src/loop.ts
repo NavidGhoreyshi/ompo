@@ -46,7 +46,7 @@ import { applyHarnessFix, headFileSet } from "./harnessFix.ts";
 import { runVerifiers } from "./verify.ts";
 import { reportDeferred, reportPlaceholders } from "./runReports.ts";
 import { runReview } from "./reviewLane.ts";
-import { buildModelChain, displayModel, resolveWorkerModel, runOmpWorker, runWithModelFallbacks, type TokenUsage, type WorkerRunner } from "./worker.ts";
+import { buildModelChain, displayModel, formatTokenCount, resolveWorkerModel, runOmpWorker, runWithModelFallbacks, type TokenUsage, type WorkerRunner } from "./worker.ts";
 import { handoffBriefRef, recordHandoff, type HandoffCause } from "./handoffs.ts";
 import { createMutex, type Mutex } from "./mutex.ts";
 import { worktreeOpsFor, sliceBranchOf, type WorktreeOps } from "./worktree.ts";
@@ -168,7 +168,7 @@ async function runDebugger(
     const res = await runWithModelFallbacks(
       ctx.runner,
       { prompt, sliceId, attempt, label: `${sliceId} debug` },
-      { projectDir: wtPath, timeoutMs: debugBudgetMs, signal: ctx.signal, sessionDir: dir, onProgress, env },
+      { projectDir: wtPath, timeoutMs: debugBudgetMs, signal: ctx.signal, sessionDir: dir, onProgress, onUsage: usageFn(ctx, sliceId, "debug"), env },
       debugChain,
       {
         accept: (stdout) => extractReportFromOutput(stdout) !== undefined,
@@ -295,6 +295,7 @@ async function runUnblocker(ctx: AttemptCtx, round: number): Promise<"continue" 
         signal: ctx.signal,
         sessionDir: runRoot,
         onProgress,
+        onUsage: usageFn(ctx, head.id, "unblock"),
         env: hasServices(ctx.cfg) ? serviceEnvOf(ctx.cfg) : undefined,
       },
       unblockChain,
@@ -623,7 +624,10 @@ async function runAttempt(ctx: AttemptCtx, sliceId: string): Promise<void> {
     workerStdout = "";
     workerMeta = undefined;
     const genTracker = ctx.trackers.get(sliceId);
-    if (genTracker) genTracker.tokens = undefined;
+    if (genTracker) {
+      genTracker.tokens = undefined;
+      genTracker.tokensLogged = undefined;
+    }
 
     if (ctx.signal?.aborted) {
       storeApi.abortSlice(projectDir, runId, sliceId);
@@ -819,7 +823,7 @@ async function runAttempt(ctx: AttemptCtx, sliceId: string): Promise<void> {
     exit: workerMeta?.exit ?? null,
     timedOut: workerMeta?.timedOut ?? false,
     durationMs: workerMeta?.durationMs,
-    stats: tracker ? { turns: tracker.turns, tools: tracker.tools } : undefined,
+    stats: tracker ? { turns: tracker.turns, tools: tracker.tools, tokens: tracker.tokens } : undefined,
   });
 
   if (ctx.signal?.aborted) {
@@ -1586,7 +1590,7 @@ export async function runRoadmapLoop(opts: LoopOptions): Promise<LoopResult> {
         const mins = Math.floor((Date.now() - t0) / 60000);
         const t = trackers.get(id);
         const detail = t && t.lines > 0
-          ? ` ${t.turns} turns, ${t.tools} tools, last: ${t.lastLine.slice(0, 100)}`
+          ? ` ${t.turns} turns, ${t.tools} tools${t.tokens ? `, tok ${formatTokenCount(t.tokens.total)}` : ""}, last: ${t.lastLine.slice(0, 100)}`
           : " no agent output yet";
         log(opts, `… ${id} still running (${mins}m elapsed,${detail})`);
       }

@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { classifyFailure, maxRetriesFor } from "../src/attempt.ts";
+import { classifyFailure, maxRetriesFor, usageFn, type AttemptCtx } from "../src/attempt.ts";
 import type { Slice } from "../src/types.ts";
 
 function slice(over: Partial<Slice> = {}): Slice {
@@ -35,5 +35,18 @@ describe("classifyFailure", () => {
     expect(classifyFailure("slices/a/merge-1.conflict.txt")).toBe("merge_conflict");
     expect(classifyFailure("slices/a/unexpected-1.error.txt")).toBe("unexpected");
     expect(classifyFailure("slices/a/verdict.json")).toBe("failed");
+  });
+});
+
+describe("usageFn", () => {
+  test("records every observation, logs first sighting plus 1k crossings", () => {
+    const lines: string[] = [];
+    const ctx = { trackers: new Map(), onEvent: (m: string) => lines.push(m) } as unknown as AttemptCtx;
+    const sink = usageFn(ctx, "a", "review");
+    sink({ input: 100, output: 5, total: 105 });
+    sink({ input: 500, output: 5, total: 505 });
+    sink({ input: 1900, output: 100, total: 2000 });
+    expect(lines).toEqual(["  [a review] tok in=100 out=5 total=105", "  [a review] tok in=1900 out=100 total=2000"]);
+    expect(ctx.trackers.get("a")!.tokens).toEqual({ input: 1900, output: 100, total: 2000 });
   });
 });

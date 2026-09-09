@@ -20,6 +20,7 @@ import {
   progressFn,
   summarize5,
   type AttemptCtx,
+  usageFn,
 } from "./attempt.ts";
 import { DEFAULT_DEBUG_TIMEOUT_MS } from "./debug.ts";
 import { extractReportFromOutput, validateCompletionReport } from "./report.ts";
@@ -88,7 +89,7 @@ export async function runReview(
     const res = await runWithModelFallbacks(
       ctx.reviewer,
       { prompt, sliceId, attempt, label: `${sliceId} review` },
-      { projectDir, timeoutMs: reviewBudgetMs, signal: ctx.signal, sessionDir: dir, onProgress, env },
+      { projectDir, timeoutMs: reviewBudgetMs, signal: ctx.signal, sessionDir: dir, onProgress, onUsage: usageFn(ctx, sliceId, "review"), env },
       reviewChain,
       {
         accept: (stdout) => extractReviewFromOutput(stdout) !== undefined,
@@ -225,7 +226,7 @@ export async function runReviewFix(
     const res = await runWithModelFallbacks(
       ctx.runner,
       { prompt, sliceId, attempt, label: `${sliceId} review-fix` },
-      { projectDir: wtPath, timeoutMs: fixBudgetMs, signal: ctx.signal, sessionDir: dir, onProgress, env },
+      { projectDir: wtPath, timeoutMs: fixBudgetMs, signal: ctx.signal, sessionDir: dir, onProgress, onUsage: usageFn(ctx, sliceId, "review-fix"), env },
       fixChain,
       {
         accept: (stdout) => extractReportFromOutput(stdout) !== undefined,

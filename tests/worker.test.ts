@@ -8,6 +8,8 @@ import { extractReportFromOutput, REPORT_CLOSE, REPORT_OPEN, validateCompletionR
 import { buildWorkerSpec } from "../src/spec.ts";
 import {
   buildModelChain,
+  formatTokenCount,
+  formatTokens,
   isModelUnavailable,
   progressLineForEvent,
   relativize,
@@ -389,5 +391,18 @@ describe("usageForEvent", () => {
     expect(usageForEvent({ type: "message_end", message: { role: "assistant", usage: { input: "x" } } })).toBeUndefined();
     expect(usageForEvent(null)).toBeUndefined();
     expect(usageForEvent("turn_end")).toBeUndefined();
+  });
+});
+describe("formatTokens", () => {
+  test("compacts thousands, leaves small counts raw", () => {
+    expect(formatTokens(18334, 23)).toBe("18.3k/23");
+    expect(formatTokens(999, 999)).toBe("999/999");
+    expect(formatTokens(120000, 1000)).toBe("120k/1k");
+    expect(formatTokens(0, 0)).toBe("0/0");
+  });
+  test("formatTokenCount compacts one count", () => {
+    expect(formatTokenCount(999)).toBe("999");
+    expect(formatTokenCount(19762)).toBe("19.8k");
+    expect(formatTokenCount(120000)).toBe("120k");
   });
 });

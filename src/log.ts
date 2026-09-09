@@ -70,6 +70,7 @@ function extraSuffix(ev: RunEvent): string {
   }
   if (ev.stats) {
     parts.push(`${ev.stats.turns}turns ${ev.stats.tools}tools`);
+    if (ev.stats.tokens) parts.push(`tok in=${ev.stats.tokens.input} out=${ev.stats.tokens.output} total=${ev.stats.tokens.total}`);
   }
   return parts.length > 0 ? dim(parts.join(" ")) : "";
 }

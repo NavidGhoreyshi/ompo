@@ -125,6 +125,27 @@ describe("agentStates tags", () => {
   });
 });
 
+describe("agentStates tokens", () => {
+  test("tok lines set the session total without clobbering the last action", () => {
+    expect(agentStates(["[a] turn 1…", "[a] tok in=238 out=211 total=19762"])).toEqual([
+      { id: "a", tag: undefined, last: "turn 1…", tokens: "19.8k" },
+    ]);
+  });
+  test("latest tok wins; rows without tok lines carry none", () => {
+    expect(
+      agentStates(["[a review] turn 5…", "[a review] tok in=100 out=50 total=1100", "[a review] tok in=200 out=60 total=2500", "[b] turn 1…"]),
+    ).toEqual([
+      { id: "a", tag: "review", last: "turn 5…", tokens: "2.5k" },
+      { id: "b", tag: undefined, last: "turn 1…" },
+    ]);
+  });
+  test("lines without a total fall back to the in/out pair", () => {
+    expect(agentStates(["[a] tok in=18334 out=23"])).toEqual([
+      { id: "a", tag: undefined, last: "", tokens: "18.3k/23" },
+    ]);
+  });
+});
+
 describe("inspector tabs", () => {
   test("six tabs in contract order, clamped", () => {
     expect([...INSPECTOR_TABS]).toEqual(["Output", "Diff", "Verify", "Review", "Prompt", "Events"]);

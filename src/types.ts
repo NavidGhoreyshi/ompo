@@ -3,6 +3,8 @@
  * Changes after M2 require updating store tests (plan M1 gate).
  */
 
+import type { TokenUsage } from "./worker.ts";
+
 /** Slice lifecycle states (plan §6). */
 export type SliceStatus =
   | "pending"
@@ -102,7 +104,7 @@ export interface RunEvent {
   /** Wall-clock duration of the underlying process (worker/gate). */
   durationMs?: number;
   /** Agent session counters (worker_finished only; best-effort). */
-  stats?: { turns: number; tools: number };
+  stats?: { turns: number; tools: number; tokens?: TokenUsage };
 }
 
 /** Enrichment fields a store mutation may attach to the event it appends. */

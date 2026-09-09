@@ -74,6 +74,8 @@ export interface ProgressTracker {
   lastAt: number;
   /** Latest cumulative per-session token usage (headless usage envelopes only). */
   tokens?: TokenUsage;
+  /** Last total a `tok` bus line was logged for (throttle — in-memory only). */
+  tokensLogged?: number;
 }
 
 export function newProgressTracker(): ProgressTracker {
@@ -104,10 +106,13 @@ export function progressFn(ctx: AttemptCtx, sliceId: string, tag?: string): (lin
 
 /**
  * Build an onUsage sink that records the latest cumulative token usage on
- * the slice tracker. No log line per event — usage is advisory until the
- * context-cap check reads it (context-cap handoff loop).
+ * the slice tracker (the context-cap check reads it every event) and logs a
+ * throttled `tok in=X out=Y` bus line — first sighting plus each 1k-total
+ * crossing — so agent rows and the activity bus stay fresh without a line
+ * per message. The tag mirrors progressFn so the line lands on the right row.
  */
-export function usageFn(ctx: AttemptCtx, sliceId: string): (u: TokenUsage) => void {
+export function usageFn(ctx: AttemptCtx, sliceId: string, tag?: string): (u: TokenUsage) => void {
+  const prefix = tag ? `  [${sliceId} ${tag}]` : `  [${sliceId}]`;
   return (u) => {
     let t = ctx.trackers.get(sliceId);
     if (!t) {
@@ -115,6 +120,11 @@ export function usageFn(ctx: AttemptCtx, sliceId: string): (u: TokenUsage) => vo
       ctx.trackers.set(sliceId, t);
     }
     t.tokens = u;
+    const last = t.tokensLogged;
+    if (last === undefined || Math.floor(u.total / 1000) > Math.floor(last / 1000)) {
+      t.tokensLogged = u.total;
+      log(ctx, `${prefix} tok in=${u.input} out=${u.output} total=${u.total}`);
+    }
   };
 }
 

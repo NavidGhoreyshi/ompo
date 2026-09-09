@@ -24,6 +24,7 @@ import { readFileSync, readdirSync, existsSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { listRuns, loadRun, lockHeld } from "./store.ts";
 import type { RunEvent, Slice, SliceStatus } from "./types.ts";
+import { formatTokenCount, formatTokens } from "./worker.ts";
 
 const POLL_MS = 900;
 
@@ -54,6 +55,8 @@ export interface AgentRow {
   id: string;
   tag?: string;
   last: string;
+  /** Latest compact token pair (`18.3k/23`) parsed off `tok in=X out=Y` lines. */
+  tokens?: string;
 }
 
 /**
@@ -65,7 +68,23 @@ export function agentStates(lines: string[]): AgentRow[] {
   const seen = new Map<string, AgentRow>();
   for (const line of lines) {
     const m = line.match(/^\s*\[([^\]\s]+)(?:\s+([^\]]+))?\]\s*(.*)$/);
-    if (m) seen.set(m[1]!, { id: m[1]!, tag: m[2]?.trim() || undefined, last: (m[3] ?? "").trim() });
+    if (!m) continue;
+    let row = seen.get(m[1]!);
+    if (!row) {
+      row = { id: m[1]!, tag: undefined, last: "" };
+      seen.set(m[1]!, row);
+    }
+    const rest = (m[3] ?? "").trim();
+    const tok = rest.match(/^tok in=(\d+) out=(\d+)(?: total=(\d+))?$/);
+    if (tok) {
+      // Token heartbeat: refresh the count, never clobber the last action.
+      // Total is the session's context consumption; without it fall back to
+      // the in/out pair.
+      row.tokens = tok[3] !== undefined ? formatTokenCount(Number(tok[3])) : formatTokens(Number(tok[1]), Number(tok[2]));
+      continue;
+    }
+    row.tag = m[2]?.trim() || undefined;
+    row.last = rest;
   }
   return [...seen.values()].slice(-8);
 }
@@ -106,7 +125,7 @@ export function AgentsPane({ agents, statusOf, width, verifyingIds, max }: Agent
                 {s ? <Text color={st.color}> [{st.label.trim()}]</Text> : null}
               </Text>
               <Text dimColor wrap="truncate">
-                {" " + clip(`${a.tag ?? "agent"} — ${a.last || "(started)"}`, inner - 2)}
+                {" " + clip(`${a.tag ?? "agent"} — ${a.last || "(started)"}${a.tokens ? ` · tok ${a.tokens}` : ""}`, inner - 2)}
               </Text>
             </Box>
           );

@@ -201,6 +201,24 @@ export function usageForEvent(event: unknown): TokenUsage | undefined {
   return { input, output, total };
 }
 
+/**
+ * Compact input/output pair for agent rows and heartbeat lines: `18.3k/23`.
+ * Pure — unit-tested.
+ */
+export function formatTokens(input: number, output: number): string {
+  return `${formatTokenCount(input)}/${formatTokenCount(output)}`;
+}
+
+/**
+ * Compact token count: 999 → "999", 18334 → "18.3k", 120000 → "120k".
+ * Pure — unit-tested.
+ */
+export function formatTokenCount(n: number): string {
+  if (n < 1000) return String(n);
+  const k = n / 1000;
+  return `${k >= 100 ? Math.round(k) : Math.round(k * 10) / 10}k`;
+}
+
 /** Append assistant text parts of a message_end event to the collector. */
 function collectAssistantText(event: unknown, out: string[]): void {
   if (typeof event !== "object" || event === null) return;

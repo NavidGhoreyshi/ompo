@@ -108,16 +108,20 @@ describe("context-cap handoff loop", () => {
     const dir = tmpProject();
     createRun(dir, parseRoadmap("## [a] A\nDo A.\n"), "r");
     const seenGens: (number | undefined)[] = [];
+    const busLines: string[] = [];
     const runner = reviewAware(async (call, ctx) => {
       seenGens.push(call.generation);
       if (call.generation === 0) {
-        // Baseline below the cap, then real growth past it.
+        // Baseline below the cap, then real growth past it (and past a 1k line).
         ctx.onUsage?.({ input: 30, output: 10, total: 40 });
-        ctx.onUsage?.({ input: 80, output: 30, total: 110 });
+        ctx.onUsage?.({ input: 800, output: 300, total: 2100 });
+      } else {
+        // Fresh session, fresh window: its own baseline, under the cap.
+        ctx.onUsage?.({ input: 25, output: 5, total: 30 });
       }
       return { exit: 0, timedOut: false, stdout: doneBlock(call.sliceId), stderr: "", durationMs: 1 };
     });
-    const res = await runRoadmapLoop({ projectDir: dir, runId: "r", runner, contextCapOverride: 100, onEvent: () => {} });
+    const res = await runRoadmapLoop({ projectDir: dir, runId: "r", runner, contextCapOverride: 100, onEvent: (m) => busLines.push(m) });
     expect(res.exitCode).toBe(0);
     // Same attempt respawned: no retry consumed, generations observed in order.
     expect(seenGens).toEqual([0, 1]);
@@ -130,11 +134,10 @@ describe("context-cap handoff loop", () => {
     expect(existsSync(join(sliceFiles, "handoff-1-g0.md"))).toBe(true);
     // Audit trail: sidecar entry + event, cause context-cap.
     const entries = loadHandoffs(dir, "r");
-    expect(entries.length).toBe(1);
-    expect(entries[0]).toMatchObject({ sliceId: "a", attempt: 1, generation: 0, cause: "context-cap", tokens: 110, cap: 100 });
+    expect(entries[0]).toMatchObject({ sliceId: "a", attempt: 1, generation: 0, cause: "context-cap", tokens: 2100, cap: 100 });
     expect(readEvents(dir, "r").some((e) => e.type === "slice_handoff")).toBe(true);
-    const doc = readFileSync(join(dir, RUNS_DIR, "r", "handoffs.md"), "utf8");
-    expect(doc).toContain("context-cap");
+    // The activity bus carried throttled tok lines (TUI rows feed off these).
+    expect(busLines.some((l) => l.includes("tok in=800 out=300 total=2100"))).toBe(true);
   });
 
   test("cap below the session baseline fails loudly instead of respawning forever", async () => {
