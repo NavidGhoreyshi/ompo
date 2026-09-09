@@ -1,6 +1,7 @@
-import { useMemo, useState } from "react";
-import type { RunDetail } from "../api.ts";
+import { useCallback, useEffect, useMemo, useState } from "react";
+import { api, type PlanPreviewEnvelope } from "../api.ts";
 import Dag from "../components/Dag.tsx";
+import PlannerPreview from "../components/PlannerPreview.tsx";
 import StatusBadge from "../components/StatusBadge.tsx";
 
 const FILTERS = ["all", "pending", "running", "verifying", "failed", "blocked-env", "done", "skipped"] as const;
@@ -16,6 +17,72 @@ export default function RoadmapPage({
 }) {
   const [query, setQuery] = useState("");
   const [filter, setFilter] = useState<(typeof FILTERS)[number]>("all");
+  const [preview, setPreview] = useState<PlanPreviewEnvelope | null>(null);
+  const [previewLoading, setPreviewLoading] = useState(true);
+  const [previewError, setPreviewError] = useState<string | null>(null);
+  const [raw, setRaw] = useState<{ path: string; markdown: string } | null>(null);
+  const [rawOpen, setRawOpen] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [notice, setNotice] = useState<string | null>(null);
+
+  const loadPreview = useCallback(async () => {
+    setPreviewLoading(true);
+    setPreviewError(null);
+    try {
+      setPreview(await api.planPreview());
+    } catch (err) {
+      setPreviewError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setPreviewLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    void loadPreview();
+  }, [loadPreview]);
+
+  const handleReload = useCallback(async () => {
+    setNotice(null);
+    await loadPreview();
+    if (rawOpen) {
+      try {
+        setRaw(await api.planRoadmap());
+      } catch {
+        setRaw(null);
+      }
+    }
+  }, [loadPreview, rawOpen]);
+
+  const handleToggleRaw = useCallback(async () => {
+    if (rawOpen) {
+      setRawOpen(false);
+      return;
+    }
+    setRawOpen(true);
+    if (!raw) {
+      try {
+        setRaw(await api.planRoadmap());
+      } catch (err) {
+        setNotice(err instanceof Error ? err.message : String(err));
+      }
+    }
+  }, [raw, rawOpen]);
+
+  const decide = useCallback(
+    async (decision: "accept" | "abort") => {
+      setBusy(true);
+      try {
+        const res = await api.planDecision(decision);
+        setNotice(res.summary);
+        await loadPreview();
+      } catch (err) {
+        setNotice(err instanceof Error ? err.message : String(err));
+      } finally {
+        setBusy(false);
+      }
+    },
+    [loadPreview],
+  );
 
   const rows = useMemo(() => {
     if (!detail) return [];
@@ -28,8 +95,22 @@ export default function RoadmapPage({
   }, [detail, query, filter]);
 
   return (
-    <section className="omp-panel" aria-label="Roadmap">
-      <h2>Roadmap{detail ? ` — ${detail.slices.length} slices` : ""}</h2>
+    <>
+      <PlannerPreview
+        preview={preview}
+        loading={previewLoading}
+        error={previewError}
+        raw={raw}
+        rawOpen={rawOpen}
+        busy={busy}
+        notice={notice}
+        onReload={() => void handleReload()}
+        onToggleRaw={() => void handleToggleRaw()}
+        onAccept={() => void decide("accept")}
+        onAbort={() => void decide("abort")}
+      />
+      <section className="omp-panel" aria-label="Roadmap">
+        <h2>Roadmap{detail ? ` — ${detail.slices.length} slices` : ""}</h2>
       <div className="omp-controls" style={{ marginBottom: 8 }}>
         <input
           className="omp-input"
@@ -95,6 +176,7 @@ export default function RoadmapPage({
         </div>
       )}
       <p className="omp-hint">Select a row to inspect it — control actions live in the inspector, in context.</p>
-    </section>
+      </section>
+    </>
   );
 }

@@ -20,11 +20,15 @@ import {
   type ControlIntent,
 } from "./control.ts";
 import { diffSliceBranch, tailSliceLog } from "./forensics.ts";
+import { collectDocCandidates } from "./import.ts";
 import { resolveRunId } from "./log.ts";
 import { computeStats, queryEvents, replayRun } from "./stats.ts";
 import { listRuns, loadRun, lockHeld, readEvents } from "./store.ts";
 import type { Effort, RunEvent, SliceStatus } from "./types.ts";
+import { loadRoadmapConfig } from "./config.ts";
 import { loadHandoffs, type HandoffEntry } from "./handoffs.ts";
+import { buildPlanPreview, formatPreviewSummary } from "./planPreview.ts";
+import { sha256Hex } from "./parse.ts";
 import { usageForEvent, type TokenUsage } from "./worker.ts";
 import { EMBEDDED_WEB_DIST, EMBEDDED_WEB_VERSION } from "./webAssets.generated.ts";
 import pkg from "../package.json";
@@ -812,6 +816,117 @@ async function handleControl(projectDir: string, runId: string, req: Request): P
   const res = applyIntent(projectDir, runId, target, { jobs: { value: 0 }, paused: false });
   return json({ ok: res.ok, message: res.message, applied: "direct" }, 200);
 }
+// ---- plan preview (roadmap inspection boundary; arch §3) ----
+//
+// Project-scoped (no runId): reads ROADMAP.md from disk and runs it through
+// the single roadmap schema + lint implementation (`buildPlanPreview`), the
+// same seam as `ompo plan` and the unified-flow preview gate. The dashboard
+// holds no live preview bridge — Accept/Abort validate against the current
+// disk state (blocked plans can never be accepted, mirroring
+// `defaultPreviewDecision`/unified flow); Reload re-reads the file; Open
+// shows the raw markdown. No in-browser editing.
+
+/** Browser-facing roadmap filename only — never an absolute path (§7). */
+const ROADMAP_FILE = "ROADMAP.md";
+
+function planPreviewEnvelope(projectDir: string): Response {
+  // Same newest-first markdown candidates `runInitPlanner` surveys (capped there).
+  let surveyed: { path: string; mtimeMs: number }[] = [];
+  try {
+    surveyed = collectDocCandidates(projectDir);
+  } catch {
+    surveyed = [];
+  }
+  let markdown: string | null = null;
+  try {
+    markdown = readFileSync(join(projectDir, ROADMAP_FILE), "utf8");
+  } catch {
+    markdown = null;
+  }
+  if (markdown === null) {
+    const errors = [
+      {
+        level: "error",
+        code: "missing-roadmap",
+        message: `${ROADMAP_FILE} not found — run ompo init to plan from project docs`,
+      },
+    ];
+    return json({
+      roadmapPath: ROADMAP_FILE,
+      exists: false,
+      status: "blocked",
+      summary: "plan preview: 0 slice(s) — blocked (1 error(s))",
+      rows: [],
+      errors,
+      warnings: [],
+      surveyed,
+    });
+  }
+  const cfg = loadRoadmapConfig(projectDir);
+  const preview = buildPlanPreview(markdown, {
+    verifyDefaults: cfg.verifyDefaults,
+    agentModels: cfg.agentModels,
+  });
+  return json({
+    roadmapPath: ROADMAP_FILE,
+    exists: true,
+    sourceHash: sha256Hex(markdown),
+    status: preview.status,
+    summary: formatPreviewSummary(preview),
+    rows: preview.rows,
+    errors: preview.errors,
+    warnings: preview.warnings,
+    surveyed,
+  });
+}
+
+function planRoadmapRaw(projectDir: string): Response {
+  try {
+    const markdown = readFileSync(join(projectDir, ROADMAP_FILE), "utf8");
+    return json({ path: ROADMAP_FILE, markdown });
+  } catch {
+    return json({ error: `${ROADMAP_FILE} not found` }, 404);
+  }
+}
+
+async function handlePlanDecision(projectDir: string, req: Request): Promise<Response> {
+  if (!originAllowed(req)) return json({ error: "cross-origin plan writes are forbidden" }, 403);
+  let body: unknown;
+  try {
+    body = await req.json();
+  } catch {
+    return bad('decision body must be JSON ({ decision: "accept" | "abort" | "edit" })');
+  }
+  const decision = body && typeof body === "object" && "decision" in body ? body.decision : undefined;
+  if (decision !== "accept" && decision !== "abort" && decision !== "edit") {
+    return bad('decision must be "accept", "abort", or "edit"');
+  }
+  let markdown: string;
+  try {
+    markdown = readFileSync(join(projectDir, ROADMAP_FILE), "utf8");
+  } catch {
+    return json({ error: `${ROADMAP_FILE} not found` }, 404);
+  }
+  const cfg = loadRoadmapConfig(projectDir);
+  const preview = buildPlanPreview(markdown, {
+    verifyDefaults: cfg.verifyDefaults,
+    agentModels: cfg.agentModels,
+  });
+  if (decision === "accept" && preview.status === "blocked") {
+    return json(
+      {
+        error: `cannot accept: roadmap has ${preview.errors.length} blocking error(s) — fix ${ROADMAP_FILE} and reload`,
+      },
+      409,
+    );
+  }
+  return json({
+    ok: true,
+    decision,
+    status: preview.status,
+    summary: formatPreviewSummary(preview),
+  });
+}
 
 // ---- router ----
 
@@ -932,6 +1047,9 @@ async function route(projectDir: string, req: Request): Promise<Response> {
       return handleControl(projectDir, runId, req);
     }
   }
+  if (path === "/api/plan/preview" && req.method === "GET") return planPreviewEnvelope(projectDir);
+  if (path === "/api/plan/roadmap" && req.method === "GET") return planRoadmapRaw(projectDir);
+  if (path === "/api/plan/decision" && req.method === "POST") return handlePlanDecision(projectDir, req);
 
   // `/api/*` is reserved: unknown API paths are 404, never the SPA shell.
   if (path === "/api" || path.startsWith("/api/")) return json({ error: "not found" }, 404);
