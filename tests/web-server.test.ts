@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { parseRoadmap } from "../src/parse.ts";
 import { createRun } from "../src/store.ts";
-import { startDashboardServer } from "../src/server.ts";
+import { HEARTBEAT_MS, IDLE_TIMEOUT_S, startDashboardServer } from "../src/server.ts";
 // The sandbox sets HTTP(S)_PROXY without NO_PROXY; loopback test traffic
 // must not go through the proxy.
 process.env.NO_PROXY = [process.env.NO_PROXY, "127.0.0.1,localhost"].filter(Boolean).join(",");
@@ -29,6 +29,14 @@ async function getJSON(url: string, init?: RequestInit): Promise<{ status: numbe
   const res = await fetch(url, init);
   return { status: res.status, body: await res.json() };
 }
+
+describe("dashboard server timeouts", () => {
+  test("SSE heartbeat fires before Bun.serve idle timeout", () => {
+    // Regression: default idleTimeout (10s) killed the event stream before
+    // the first 15s heartbeat — dead live-updates on the dashboard.
+    expect(HEARTBEAT_MS).toBeLessThan(IDLE_TIMEOUT_S * 1000);
+  });
+});
 
 describe("dashboard server", () => {
   test("health, runs, detail, events", async () => {

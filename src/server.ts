@@ -39,7 +39,13 @@ export const DEFAULT_HOST = "127.0.0.1";
 /** TUI-equivalent refresh cadence for the SSE tail. */
 const POLL_MS = 900;
 /** SSE heartbeat so idle connections stay provably alive through proxies. */
-const HEARTBEAT_MS = 15_000;
+export const HEARTBEAT_MS = 15_000;
+/**
+ * Bun.serve idle timeout (seconds). MUST exceed HEARTBEAT_MS: Bun's default
+ * is 10s, which killed the SSE stream before the first heartbeat ever fired
+ * (`request timed out after 10 seconds`, dead live-updates on the dashboard).
+ */
+export const IDLE_TIMEOUT_S = 60;
 /** `tailSliceLog` cap for the log endpoint (arch §7). */
 const LOG_MAX = 500;
 const LOG_DEFAULT = 50;
@@ -1158,6 +1164,7 @@ export function startDashboardServer(opts: DashboardOptions): DashboardServer {
   const server = Bun.serve({
     hostname: host,
     port: opts.port ?? 0,
+    idleTimeout: IDLE_TIMEOUT_S,
     fetch: (req) => route(opts.projectDir, req),
   });
   const port = server.port ?? opts.port ?? 0;
