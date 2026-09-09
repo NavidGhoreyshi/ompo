@@ -714,6 +714,56 @@ details .omp-code {
   color: var(--omp-muted);
   min-width: 0;
 }
+.omp-activity-time {
+  color: var(--omp-faint);
+  flex: none;
+  font-variant-numeric: tabular-nums;
+}
+
+.omp-activity-lane {
+  flex: none;
+  min-width: 72px;
+}
+
+.omp-activity-lane[data-lane="worker"] {
+  color: var(--omp-cyan);
+}
+
+.omp-activity-lane[data-lane="verify"] {
+  color: var(--omp-green);
+}
+
+.omp-activity-lane[data-lane="review"] {
+  color: var(--omp-focus);
+}
+
+.omp-activity-lane[data-lane="control"] {
+  color: var(--omp-amber);
+}
+
+.omp-activity-lane[data-lane="system"] {
+  color: var(--omp-muted);
+}
+
+.omp-activity-slice {
+  flex: none;
+  max-width: 220px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--omp-text);
+}
+
+.omp-terminal {
+  margin-top: 8px;
+}
+
+.omp-terminal-log {
+  max-height: 180px;
+  overflow-y: auto;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
 
 /* ---------- lists ---------- */
 
