@@ -26,6 +26,7 @@
  *     <NAME>: <value passed to worker + gate commands>
  *   serviceTimeoutSec: <int ready-poll budget, default 120>
  *   maxUnblocks: <int end-of-run unblock sessions, default 2, 0 disables>
+ *   contextCapTokens: <int tokens per session before handoff to a fresh session, default 120000, 0 disables>
  */
 
 import { existsSync, readFileSync } from "node:fs";
@@ -56,6 +57,8 @@ export interface RoadmapConfig {
   serviceTimeoutSec?: number;
   /** End-of-run unblock sessions before giving up (default 2, 0 disables). */
   maxUnblocks?: number;
+  /** Per-session tokens before handoff to a fresh session (default 120000, 0 disables). */
+  contextCapTokens?: number;
 }
 
 export function configPath(projectDir: string): string {
@@ -173,6 +176,7 @@ function parseConfigBool(raw: string, key: string): boolean {
         else if (key === "placeholders" && val) cfg.placeholders = parseConfigBool(val, "placeholders");
         else if (key === "serviceTimeoutSec" && val) cfg.serviceTimeoutSec = parseConfigInt(val, "serviceTimeoutSec", 10, 1800);
         else if (key === "maxUnblocks" && val) cfg.maxUnblocks = parseConfigInt(val, "maxUnblocks", 0, 5);
+        else if (key === "contextCapTokens" && val) cfg.contextCapTokens = parseConfigInt(val, "contextCapTokens", 0, 1_000_000);
       }
     } else if (section === "agentModels") {
       const m = trimmed.match(/^([^:]+?)\s*:\s*(.+)$/);

@@ -81,6 +81,11 @@ export function buildWorkerSpec(
     `implemented AND you ran verification. filesChanged lists repo-relative paths you touched. ` +
     `Shared services: use the provided env (e.g. DATABASE_URL) as-is — never start your own ` +
     `disposable database on another port for verification; the gates run against the shared service. ` +
+    `Context discipline: your session has a finite context window. If you judge it nearly exhausted ` +
+    `before the slice is done, STOP cleanly — still print the block with done=false and open ` +
+    `verificationNotes with the literal line "HANDOFF:" followed by (a) completed items, ` +
+    `(b) remaining items in order, (c) key file paths you touched or must be read next. ` +
+    `A fresh session continues your work on the same branch from those notes — make them self-sufficient. ` +
     `If you cannot complete, still print the block with done=false and explain in verificationNotes. ` +
     `Missing live values are never "cannot complete" — defer them.\n`;
 

@@ -70,6 +70,7 @@ export type RunEventType =
   | "verify_passed"
   | "verify_failed"
   | "slice_retried"
+  | "slice_handoff"
   | "slice_done"
   | "slice_reverified"
   | "slice_failed_terminal"

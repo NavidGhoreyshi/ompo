@@ -40,3 +40,5 @@ verifyDefaults: []
 # serviceTimeoutSec: 120
 # maxUnblocks: 2 end-of-run unblock sessions before giving up (0 disables,
 #   --no-unblock / --max-unblocks N override per run)
+# contextCapTokens: 120000 per-session tokens before handoff to a fresh session
+#   (0 disables, --no-handoff / --context-cap N override per run)

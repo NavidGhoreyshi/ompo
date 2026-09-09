@@ -1153,7 +1153,7 @@ export function ForensicsPane({ project, runId, detail: d, scrollUp, height, wid
       <Box marginTop={1}>
         <Text dimColor>
           <Text bold color="white">↑/↓ PgUp/PgDn</Text> scroll {offset > 0 ? <Text color="yellow">▲{offset}</Text> : <Text color="green">● live</Text>} │{" "}
-          <Text bold color="white">y</Text> yank path │ <Text bold color="white">Esc/Enter</Text> close · open after quit: $EDITOR {dir}/{d.workerLogName ?? "worker-1.log"}
+          <Text bold color="white">y</Text> yank path │ <Text bold color="white">Esc/Enter</Text> close · open after quit: $EDITOR {dir}/{d.workerLogName ?? "worker-1-g0.log"}
         </Text>
       </Box>
     </Box>

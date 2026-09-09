@@ -13,8 +13,22 @@ export interface WorkerCall {
   prompt: string;
   sliceId: string;
   attempt: number;
+  /**
+   * Fresh-context generation within one attempt (context-cap handoff loop).
+   * 0 = first spawn; each handoff respawns the same attempt with gen+1.
+   * Generations never consume retry budget.
+   */
+  generation?: number;
   /** Pane title override (e.g. review sessions). */
   label?: string;
+}
+
+/** Cumulative per-session token counts from `--mode json` usage envelopes. */
+export interface TokenUsage {
+  input: number;
+  output: number;
+  /** totalTokens when reported, else input + output. */
+  total: number;
 }
 
 export interface WorkerContext {
@@ -31,6 +45,13 @@ export interface WorkerContext {
   /** Live progress line sink (one concise line per agent step). */
   onProgress?: (line: string) => void;
   /**
+   * Live token-usage sink (cumulative per-session totals, at most one call
+   * per assistant message_end / turn_end carrying a usage envelope).
+   * Advisory like onProgress; never fail the worker. Headless only — the
+   * tmux runner has no JSON stream and never calls this.
+   */
+  onUsage?: (u: TokenUsage) => void;
+  /**
    * Extra env for the worker (placeholder injection — scoped to the attempt).
    * Honored by the headless runner; tmux panes inherit the server env instead.
    */
@@ -45,6 +66,8 @@ export interface WorkerResult {
   stderr: string;
   durationMs: number;
   resolvedModel?: string;
+  /** Latest cumulative usage observed on the stream (absent when unreported). */
+  usage?: TokenUsage;
   /** Raw NDJSON event stream (for worker-<n>.events.jsonl forensics). */
   eventsJsonl?: string;
 }
@@ -156,6 +179,28 @@ export function progressLineForEvent(event: unknown, state: ProgressState): stri
   }
 }
 
+/**
+ * Extract cumulative token usage from one `--mode json` event.
+ * Assistant `message_end` / `turn_end` events carry
+ * `message.usage = {input, output, cacheRead, cacheWrite, totalTokens, …}`
+ * (verified against omp 18.1.14 output). Pure (no I/O) — unit-tested.
+ */
+export function usageForEvent(event: unknown): TokenUsage | undefined {
+  if (typeof event !== "object" || event === null) return undefined;
+  const ev = event as Record<string, unknown>;
+  if (ev["type"] !== "message_end" && ev["type"] !== "turn_end") return undefined;
+  const msg = ev["message"] as Record<string, unknown> | undefined;
+  if (!msg || msg["role"] !== "assistant") return undefined;
+  const usage = msg["usage"] as Record<string, unknown> | undefined;
+  if (!usage || typeof usage["input"] !== "number" || typeof usage["output"] !== "number") {
+    return undefined;
+  }
+  const input = usage["input"] as number;
+  const output = usage["output"] as number;
+  const total = typeof usage["totalTokens"] === "number" ? (usage["totalTokens"] as number) : input + output;
+  return { input, output, total };
+}
+
 /** Append assistant text parts of a message_end event to the collector. */
 function collectAssistantText(event: unknown, out: string[]): void {
   if (typeof event !== "object" || event === null) return;
@@ -209,6 +254,7 @@ export const runOmpWorker: WorkerRunner = (call, ctx) =>
     let lineBuf = "";
     let stderr = "";
     let done = false;
+    let latestUsage: TokenUsage | undefined;
     const progressState: ProgressState = { turn: 0, cwd: ctx.projectDir };
     const emit = (line: string) => {
       if (done) return;
@@ -252,6 +298,17 @@ export const runOmpWorker: WorkerRunner = (call, ctx) =>
         }
         const progress = progressLineForEvent(event, progressState);
         if (progress) emit(progress);
+        const usage = usageForEvent(event);
+        if (usage) {
+          latestUsage = usage;
+          if (!done) {
+            try {
+              ctx.onUsage?.(usage);
+            } catch {
+              /* usage is advisory; never fail the worker */
+            }
+          }
+        }
       }
     };
     const finish = (partial: Partial<WorkerResult>) => {
@@ -266,6 +323,7 @@ export const runOmpWorker: WorkerRunner = (call, ctx) =>
         stdout: assistantParts.join("\n"),
         stderr,
         durationMs: Date.now() - started,
+        usage: latestUsage,
         eventsJsonl: rawLines.join("\n"),
         ...partial,
       });

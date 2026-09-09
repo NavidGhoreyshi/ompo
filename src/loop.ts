@@ -19,6 +19,7 @@ import { join } from "node:path";
 import { spawnSync } from "node:child_process";
 import {
   depSummaries,
+  DEFAULT_CONTEXT_CAP_TOKENS,
   failAttempt,
   formatTimeout,
   log,
@@ -26,6 +27,7 @@ import {
   newProgressTracker,
   preserveIncompleteWork,
   progressFn,
+  usageFn,
   summarize5,
   type AttemptCtx,
   type ProgressTracker,
@@ -44,7 +46,8 @@ import { applyHarnessFix, headFileSet } from "./harnessFix.ts";
 import { runVerifiers } from "./verify.ts";
 import { reportDeferred, reportPlaceholders } from "./runReports.ts";
 import { runReview } from "./reviewLane.ts";
-import { buildModelChain, displayModel, resolveWorkerModel, runOmpWorker, runWithModelFallbacks, type WorkerRunner } from "./worker.ts";
+import { buildModelChain, displayModel, resolveWorkerModel, runOmpWorker, runWithModelFallbacks, type TokenUsage, type WorkerRunner } from "./worker.ts";
+import { handoffBriefRef, recordHandoff, type HandoffCause } from "./handoffs.ts";
 import { createMutex, type Mutex } from "./mutex.ts";
 import { worktreeOpsFor, sliceBranchOf, type WorktreeOps } from "./worktree.ts";
 import { extractMissingVar, loadPlaceholders, placeholderFor, placeholdersDocRef, recordPlaceholder } from "./placeholders.ts";
@@ -84,8 +87,11 @@ export interface LoopOptions {
   noPlaceholders?: boolean;
   /** Disable end-of-run unblock sessions (`--no-unblock`). */
   noUnblock?: boolean;
-  /** End-of-run unblock session budget (`--max-unblocks N`, default 2). */
   maxUnblocksOverride?: number;
+  /** Disable context-cap handoff to a fresh session (`--no-handoff`). */
+  noHandoff?: boolean;
+  /** Per-session token cap before handoff (`--context-cap N`, roadmap.yml contextCapTokens, default 120000, 0 disables). */
+  contextCapOverride?: number;
   /** Deterministic RNG seed (chaos abort draws; CLI also suffixes fresh run ids). */
   seed?: number;
   /** Parsed chaos faults (CLI-only `--fault-inject`, never config). */
@@ -435,6 +441,103 @@ async function recoverWithPlaceholders(
 }
 
 /**
+ * Continuation brief for one ended generation (written to
+ * slices/<id>/handoff-<attempt>-g<gen>.md and inlined into the next
+ * generation's prompt). Pure — unit-tested.
+ */
+export function buildHandoffBrief(args: {
+  sliceId: string;
+  attempt: number;
+  generation: number;
+  cause: HandoffCause;
+  tokens: number;
+  cap: number;
+  preservedReason: string;
+  logRef: string;
+  promptRef: string;
+  agentNotes?: string;
+}): string {
+  const causeLine =
+    args.cause === "context-cap"
+      ? `Orchestrator cap abort: the session reached ${args.tokens} tokens (cap ${args.cap}).`
+      : `Agent-declared: the worker judged its context nearly exhausted and stopped cleanly.`;
+  const notes = args.agentNotes?.trim()
+    ? args.agentNotes.trim()
+    : "(none — reconstruct state from the worker log tail and the branch diff below.)";
+  return [
+    `# Handoff brief — ${args.sliceId} attempt ${args.attempt} g${args.generation} → g${args.generation + 1}`,
+    ``,
+    `${causeLine}`,
+    `Incomplete work was preserved on the slice branch as "${args.preservedReason}" — resume from it, do not redo it.`,
+    `Generation artifacts: ${args.logRef}, ${args.promptRef}.`,
+    ``,
+    `## Agent notes (verbatim from the ended generation)`,
+    ``,
+    notes,
+    ``,
+  ].join("\n");
+}
+
+/**
+ * Generation ≥1 prompt: the original spec plus the prior brief inline.
+ * Pure — unit-tested.
+ */
+export function buildContinuationPrompt(specPrompt: string, brief: string): string {
+  return (
+    `${specPrompt}\n\n## CONTINUATION — a prior generation handed this slice to you (fresh context)\n` +
+    `You are the next generation of the SAME attempt on the SAME branch. Work already done stays done: ` +
+    `verify what remains against the brief and finish the slice under the same completion contract.\n\n${brief}`
+  );
+}
+
+/**
+ * Durable side of one handoff: brief file + handoffs.md entry +
+ * slice_handoff event. Returns the brief (inlined into the next prompt).
+ * The slice status is untouched (still running) — no retry consumed.
+ */
+function recordGenerationHandoff(
+  ctx: AttemptCtx,
+  sliceId: string,
+  attempt: number,
+  generation: number,
+  cause: HandoffCause,
+  tokens: number,
+  preservedReason: string,
+  agentNotes?: string,
+): string {
+  const { projectDir, runId } = ctx;
+  const dir = sliceDir(projectDir, runId, sliceId);
+  const logRef = join("slices", sliceId, `worker-${attempt}-g${generation}.log`);
+  const brief = buildHandoffBrief({
+    sliceId,
+    attempt,
+    generation,
+    cause,
+    tokens,
+    cap: ctx.contextCapTokens,
+    preservedReason,
+    logRef,
+    promptRef: join("slices", sliceId, `prompt-${attempt}-g${generation}.md`),
+    agentNotes,
+  });
+  const briefRef = handoffBriefRef(sliceId, attempt, generation);
+  writeFileSync(join(dir, `handoff-${attempt}-g${generation}.md`), brief, "utf8");
+  recordHandoff(projectDir, runId, {
+    sliceId,
+    attempt,
+    generation,
+    cause,
+    tokens,
+    cap: ctx.contextCapTokens,
+    briefRef,
+    preserved: preservedReason,
+  });
+  storeApi.recordHandoff(projectDir, runId, sliceId, `g${generation} → g${generation + 1} (${cause}, ${tokens} tokens)`);
+  log(ctx, `  handoff g${generation} → g${generation + 1} (${cause}, ${tokens} tokens): ${briefRef}`);
+  return brief;
+}
+
+/**
  * One attempt of one slice: worktree → spec → worker → report →
  * verify → merge → review → done. Total: never rejects; all failures land
  * in the store. The worktree is dropped only after review approval.
@@ -491,16 +594,10 @@ async function runAttempt(ctx: AttemptCtx, sliceId: string): Promise<void> {
     projectDir: wtPath,
     reviewNotes,
   });
-  writeFileSync(join(dir, `prompt-${attempt}.md`), spec.prompt, "utf8");
-
-  if (ctx.signal?.aborted) {
-    storeApi.abortSlice(projectDir, runId, sliceId);
-    return;
-  }
-
-  // 3. Spawn worker (clean context: fresh `omp -p` process, spec only).
-  // Progress streams live via --mode json events (turns, tool calls,
-  // assistant snippets) prefixed with the slice id.
+  // 3. Spawn worker generations (fresh `omp -p` context per generation).
+  // A generation ends by report (stage 4 below), context-cap abort, or an
+  // agent-declared HANDOFF: report — the latter two preserve incomplete work
+  // and respawn the SAME attempt with generation+1 (no retry consumed).
   // Model fallback chain: primary, then modelFallbacks, then omp default.
   // A model that is unavailable (rate limit, unknown id) is skipped within
   // the same attempt — no retry consumed, partial work preserved on the branch.
@@ -508,104 +605,202 @@ async function runAttempt(ctx: AttemptCtx, sliceId: string): Promise<void> {
   const workerTimeoutMs = ctx.timeoutMsOverride ?? claimed.timeoutMs
     ?? (ctx.cfg.workerTimeoutSec ? ctx.cfg.workerTimeoutSec * 1000 : undefined);
   const onProgress = progressFn(ctx, sliceId);
+  const onUsage = usageFn(ctx, sliceId);
+  const cap = ctx.contextCapTokens;
   let workerOut = "";
   let workerStdout = "";
   // Hoisted worker result so the worker_finished event (step 5) can carry
   // exit/timing enrichment even though the result was scoped to the try.
   let workerMeta: { exit: number | null; timedOut: boolean; durationMs: number } | undefined;
-  try {
-    const res = await runWithModelFallbacks(
-      ctx.runner,
-      { prompt: spec.prompt, sliceId, attempt },
-      { projectDir: wtPath, timeoutMs: workerTimeoutMs, signal: ctx.signal, sessionDir: dir, onProgress, env: workerServiceEnv },
-      workerChain,
-      {
-        accept: (stdout) => extractReportFromOutput(stdout) !== undefined,
-        preserve: () => preserveIncompleteWork(ctx, sliceId, attempt, "model unavailable, falling back"),
-        onModelAttempt: (model, i) => {
-          const where = i === 0
-            ? `worktree: ${wtPath} budget: ${formatTimeout(workerTimeoutMs)}`
-            : `fallback ${i + 1}/${workerChain.length} (no retry consumed)`;
-          log(ctx, `  model: ${displayModel(model)} ${where}`);
-        },
-        onFallback: (from, to) => {
-          log(ctx, `  model ${displayModel(from)} unavailable — falling back to ${displayModel(to)} (no retry consumed)`);
-        },
-      },
-    );
-    if (res.fellBack) {
-      writeFileSync(join(dir, `worker-${attempt}.models.json`), JSON.stringify({ tried: res.tried, accepted: displayModel(res.model) }, null, 2) + "\n", "utf8");
+  let report: CompletionReport | undefined;
+  let lastBrief = "";
+  for (let gen = 0; report === undefined; gen++) {
+    const prompt = gen === 0 ? spec.prompt : buildContinuationPrompt(spec.prompt, lastBrief);
+    writeFileSync(join(dir, `prompt-${attempt}-g${gen}.md`), prompt, "utf8");
+    // Fresh per-generation token window: usage envelopes report cumulative
+    // session totals and each generation is a new session.
+    workerOut = "";
+    workerStdout = "";
+    workerMeta = undefined;
+    const genTracker = ctx.trackers.get(sliceId);
+    if (genTracker) genTracker.tokens = undefined;
+
+    if (ctx.signal?.aborted) {
+      storeApi.abortSlice(projectDir, runId, sliceId);
+      return;
     }
-    workerMeta = { exit: res.exit, timedOut: res.timedOut, durationMs: res.durationMs };
-    workerStdout = res.stdout;
-    workerOut = `exit=${res.exit} timedOut=${res.timedOut} durationMs=${res.durationMs}\n--- stdout ---\n${res.stdout}\n--- stderr ---\n${res.stderr}\n`;
-    writeFileSync(join(dir, `worker-${attempt}.log`), workerOut, "utf8");
-    if (res.eventsJsonl) {
-      try {
-        writeFileSync(join(dir, `worker-${attempt}.events.jsonl`), res.eventsJsonl, "utf8");
-      } catch {
-        /* forensics are best-effort */
+
+    // Per-generation abort: operator aborts forward in; the cap abort fires
+    // from the usage sink below. The runner sees one signal either way.
+    const genCtrl = new AbortController();
+    const forwardAbort = () => genCtrl.abort();
+    if (ctx.signal) {
+      if (ctx.signal.aborted) genCtrl.abort();
+      else ctx.signal.addEventListener("abort", forwardAbort, { once: true });
+    }
+    const stopForwarding = () => ctx.signal?.removeEventListener("abort", forwardAbort);
+    let capHit = false;
+    // A generation whose FIRST usage observation already meets the cap never
+    // did billable work under it (the session baseline alone costs ≥ cap):
+    // respawning would abort instantly forever, so fail loudly instead.
+    let capBelowBaseline = false;
+    let usageEvents = 0;
+    const trackUsage = (u: TokenUsage) => {
+      onUsage(u);
+      usageEvents += 1;
+      if (cap > 0 && usageEvents === 1 && u.total >= cap) capBelowBaseline = true;
+      if (!capHit && cap > 0 && u.total >= cap) {
+        capHit = true;
+        log(ctx, `  context cap reached (g${gen}: ${u.total} tokens ≥ ${cap}) — preserving + respawning fresh (no retry consumed)`);
+        genCtrl.abort();
       }
+    };
+    const genTokens = () => ctx.trackers.get(sliceId)?.tokens?.total ?? 0;
+    // Shared exit for an unreachable cap: preserve, then fail through the
+    // normal retry budget (bounded spend, loud cause) instead of handoff.
+    const failUnreachableCap = () => {
+      const reason = `context cap ${cap} below session baseline (${genTokens()} tokens on first use)`;
+      preserveIncompleteWork(ctx, sliceId, attempt, reason);
+      log(ctx, summarize5(claimed, `context cap unreachable: ${reason} — raise --context-cap / contextCapTokens or shrink the spec`));
+      failAttempt(ctx, sliceId, claimed, join("slices", sliceId, `worker-${attempt}-g${gen}.log`), {
+        cause: "context_cap_baseline",
+        exit: workerMeta?.exit ?? null,
+        timedOut: workerMeta?.timedOut,
+        durationMs: workerMeta?.durationMs,
+      });
+    };
+    try {
+      const res = await runWithModelFallbacks(
+        ctx.runner,
+        { prompt, sliceId, attempt, generation: gen },
+        { projectDir: wtPath, timeoutMs: workerTimeoutMs, signal: genCtrl.signal, sessionDir: dir, onProgress, onUsage: trackUsage, env: workerServiceEnv },
+        workerChain,
+        {
+          accept: (stdout) => extractReportFromOutput(stdout) !== undefined,
+          preserve: () => preserveIncompleteWork(ctx, sliceId, attempt, `model unavailable, falling back (g${gen})`),
+          onModelAttempt: (model, i) => {
+            const where = i === 0
+              ? `worktree: ${wtPath} budget: ${formatTimeout(workerTimeoutMs)}`
+              : `fallback ${i + 1}/${workerChain.length} (no retry consumed)`;
+            log(ctx, `  model: ${displayModel(model)} ${where}`);
+          },
+          onFallback: (from, to) => {
+            log(ctx, `  model ${displayModel(from)} unavailable — falling back to ${displayModel(to)} (no retry consumed)`);
+          },
+        },
+      );
+      stopForwarding();
+      if (res.fellBack) {
+        writeFileSync(join(dir, `worker-${attempt}-g${gen}.models.json`), JSON.stringify({ tried: res.tried, accepted: displayModel(res.model) }, null, 2) + "\n", "utf8");
+      }
+      workerMeta = { exit: res.exit, timedOut: res.timedOut, durationMs: res.durationMs };
+      workerStdout = res.stdout;
+      workerOut = `exit=${res.exit} timedOut=${res.timedOut} durationMs=${res.durationMs}\n--- stdout ---\n${res.stdout}\n--- stderr ---\n${res.stderr}\n`;
+      writeFileSync(join(dir, `worker-${attempt}-g${gen}.log`), workerOut, "utf8");
+      if (res.eventsJsonl) {
+        try {
+          writeFileSync(join(dir, `worker-${attempt}-g${gen}.events.jsonl`), res.eventsJsonl, "utf8");
+        } catch {
+          /* forensics are best-effort */
+        }
+      }
+      const t = ctx.trackers.get(sliceId);
+      log(ctx, `  worker g${gen} exited in ${Math.round(res.durationMs / 1000)}s${t ? ` (${t.turns} turns, ${t.tools} tools)` : ""}`);
+      if (capBelowBaseline && !ctx.signal?.aborted && fresh().status !== "aborted") {
+        failUnreachableCap();
+        return;
+      }
+      if (capHit && !ctx.signal?.aborted && fresh().status !== "aborted") {
+        // Cap abort won the race: the session is spent by construction —
+        // handoff instead of verifying its partial output.
+        const reason = `context-cap g${gen}`;
+        preserveIncompleteWork(ctx, sliceId, attempt, reason);
+        lastBrief = recordGenerationHandoff(ctx, sliceId, attempt, gen, "context-cap", genTokens(), reason);
+        continue;
+      }
+      if (res.timedOut) {
+        preserveIncompleteWork(ctx, sliceId, attempt, "timeout");
+        throw new Error(`worker timed out`);
+      }
+      if (res.exit !== 0) {
+        // Non-zero exit: still try to extract a report (worker may have
+        // printed one before failing); else worker failure.
+        const maybe = extractReportFromOutput(res.stdout);
+        if (maybe === undefined) throw new Error(`worker exited ${res.exit} with no report`);
+      }
+    } catch (err) {
+      stopForwarding();
+      const msg = err instanceof Error ? err.message : String(err);
+      writeFileSync(join(dir, `worker-${attempt}-g${gen}.log`), workerOut + `\nSPAWN ERROR: ${msg}\n`, "utf8");
+      if (ctx.signal?.aborted) {
+        preserveIncompleteWork(ctx, sliceId, attempt, "abort");
+        storeApi.abortSlice(projectDir, runId, sliceId);
+        log(ctx, summarize5(claimed, `aborted during worker run (no retry consumed)`));
+        return;
+      }
+      if (capBelowBaseline && fresh().status !== "aborted") {
+        failUnreachableCap();
+        return;
+      }
+      if (capHit && fresh().status !== "aborted") {
+        const reason = `context-cap g${gen}`;
+        preserveIncompleteWork(ctx, sliceId, attempt, reason);
+        lastBrief = recordGenerationHandoff(ctx, sliceId, attempt, gen, "context-cap", genTokens(), reason);
+        continue;
+      }
+      if (fresh().status === "aborted") {
+        preserveIncompleteWork(ctx, sliceId, attempt, "operator kill");
+        log(ctx, summarize5(claimed, `killed by operator — worker output discarded (no retry consumed)`));
+        return;
+      }
+      log(ctx, summarize5(claimed, `worker failure: ${msg}`));
+      failAttempt(ctx, sliceId, claimed, join("slices", sliceId, `worker-${attempt}-g${gen}.log`), {
+        cause: msg.includes("timed out") ? "worker_timeout" : "worker_failed",
+        exit: workerMeta?.exit ?? null,
+        timedOut: workerMeta?.timedOut,
+        durationMs: workerMeta?.durationMs,
+      });
+      return;
     }
-    const t = ctx.trackers.get(sliceId);
-    log(ctx, `  worker exited in ${Math.round(res.durationMs / 1000)}s${t ? ` (${t.turns} turns, ${t.tools} tools)` : ""}`);
-    if (res.timedOut) {
-      preserveIncompleteWork(ctx, sliceId, attempt, "timeout");
-      throw new Error(`worker timed out`);
-    }
-    if (res.exit !== 0) {
-      // Non-zero exit: still try to extract a report (worker may have
-      // printed one before failing); else worker failure.
-      const maybe = extractReportFromOutput(res.stdout);
-      if (maybe === undefined) throw new Error(`worker exited ${res.exit} with no report`);
-    }
-  } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err);
-    writeFileSync(join(dir, `worker-${attempt}.log`), workerOut + `\nSPAWN ERROR: ${msg}\n`, "utf8");
     if (ctx.signal?.aborted) {
       preserveIncompleteWork(ctx, sliceId, attempt, "abort");
       storeApi.abortSlice(projectDir, runId, sliceId);
-      log(ctx, summarize5(claimed, `aborted during worker run (no retry consumed)`));
       return;
     }
-    log(ctx, summarize5(claimed, `worker failure: ${msg}`));
-    failAttempt(ctx, sliceId, claimed, join("slices", sliceId, `worker-${attempt}.log`), {
-      cause: msg.includes("timed out") ? "worker_timeout" : "worker_failed",
-      exit: workerMeta?.exit ?? null,
-      timedOut: workerMeta?.timedOut,
-      durationMs: workerMeta?.durationMs,
-    });
-    return;
-  }
-  if (ctx.signal?.aborted) {
-    preserveIncompleteWork(ctx, sliceId, attempt, "abort");
-    storeApi.abortSlice(projectDir, runId, sliceId);
-    return;
-  }
 
-  // Operator kill that landed mid-worker: the branch work is preserved but
-  // the output is dropped — a killed slice must never verify or merge.
-  if (fresh().status === "aborted") {
-    preserveIncompleteWork(ctx, sliceId, attempt, "operator kill");
-    log(ctx, summarize5(claimed, `killed by operator — worker output discarded (no retry consumed)`));
-    return;
-  }
+    // Operator kill that landed mid-worker: the branch work is preserved but
+    // the output is dropped — a killed slice must never verify or merge.
+    if (fresh().status === "aborted") {
+      preserveIncompleteWork(ctx, sliceId, attempt, "operator kill");
+      log(ctx, summarize5(claimed, `killed by operator — worker output discarded (no retry consumed)`));
+      return;
+    }
 
-  // 4. Extract + validate strict report (raw stdout — the decorated log may
-  // contain the same delimiters in worker prose).
-  const extracted = extractReportFromOutput(workerStdout);
-  let report: CompletionReport;
-  try {
-    if (extracted === undefined) throw new Error("no <<<OMPO_REPORT>>> block found in worker output");
-    report = validateCompletionReport(extracted, sliceId);
-    if (!report.done) throw new Error(`worker reported done=false: ${report.verificationNotes.slice(0, 300)}`);
-  } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err);
-    writeFileSync(join(dir, `report-${attempt}.invalid.json`), JSON.stringify({ error: msg, raw: extracted === undefined ? null : extracted }, null, 2), "utf8");
-    log(ctx, summarize5(claimed, `invalid report: ${msg}`));
-    failAttempt(ctx, sliceId, claimed, join("slices", sliceId, `report-${attempt}.invalid.json`));
-    return;
+    // 4. Extract + validate strict report (raw stdout — the decorated log may
+    // contain the same delimiters in worker prose).
+    const extracted = extractReportFromOutput(workerStdout);
+    try {
+      if (extracted === undefined) throw new Error("no <<<OMPO_REPORT>>> block found in worker output");
+      const candidate = validateCompletionReport(extracted, sliceId);
+      if (!candidate.done && !ctx.noHandoff && candidate.verificationNotes.trimStart().startsWith("HANDOFF:")) {
+        // Agent-declared handoff (also the tmux path — no usage stream
+        // there): same preserve + respawn as a cap abort, no retry consumed.
+        const reason = `agent-declared handoff g${gen}`;
+        preserveIncompleteWork(ctx, sliceId, attempt, reason);
+        lastBrief = recordGenerationHandoff(ctx, sliceId, attempt, gen, "agent-declared", genTokens(), reason, candidate.verificationNotes);
+        continue;
+      }
+      if (!candidate.done) throw new Error(`worker reported done=false: ${candidate.verificationNotes.slice(0, 300)}`);
+      report = candidate;
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      writeFileSync(join(dir, `report-${attempt}.invalid.json`), JSON.stringify({ error: msg, raw: extracted === undefined ? null : extracted }, null, 2) + "\n", "utf8");
+      log(ctx, summarize5(claimed, `invalid report: ${msg}`));
+      failAttempt(ctx, sliceId, claimed, join("slices", sliceId, `report-${attempt}.invalid.json`));
+      return;
+    }
   }
+  if (report === undefined) throw new Error("unreachable: generation loop exited without a report");
 
   // 5. Persist report → verifying.
   writeFileSync(join(dir, "report.json"), JSON.stringify(report, null, 2) + "\n", "utf8");
@@ -1119,6 +1314,8 @@ export async function runRoadmapLoop(opts: LoopOptions): Promise<LoopResult> {
     noPlaceholders: opts.noPlaceholders ?? false,
     noUnblock: opts.noUnblock ?? false,
     maxUnblocks: opts.maxUnblocksOverride ?? cfg.maxUnblocks ?? 2,
+    noHandoff: opts.noHandoff ?? false,
+    contextCapTokens: (opts.noHandoff ?? false) ? 0 : (opts.contextCapOverride ?? cfg.contextCapTokens ?? DEFAULT_CONTEXT_CAP_TOKENS),
     debugTimeoutMs: opts.debugTimeoutMs
       ?? (cfg.debugTimeoutSec ? cfg.debugTimeoutSec * 1000 : undefined),
     maxRetriesOverride: opts.maxRetriesOverride,

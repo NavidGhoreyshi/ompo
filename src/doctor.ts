@@ -475,6 +475,7 @@ export function explainConfig(
       lines.push(`  services: (none)`);
     }
     lines.push(`  maxUnblocks: ${fmtValue(cfg.maxUnblocks, "(default 2)")}`);
+    lines.push(`  contextCapTokens: ${fmtValue(cfg.contextCapTokens, "(default 120000)")}`);
 
     const text = tryRead(full, roadmapPath(projectDir));
     if (text === null) {

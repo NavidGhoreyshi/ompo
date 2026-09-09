@@ -15,6 +15,7 @@ import {
   runOmpWorker,
   runWithModelFallbacks,
   summarizeToolArgs,
+  usageForEvent,
   type WorkerRunner,
 } from "../src/worker.ts";
 
@@ -360,5 +361,33 @@ describe("model fallback chain", () => {
     );
     expect(seen).toEqual(["m1", "m2", undefined]);
     expect(out.fellBack).toBe(true);
+  });
+});
+
+describe("usageForEvent", () => {
+  const usage = { input: 18334, output: 23, cacheRead: 241, cacheWrite: 0, totalTokens: 18598 };
+  test("reads cumulative totals off assistant message_end", () => {
+    expect(usageForEvent({ type: "message_end", message: { role: "assistant", usage } })).toEqual({
+      input: 18334,
+      output: 23,
+      total: 18598,
+    });
+  });
+  test("reads the same envelope off turn_end, falls back to input+output", () => {
+    const { totalTokens: _drop, ...noTotal } = usage;
+    expect(usageForEvent({ type: "turn_end", message: { role: "assistant", usage: noTotal } })).toEqual({
+      input: 18334,
+      output: 23,
+      total: 18357,
+    });
+  });
+  test("ignores user messages, other event types, and malformed envelopes", () => {
+    expect(usageForEvent({ type: "message_end", message: { role: "user", usage } })).toBeUndefined();
+    expect(usageForEvent({ type: "message_start", message: { role: "assistant", usage } })).toBeUndefined();
+    expect(usageForEvent({ type: "turn_start" })).toBeUndefined();
+    expect(usageForEvent({ type: "message_end", message: { role: "assistant" } })).toBeUndefined();
+    expect(usageForEvent({ type: "message_end", message: { role: "assistant", usage: { input: "x" } } })).toBeUndefined();
+    expect(usageForEvent(null)).toBeUndefined();
+    expect(usageForEvent("turn_end")).toBeUndefined();
   });
 });

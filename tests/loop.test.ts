@@ -554,7 +554,7 @@ describe("loop review gate", () => {
     const sliceFiles = sliceDir(dir, "r", "a");
     const notes = readFileSync(join(sliceFiles, "review-notes.md"), "utf8");
     expect(notes).toContain("src/a.ts misses the spec body");
-    const prompt2 = readFileSync(join(sliceFiles, "prompt-2.md"), "utf8");
+    const prompt2 = readFileSync(join(sliceFiles, "prompt-2-g0.md"), "utf8");
     expect(prompt2).toContain("PRIOR REVIEW REJECTION");
     expect(prompt2).toContain("src/a.ts misses the spec body");
     // Verdict artifact persisted.

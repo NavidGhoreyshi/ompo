@@ -96,6 +96,8 @@ RUN FLAGS
   --no-placeholders    disable dev-only placeholders for missing env creds (default: on)
   --no-unblock       disable end-of-run unblock sessions (default: up to maxUnblocks rounds)
   --max-unblocks N   end-of-run unblock sessions before giving up (0..5, default 2)
+  --no-handoff       disable context-cap handoff to a fresh session (default: handoff at cap)
+  --context-cap N    per-session tokens before handoff to a fresh session (0 disables, default 120000)
   --reverify         re-run done slices' gates on current HEAD at loop start (demotes failures)
   --check-env        probe every gate once for env blocks before spawning (fail fast, burn nothing)
   --format FMT       headless output: pretty|json|tap|github (progress bar on stderr, events on stdout,
@@ -161,6 +163,8 @@ interface Args {
   noPlaceholders?: boolean;
   noUnblock?: boolean;
   maxUnblocks?: number;
+  noHandoff?: boolean;
+  contextCap?: number;
   reverify?: boolean;
   template?: boolean;
   replan?: boolean;
@@ -235,6 +239,8 @@ function parseArgs(argv: string[]): Args {
     else if (t === "--no-placeholders") a.noPlaceholders = true;
     else if (t === "--no-unblock") a.noUnblock = true;
     else if (t === "--max-unblocks" && argv[i + 1]) a.maxUnblocks = parseNonNegativeInt(argv[++i]!, "--max-unblocks", 5);
+    else if (t === "--no-handoff") a.noHandoff = true;
+    else if (t === "--context-cap" && argv[i + 1]) a.contextCap = parseNonNegativeInt(argv[++i]!, "--context-cap", 1_000_000);
     else if (t === "--reverify") a.reverify = true;
     else if (t === "--template") a.template = true;
     else if (t === "--replan") a.replan = true;
@@ -482,6 +488,8 @@ async function cmdRun(a: Args): Promise<number> {
     noPlaceholders: a.noPlaceholders,
     noUnblock: a.noUnblock,
     maxUnblocksOverride: a.maxUnblocks,
+    noHandoff: a.noHandoff,
+    contextCapOverride: a.contextCap,
     reverify: a.reverify,
     seed: a.seed,
     faults,
@@ -1066,6 +1074,8 @@ async function cmdUnified(a: Args): Promise<number> {
       noPlaceholders: a.noPlaceholders,
       noUnblock: a.noUnblock,
       maxUnblocks: a.maxUnblocks,
+      noHandoff: a.noHandoff,
+      contextCap: a.contextCap,
       reverify: a.reverify,
       tmux: a.tmux,
     });

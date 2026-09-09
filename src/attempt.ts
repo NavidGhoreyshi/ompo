@@ -14,7 +14,7 @@ import type { FaultSpec } from "./faults.ts";
 import type { Mutex } from "./mutex.ts";
 import { sliceDir, storeApi } from "./store.ts";
 import type { CompletionReport, Slice } from "./types.ts";
-import type { WorkerRunner } from "./worker.ts";
+import type { TokenUsage, WorkerRunner } from "./worker.ts";
 import type { WorktreeOps } from "./worktree.ts";
 
 export interface AttemptCtx {
@@ -33,6 +33,13 @@ export interface AttemptCtx {
   noPlaceholders: boolean;
   noUnblock: boolean;
   maxUnblocks: number;
+  /** Context-cap handoff disabled (`--no-handoff`): HANDOFF reports fail normally, no cap aborts. */
+  noHandoff: boolean;
+  /**
+   * Per-session token cap before handoff to a fresh generation
+   * (CLI > roadmap.yml contextCapTokens > default 120000; 0 disables).
+   */
+  contextCapTokens: number;
   maxRetriesOverride?: number;
   timeoutMsOverride?: number;
   signal?: AbortSignal;
@@ -51,6 +58,9 @@ export interface AttemptCtx {
   trackers: Map<string, ProgressTracker>;
 }
 
+/** Default per-session tokens before a context-cap handoff (overridden by CLI/yml). */
+export const DEFAULT_CONTEXT_CAP_TOKENS = 120_000;
+
 export function log(opts: { onEvent?: (msg: string) => void }, msg: string): void {
   (opts.onEvent ?? ((m) => console.log(m)))(msg);
 }
@@ -62,6 +72,8 @@ export interface ProgressTracker {
   lines: number;
   lastLine: string;
   lastAt: number;
+  /** Latest cumulative per-session token usage (headless usage envelopes only). */
+  tokens?: TokenUsage;
 }
 
 export function newProgressTracker(): ProgressTracker {
@@ -87,6 +99,22 @@ export function progressFn(ctx: AttemptCtx, sliceId: string, tag?: string): (lin
     }
     noteProgress(t, line);
     log(ctx, `${prefix} ${line}`);
+  };
+}
+
+/**
+ * Build an onUsage sink that records the latest cumulative token usage on
+ * the slice tracker. No log line per event — usage is advisory until the
+ * context-cap check reads it (context-cap handoff loop).
+ */
+export function usageFn(ctx: AttemptCtx, sliceId: string): (u: TokenUsage) => void {
+  return (u) => {
+    let t = ctx.trackers.get(sliceId);
+    if (!t) {
+      t = newProgressTracker();
+      ctx.trackers.set(sliceId, t);
+    }
+    t.tokens = u;
   };
 }
 

@@ -395,6 +395,21 @@ export const storeApi = {
     }, reason);
   },
   /**
+   * Context-cap handoff: a generation ended (cap abort or HANDOFF: report)
+   * and the next generation respawns the same attempt. Status untouched
+   * (still running) — no retry consumed, no failure recorded.
+   */
+  recordHandoff(
+    projectDir: string,
+    runId: string,
+    sliceId: string,
+    detail: string,
+    extra?: EventExtra,
+  ): RunCursor {
+    return mutateSlice(projectDir, runId, sliceId, "slice_handoff", () => {}, detail, extra);
+  },
+
+  /**
    * Done-trust stamp: records which base HEAD a done slice was confirmed on
    * (merge journal, ancestry recheck, or --reverify gate pass). Status keeps
    * its value — the event log shows the audit trail, replay ignores it.

@@ -29,6 +29,7 @@ const TYPES: Record<RunEvent["type"], { color: number; label: string }> = {
   verify_passed: { color: 32, label: "verify ok" }, // green
   verify_failed: { color: 31, label: "verify FAIL" }, // red
   slice_retried: { color: 33, label: "retried" }, // yellow
+  slice_handoff: { color: 36, label: "handoff" }, // cyan
   slice_done: { color: 32, label: "done" }, // green
   slice_reverified: { color: 36, label: "reverified" }, // cyan
   slice_failed_terminal: { color: 31, label: "TERMINAL" }, // red
