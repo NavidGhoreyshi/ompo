@@ -40,7 +40,7 @@ export default function Inspector({
         <div className="omp-inspector-head">
           <h2>Inspector</h2>
         </div>
-        <p className="omp-hint">Select a slice in Roadmap or Overview to inspect it. Control actions appear here, in context.</p>
+        <p className="omp-hint">Select a slice in Overview, Roadmap, or Agents to inspect it. Control actions appear here, in context.</p>
       </div>
     );
   }
