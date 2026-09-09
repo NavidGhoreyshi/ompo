@@ -1,4 +1,5 @@
-import { LuBot, LuChartColumn, LuLayers, LuLayoutDashboard, LuRoute, type IconType } from "react-icons/lu";
+import { LuBot, LuChartColumn, LuLayers, LuLayoutDashboard, LuRoute } from "react-icons/lu";
+import type { IconType } from "react-icons";
 
 export type View = "overview" | "runs" | "roadmap" | "agents" | "stats";
 

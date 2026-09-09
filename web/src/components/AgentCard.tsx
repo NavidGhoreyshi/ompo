@@ -1,6 +1,7 @@
 import type { AgentRow } from "../api.ts";
 import { formatDurationMs, formatTokens } from "../lib/format.ts";
 import { LockSymbol } from "./icons.tsx";
+import StatusBadge from "./StatusBadge.tsx";
 
 /**
  * One live-worker row. Pure projection over the server-derived AgentRow

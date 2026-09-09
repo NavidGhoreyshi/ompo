@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
-import { LuCheck, LuMinus, LuPause, LuPlay, LuPlus, LuRotateCcw, LuSkipForward, LuSquare, type IconType } from "react-icons/lu";
+import { LuCheck, LuMinus, LuPause, LuPlay, LuPlus, LuRotateCcw, LuSkipForward, LuSquare } from "react-icons/lu";
+import type { IconType } from "react-icons";
 import {
   api,
   type ControlIntent,
@@ -11,6 +12,7 @@ import { Badge } from "./ui/badge.tsx";
 import { Button } from "./ui/button.tsx";
 import { StatusSymbol } from "./icons.tsx";
 import { Input } from "./ui/input.tsx";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "./ui/select.tsx";
 
 /**
  * Contextual control: prefilled from the current selection (inspector or

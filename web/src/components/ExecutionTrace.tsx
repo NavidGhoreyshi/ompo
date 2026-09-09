@@ -1,5 +1,6 @@
 import type { SliceDetail, SliceSummary } from "../api.ts";
 import { TraceSymbol } from "./icons.tsx";
+import { formatDurationMs, formatTokens } from "../lib/format.ts";
 
 /**
  * Compact execution lifecycle for the active slice — observed state only,

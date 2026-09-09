@@ -1,5 +1,6 @@
 import type { SliceDetail } from "../api.ts";
 import { StatusSymbol } from "./icons.tsx";
+import StatusBadge from "./StatusBadge.tsx";
 
 /**
  * Verify tab: declared gates vs executed verdict steps. Each gate is a

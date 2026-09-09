@@ -8,8 +8,8 @@ import {
   LuMessageSquareText,
   LuScrollText,
   LuShieldCheck,
-  type IconType,
 } from "react-icons/lu";
+import type { IconType } from "react-icons";
 import type { RunEvent, SliceDetail, SliceSummary } from "../api.ts";
 import ControlPanel from "./ControlPanel.tsx";
 import DiffView from "./DiffView.tsx";
