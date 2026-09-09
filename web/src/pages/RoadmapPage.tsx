@@ -95,7 +95,7 @@ export default function RoadmapPage({
   }, [detail, query, filter]);
 
   return (
-    <>
+    <div className="omp-page" aria-label="Roadmap workspace">
       <PlannerPreview
         preview={preview}
         loading={previewLoading}
@@ -177,6 +177,6 @@ export default function RoadmapPage({
       )}
       <p className="omp-hint">Select a row to inspect it — control actions live in the inspector, in context.</p>
       </section>
-    </>
+    </div>
   );
 }

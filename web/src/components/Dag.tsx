@@ -1,4 +1,4 @@
-import { useMemo } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import type { SliceSummary } from "../api.ts";
 import {
   DAG_NODE_H,
@@ -75,6 +75,21 @@ export default function Dag({
   onSelect: (sliceId: string) => void;
 }) {
   const layout = useMemo(() => layoutDag(slices), [slices]);
+  const wrapRef = useRef<HTMLDivElement>(null);
+  const [wrapW, setWrapW] = useState(0);
+  const [fit, setFit] = useState(true);
+
+  useEffect(() => {
+    const el = wrapRef.current;
+    if (!el) return;
+    const ro = new ResizeObserver((entries) => {
+      const w = entries[0]?.contentRect.width ?? 0;
+      setWrapW(w);
+    });
+    ro.observe(el);
+    setWrapW(el.clientWidth);
+    return () => ro.disconnect();
+  }, []);
 
   if (slices.length === 0) {
     return (
@@ -84,6 +99,10 @@ export default function Dag({
       </section>
     );
   }
+
+  const needsFit = wrapW > 0 && layout.width > wrapW;
+  const fitted = fit && needsFit;
+  const fitPct = wrapW > 0 && layout.width > 0 ? Math.round((Math.min(wrapW, layout.width) / layout.width) * 100) : 100;
 
   return (
     <section className="omp-panel" aria-label="Dependency graph">
@@ -101,10 +120,19 @@ export default function Dag({
           makes no progress here.
         </p>
       )}
-      <div className="omp-dag-scroll">
+      <div className="omp-dag-bar" role="group" aria-label="Graph zoom">
+        <span className="omp-hint">{fitted ? `Fitted to width (${fitPct}%) — full detail on 100%` : "Full size — fit removes horizontal scrolling"}</span>
+        <button type="button" className="omp-btn" aria-pressed={fitted ? "true" : "false"} onClick={() => setFit(true)} disabled={fitted}>
+          Fit width
+        </button>
+        <button type="button" className="omp-btn" aria-pressed={!fitted ? "true" : "false"} onClick={() => setFit(false)} disabled={!fitted}>
+          100%
+        </button>
+      </div>
+      <div className="omp-dag-scroll" ref={wrapRef} data-fitted={fitted ? "true" : "false"}>
         <svg
-          width={layout.width}
-          height={layout.height}
+          width={fitted ? wrapW : layout.width}
+          height={fitted && wrapW > 0 ? (layout.height * wrapW) / layout.width : layout.height}
           viewBox={`0 0 ${layout.width} ${layout.height}`}
           role="group"
           aria-label="Roadmap dependency graph"

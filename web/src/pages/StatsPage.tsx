@@ -230,59 +230,59 @@ export default function StatsPage({ stats, runId }: { stats: StatsInput; runId?:
   const handoffsText = typeof handoffs === "number" ? String(handoffs) : "—";
 
   return (
-    <>
+    <div className="omp-page" aria-label="Stats workspace">
       <section className="omp-panel" aria-label="Stats">
         <h2>Stats</h2>
-        <div className="omp-cards">
-          <div className="omp-stat-card" data-tone="green">
-            <div className="omp-stat-num">{passRate === null ? "—" : `${Math.round(passRate * 100)}%`}</div>
-            <div className="omp-stat-label">pass rate</div>
+        <div className="omp-metrics">
+          <div className="omp-metric" data-tone="green">
+            <div className="omp-metric-num">{passRate === null ? "—" : `${Math.round(passRate * 100)}%`}</div>
+            <div className="omp-metric-label">pass rate</div>
           </div>
-          <div className="omp-stat-card">
-            <div className="omp-stat-num">{attemptsTotal === null ? "—" : String(attemptsTotal)}</div>
-            <div className="omp-stat-label">attempts (total)</div>
+          <div className="omp-metric">
+            <div className="omp-metric-num">{attemptsTotal === null ? "—" : String(attemptsTotal)}</div>
+            <div className="omp-metric-label">attempts (total)</div>
           </div>
-          <div className="omp-stat-card">
-            <div className="omp-stat-num">{meanAttempts}</div>
-            <div className="omp-stat-label">avg attempts / slice</div>
+          <div className="omp-metric">
+            <div className="omp-metric-num">{meanAttempts}</div>
+            <div className="omp-metric-label">avg attempts / slice</div>
           </div>
-          <div className="omp-stat-card" data-tone="cyan">
-            <div className="omp-stat-num">{fmtMean(s["meanTurns"])}</div>
-            <div className="omp-stat-label">avg turns</div>
+          <div className="omp-metric" data-tone="cyan">
+            <div className="omp-metric-num">{fmtMean(s["meanTurns"])}</div>
+            <div className="omp-metric-label">avg turns</div>
           </div>
-          <div className="omp-stat-card" data-tone="cyan">
-            <div className="omp-stat-num">{fmtMean(s["meanTools"])}</div>
-            <div className="omp-stat-label">avg tools</div>
+          <div className="omp-metric" data-tone="cyan">
+            <div className="omp-metric-num">{fmtMean(s["meanTools"])}</div>
+            <div className="omp-metric-label">avg tools</div>
           </div>
-          <div className="omp-stat-card">
-            <div className="omp-stat-num">{fmtDuration(s["meanDurationMs"])}</div>
-            <div className="omp-stat-label">avg duration</div>
+          <div className="omp-metric">
+            <div className="omp-metric-num">{fmtDuration(s["meanDurationMs"])}</div>
+            <div className="omp-metric-label">avg duration</div>
           </div>
-          <div className="omp-stat-card" data-tone="cyan">
-            <div className="omp-stat-num">{fmtTokens(s["meanTokens"])}</div>
-            <div className="omp-stat-label">avg tokens</div>
+          <div className="omp-metric" data-tone="cyan">
+            <div className="omp-metric-num">{fmtTokens(s["meanTokens"])}</div>
+            <div className="omp-metric-label">avg tokens</div>
           </div>
-          <div className="omp-stat-card">
-            <div className="omp-stat-num">{fmtTokens(s["tokensTotal"])}</div>
-            <div className="omp-stat-label">tokens (total)</div>
+          <div className="omp-metric">
+            <div className="omp-metric-num">{fmtTokens(s["tokensTotal"])}</div>
+            <div className="omp-metric-label">tokens (total)</div>
           </div>
-          <div className="omp-stat-card">
-            <div className="omp-stat-num">{handoffsText}</div>
-            <div className="omp-stat-label">handoffs</div>
+          <div className="omp-metric">
+            <div className="omp-metric-num">{handoffsText}</div>
+            <div className="omp-metric-label">handoffs</div>
           </div>
-          <div className="omp-stat-card" data-tone="amber">
-            <div className="omp-stat-num">{fallbacks.length === 0 ? "—" : String(fallbackTotal)}</div>
-            <div className="omp-stat-label">model fallbacks</div>
+          <div className="omp-metric" data-tone="amber">
+            <div className="omp-metric-num">{fallbacks.length === 0 ? "—" : String(fallbackTotal)}</div>
+            <div className="omp-metric-label">model fallbacks</div>
           </div>
         </div>
         {Object.keys(totals).length > 0 && (
           <>
             <h3>Totals</h3>
-            <div className="omp-cards">
+            <div className="omp-metrics">
               {Object.entries(totals).map(([k, v]) => (
-                <div className="omp-stat-card" key={k}>
-                  <div className="omp-stat-num">{fmtCount(v)}</div>
-                  <div className="omp-stat-label">{k}</div>
+                <div className="omp-metric" key={k}>
+                  <div className="omp-metric-num">{fmtCount(v)}</div>
+                  <div className="omp-metric-label">{k}</div>
                 </div>
               ))}
             </div>
@@ -290,7 +290,7 @@ export default function StatsPage({ stats, runId }: { stats: StatsInput; runId?:
         )}
       </section>
 
-      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(280px, 1fr))", gap: 12 }}>
+      <div className="omp-stats-grid">
         <section className="omp-panel" aria-label="By effort">
           <h2>By effort</h2>
           {byEffort.length === 0 ? (
@@ -385,6 +385,6 @@ export default function StatsPage({ stats, runId }: { stats: StatsInput; runId?:
         <summary style={{ cursor: "pointer", fontSize: 13, fontWeight: 600 }}>Raw stats JSON</summary>
         <pre className="omp-code">{JSON.stringify(stats, null, 2)}</pre>
       </details>
-    </>
+    </div>
   );
 }

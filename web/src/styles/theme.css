@@ -109,6 +109,113 @@ body {
   overflow: hidden;
   padding: 12px 16px;
 }
+/* Secondary pages (roadmap/stats/runs/agents) scroll as a whole; the
+ * overview workspace keeps its own internal board scroll. */
+.omp-page {
+  flex: 1;
+  min-height: 0;
+  min-width: 0;
+  overflow-y: auto;
+  overflow-x: hidden;
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  padding-bottom: 12px;
+  scrollbar-gutter: stable;
+}
+
+.omp-page > .omp-panel,
+.omp-page > details.omp-panel {
+  flex: none;
+  min-width: 0;
+  max-width: 100%;
+}
+
+/* Stats metrics: responsive grid replacing the removed KPI cards. */
+.omp-metrics {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(140px, 1fr));
+  gap: 10px;
+  min-width: 0;
+}
+
+.omp-metric {
+  background: var(--omp-panel-2);
+  border: 1px solid var(--omp-hairline);
+  border-radius: var(--omp-radius-sm);
+  padding: 10px 12px;
+  min-width: 0;
+  overflow: hidden;
+}
+
+.omp-metric-num {
+  font-family: var(--omp-display);
+  font-size: 20px;
+  font-weight: 700;
+  line-height: 1.2;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+
+.omp-metric[data-tone="green"] .omp-metric-num {
+  color: var(--omp-green);
+}
+
+.omp-metric[data-tone="cyan"] .omp-metric-num {
+  color: var(--omp-cyan);
+}
+
+.omp-metric[data-tone="amber"] .omp-metric-num {
+  color: var(--omp-amber);
+}
+
+.omp-metric-label {
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--omp-muted);
+  margin-top: 2px;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}
+
+/* Stats lower grid: by-effort / gates / fallbacks. Wraps to one column
+ * on narrow widths instead of forcing page-level horizontal scroll. */
+.omp-stats-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(320px, 100%), 1fr));
+  gap: 12px;
+  min-width: 0;
+  max-width: 100%;
+}
+
+.omp-stats-grid > .omp-panel {
+  min-width: 0;
+  max-width: 100%;
+}
+ .omp-page .omp-panel + .omp-panel {
+   margin-top: 0;
+ }
+
+ .omp-page > .omp-panel,
+ .omp-page > section,
+ .omp-page > details.omp-panel {
+   animation: omp-fade var(--omp-dur-state) var(--omp-ease-out) both;
+ }
+
+ .omp-warn,
+ .omp-error {
+   min-width: 0;
+   overflow-wrap: anywhere;
+   word-break: break-word;
+ }
+
+ .omp-warn code,
+ .omp-error code {
+   overflow-wrap: anywhere;
+   word-break: break-word;
+ }
 
 /* ---------- header: flat app bar ---------- */
 
@@ -1271,11 +1378,20 @@ input:focus-visible,
   font-size: 12px;
 }
 
-.omp-ellipsis {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
+ .omp-ellipsis {
+   overflow: hidden;
+   text-overflow: ellipsis;
+   white-space: nowrap;
+   min-width: 0;
+   max-width: 100%;
+ }
+
+ /* Ellipsis inside tables must be capped — nowrap content otherwise forces
+  * the table wider than its scrolling wrapper and spills past the panel. */
+ .omp-table .omp-ellipsis {
+   max-width: min(38vw, 420px);
+   display: block;
+ }
 
 .omp-eyebrow {
   font-size: 11px;
@@ -1382,28 +1498,33 @@ input:focus-visible,
   white-space: nowrap;
 }
 
-.omp-table td {
-  padding: 6px 10px;
-  border-bottom: 1px solid var(--omp-hairline);
-  vertical-align: top;
-}
+ .omp-table td {
+   padding: 6px 10px;
+   border-bottom: 1px solid var(--omp-hairline);
+   vertical-align: top;
+   min-width: 0;
+   overflow-wrap: anywhere;
+   word-break: break-word;
+ }
 
-.omp-table tbody tr:last-child td {
-  border-bottom: none;
-}
+ .omp-table tbody tr:last-child td {
+   border-bottom: none;
+ }
 
-.omp-table tbody tr:hover {
-  background: var(--omp-row-hover);
-}
+ .omp-table tbody tr:hover {
+   background: var(--omp-row-hover);
+ }
 
-.omp-table tbody tr[data-selected="true"] {
-  background: var(--omp-row-active);
-}
+ .omp-table tbody tr[data-selected="true"] {
+   background: var(--omp-row-active);
+ }
 
-.omp-table code {
-  font-family: var(--omp-mono);
-  font-size: 12px;
-}
+ .omp-table code {
+   font-family: var(--omp-mono);
+   font-size: 12px;
+   overflow-wrap: anywhere;
+   word-break: break-word;
+ }
 
 /* ---------- code ---------- */
 
@@ -1544,6 +1665,33 @@ input:focus-visible,
   display: block;
   max-width: none;
 }
+ .omp-dag-bar {
+   display: flex;
+   align-items: center;
+   gap: 8px;
+   flex-wrap: wrap;
+   margin: 8px 0;
+   min-width: 0;
+ }
+
+ .omp-dag-bar .omp-hint {
+   flex: 1 1 200px;
+   min-width: 0;
+ }
+
+ .omp-dag-bar .omp-btn {
+   flex: none;
+ }
+
+ .omp-dag-scroll[data-fitted="true"] {
+   overflow-x: hidden;
+ }
+
+ .omp-dag-scroll[data-fitted="true"] svg {
+   width: 100%;
+   height: auto;
+   max-width: 100%;
+ }
 
 .omp-dag-node {
   cursor: pointer;
