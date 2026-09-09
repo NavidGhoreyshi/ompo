@@ -466,6 +466,15 @@ export function explainConfig(
     } else {
       lines.push(`  verifyDefaults: (none)`);
     }
+    if ((cfg.serviceUp?.length ?? 0) > 0 || (cfg.serviceReady?.length ?? 0) > 0 || Object.keys(cfg.serviceEnv ?? {}).length > 0) {
+      for (const d of cfg.serviceUp ?? []) lines.push(`  serviceUp: ${d}`);
+      for (const d of cfg.serviceReady ?? []) lines.push(`  serviceReady: ${d}`);
+      for (const [k, v] of Object.entries(cfg.serviceEnv ?? {})) lines.push(`  serviceEnv: ${k}=${v}`);
+      lines.push(`  serviceTimeoutSec: ${fmtValue(cfg.serviceTimeoutSec, "(default 120)")}`);
+    } else {
+      lines.push(`  services: (none)`);
+    }
+    lines.push(`  maxUnblocks: ${fmtValue(cfg.maxUnblocks, "(default 2)")}`);
 
     const text = tryRead(full, roadmapPath(projectDir));
     if (text === null) {

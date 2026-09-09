@@ -79,6 +79,8 @@ export function buildWorkerSpec(
     `done=false is ONLY for genuinely broken code (red tests you cannot fix, impossible scope).\n` +
     `Rules: sliceId must equal "${slice.id}". done=true only when the slice body is fully ` +
     `implemented AND you ran verification. filesChanged lists repo-relative paths you touched. ` +
+    `Shared services: use the provided env (e.g. DATABASE_URL) as-is — never start your own ` +
+    `disposable database on another port for verification; the gates run against the shared service. ` +
     `If you cannot complete, still print the block with done=false and explain in verificationNotes. ` +
     `Missing live values are never "cannot complete" — defer them.\n`;
 

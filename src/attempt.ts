@@ -31,6 +31,8 @@ export interface AttemptCtx {
   noDebug: boolean;
   debugTimeoutMs?: number;
   noPlaceholders: boolean;
+  noUnblock: boolean;
+  maxUnblocks: number;
   maxRetriesOverride?: number;
   timeoutMsOverride?: number;
   signal?: AbortSignal;

@@ -90,6 +90,8 @@ export interface UnifiedOptions {
   reviewModel?: string;
   noDebug?: boolean;
   noPlaceholders?: boolean;
+  noUnblock?: boolean;
+  maxUnblocks?: number;
   reverify?: boolean;
   tmux?: boolean;
   /** Test seams (default: the real planner + loop). */
@@ -253,6 +255,8 @@ export async function driveUnifiedFlow(
       reviewModel: o.reviewModel,
       noDebug: o.noDebug,
       noPlaceholders: o.noPlaceholders,
+      noUnblock: o.noUnblock,
+      maxUnblocksOverride: o.maxUnblocks,
       reverify: o.reverify,
       signal,
       onEvent: log,

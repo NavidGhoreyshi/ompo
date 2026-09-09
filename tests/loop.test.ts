@@ -806,6 +806,10 @@ describe("loop faults + review-fix lane", () => {
       runner: okRunner,
       noDebug: true,
       noReview: true,
+      // Fault injection fails the gate without running it, so the raw
+      // recheck command stays green — opt out of the unblock lane here
+      // (covered in tests/unblock.test.ts) to assert the terminal path.
+      noUnblock: true,
       faults: parseFaultSpec("fail-verify=a"),
       onEvent: () => {},
     });

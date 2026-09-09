@@ -123,6 +123,17 @@ budget is touched:
    This is what saves a dead Postgres or a squatted port from terminal-failing
    correct code.
 
+   Declare shared services and the loop heals itself instead of parking.
+   `.omp/roadmap.yml` (all optional):
+   `serviceUp` (idempotent bring-up, e.g. `docker compose up -d db`),
+   `serviceReady` (readiness probes, e.g. `pg_isready -h localhost -p 5432`),
+   `serviceEnv` (extra env for worker + gates, e.g. `DATABASE_URL`),
+   `serviceTimeoutSec` (ready-poll budget, default 120). On a healable block
+   (DB/port/host — never disk-full or creds) the loop runs bring-up, polls
+   readiness, and re-runs the gate once in the same attempt — no retry
+   consumed. Workers use the provided env as-is and never start a disposable
+   database on another port. Heal failure falls through to the park path above.
+
    Missing **named credentials/URLs** (e.g. `SEED_ADMIN_PASSWORD must be set`)
    take a different path: ompo injects a deterministic dev-only placeholder,
    notes it in `.omp/roadmap/runs/<runId>/placeholders.md`, and re-runs the
@@ -133,6 +144,22 @@ budget is touched:
    placeholders: 1 dev-only value(s) — SEED_ADMIN_PASSWORD (see .omp/roadmap/runs/<runId>/placeholders.md)
    only deployment slice(s) left (deploy) — swap real values, exercise the UI/UX, then deploy
    ```
+
+## End-of-run unblock: the loop unblocks itself before giving up
+
+When the loop is about to stop with pre-deployment slices still blocked
+(`blocked-env`, or terminal `failed`), it spends one bounded fresh agent
+sessions doing the operator's `resume` job — diagnose the block at host +
+worktree level, fix it persistently, and re-run the blocking commands green
+in a fresh shell itself. The loop then re-runs each recorded failing command
+in its worktree and only re-queues recheck-green slices (failed slices get
+exactly one extra attempt, attempts keep counting). Deploy slices are never
+targets; claims without a green recheck end the run as before, and `ompo
+resume` still works afterwards.
+
+Bounds: `maxUnblocks: 2` (`.omp/roadmap.yml`, `0` disables) or per run
+`--max-unblocks N` (0..5) / `--no-unblock`. Budget spent? The run ends with
+`unblock budget spent (N round(s))` and the usual resume hint.
    Opt out with `placeholders: false` (`.omp/roadmap.yml`) or `--no-placeholders`.
 
 2. **Debugger session** — for genuine failures, one bounded fresh worker

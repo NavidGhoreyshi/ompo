@@ -94,6 +94,8 @@ RUN FLAGS
   --no-review        skip the independent post-merge review session
   --review-model M   reviewer model (default: roadmap.yml reviewModel → workerModel)
   --no-placeholders    disable dev-only placeholders for missing env creds (default: on)
+  --no-unblock       disable end-of-run unblock sessions (default: up to maxUnblocks rounds)
+  --max-unblocks N   end-of-run unblock sessions before giving up (0..5, default 2)
   --reverify         re-run done slices' gates on current HEAD at loop start (demotes failures)
   --check-env        probe every gate once for env blocks before spawning (fail fast, burn nothing)
   --format FMT       headless output: pretty|json|tap|github (progress bar on stderr, events on stdout,
@@ -157,6 +159,8 @@ interface Args {
   reviewModel?: string;
   noDebug?: boolean;
   noPlaceholders?: boolean;
+  noUnblock?: boolean;
+  maxUnblocks?: number;
   reverify?: boolean;
   template?: boolean;
   replan?: boolean;
@@ -229,6 +233,8 @@ function parseArgs(argv: string[]): Args {
     else if (t === "--no-review") a.noReview = true;
     else if (t === "--no-debug") a.noDebug = true;
     else if (t === "--no-placeholders") a.noPlaceholders = true;
+    else if (t === "--no-unblock") a.noUnblock = true;
+    else if (t === "--max-unblocks" && argv[i + 1]) a.maxUnblocks = parseNonNegativeInt(argv[++i]!, "--max-unblocks", 5);
     else if (t === "--reverify") a.reverify = true;
     else if (t === "--template") a.template = true;
     else if (t === "--replan") a.replan = true;
@@ -474,6 +480,8 @@ async function cmdRun(a: Args): Promise<number> {
     reviewModel: a.reviewModel,
     noDebug: a.noDebug,
     noPlaceholders: a.noPlaceholders,
+    noUnblock: a.noUnblock,
+    maxUnblocksOverride: a.maxUnblocks,
     reverify: a.reverify,
     seed: a.seed,
     faults,
@@ -1054,10 +1062,10 @@ async function cmdUnified(a: Args): Promise<number> {
       jobs: a.jobs,
       template: a.template,
       replan: a.replan,
-      noReview: a.noReview,
-      reviewModel: a.reviewModel,
       noDebug: a.noDebug,
       noPlaceholders: a.noPlaceholders,
+      noUnblock: a.noUnblock,
+      maxUnblocks: a.maxUnblocks,
       reverify: a.reverify,
       tmux: a.tmux,
     });

@@ -33,8 +33,9 @@ import {
 import { loadRoadmapConfig } from "./config.ts";
 import { depSatisfied, readySlices } from "./select.ts";
 import { buildWorkerSpec } from "./spec.ts";
-import { sliceDir, storeApi, loadRun } from "./store.ts";
+import { sliceDir, storeApi, loadRun, RUNS_DIR } from "./store.ts";
 import type { CompletionReport, RoadmapDoc, Slice, Verdict } from "./types.ts";
+import { buildUnblockPrompt, collectUnblockInfo, hasPredeployWork, recheckUnblockTargets, stallTargets, unblockPromptRef } from "./unblock.ts";
 import { applyIntent, drainIntents, latestSeq } from "./control.ts";
 import { EMPTY_FAULTS, faultsArmed, mulberry32, shouldAbortAttempt, shouldCrashAfter, shouldFailVerify, type FaultSpec } from "./faults.ts";
 import { extractHarnessFix, extractReportFromOutput, validateCompletionReport } from "./report.ts";
@@ -47,6 +48,7 @@ import { buildModelChain, displayModel, resolveWorkerModel, runOmpWorker, runWit
 import { createMutex, type Mutex } from "./mutex.ts";
 import { worktreeOpsFor, sliceBranchOf, type WorktreeOps } from "./worktree.ts";
 import { extractMissingVar, loadPlaceholders, placeholderFor, placeholdersDocRef, recordPlaceholder } from "./placeholders.ts";
+import { hasServices, healServices, isHealableBlock, serviceEnvOf } from "./services.ts";
 import { preMergeSecretGate } from "./secrets.ts";
 
 export interface LoopOptions {
@@ -80,6 +82,10 @@ export interface LoopOptions {
   debugTimeoutMs?: number;
   /** Disable dev-only placeholder injection for missing env creds (`--no-placeholders`). */
   noPlaceholders?: boolean;
+  /** Disable end-of-run unblock sessions (`--no-unblock`). */
+  noUnblock?: boolean;
+  /** End-of-run unblock session budget (`--max-unblocks N`, default 2). */
+  maxUnblocksOverride?: number;
   /** Deterministic RNG seed (chaos abort draws; CLI also suffixes fresh run ids). */
   seed?: number;
   /** Parsed chaos faults (CLI-only `--fault-inject`, never config). */
@@ -250,6 +256,121 @@ async function runDebugger(
     return false;
   }
 }
+/**
+ * End-of-run unblock session (self-sufficient loop): one bounded fresh agent
+ * diagnoses whatever blocks the run and fixes it at host + worktree level.
+ * Returns "continue" when recheck-green targets were demoted (caller loops),
+ * "finish" when the run should end as before, "aborted" on operator abort.
+ * Never throws; all failures land in the log as "finish".
+ */
+async function runUnblocker(ctx: AttemptCtx, round: number): Promise<"continue" | "finish" | "aborted"> {
+  const { projectDir, runId } = ctx;
+  const runRoot = join(projectDir, RUNS_DIR, runId);
+  const doc = loadRun(projectDir, runId).doc;
+  const targets = collectUnblockInfo(projectDir, runId, doc, (id) => ctx.wt.ensure(projectDir, runId, id));
+  if (targets.length === 0) return "finish";
+  const head = doc.slices.find((s) => s.id === targets[0]!.sliceId)!;
+  const prompt = buildUnblockPrompt(targets, round, ctx.maxUnblocks);
+  writeFileSync(join(runRoot, `unblock-${round}.prompt.md`), prompt, "utf8");
+  log(ctx, `  prompt: ${unblockPromptRef(runId, round)}`);
+  const unblockChain = buildModelChain(resolveWorkerModel(head.workerAgent, ctx.cfg), ctx.cfg.modelFallbacks);
+  const unblockBudgetMs = ctx.debugTimeoutMs ?? DEFAULT_DEBUG_TIMEOUT_MS;
+  log(ctx, `◐ unblock round ${round}/${ctx.maxUnblocks} — ${targets.length} blocked slice(s): ${targets.map((t) => t.sliceId).join(", ")} (budget ${formatTimeout(unblockBudgetMs)})`);
+  if (ctx.signal?.aborted) return "aborted";
+  const onProgress = progressFn(ctx, head.id, "unblock");
+  let unblockStdout = "";
+  try {
+    const res = await runWithModelFallbacks(
+      ctx.runner,
+      { prompt, sliceId: head.id, attempt: head.attempts, label: `${head.id} unblock` },
+      {
+        projectDir,
+        timeoutMs: unblockBudgetMs,
+        signal: ctx.signal,
+        sessionDir: runRoot,
+        onProgress,
+        env: hasServices(ctx.cfg) ? serviceEnvOf(ctx.cfg) : undefined,
+      },
+      unblockChain,
+      {
+        accept: (stdout) => extractReportFromOutput(stdout) !== undefined,
+        preserve: () => preserveIncompleteWork(ctx, head.id, head.attempts, "unblock model unavailable, falling back"),
+        onModelAttempt: (model, i) => {
+          if (i > 0) log(ctx, `  unblock model: ${displayModel(model)} (fallback ${i + 1}/${unblockChain.length}, round continues)`);
+        },
+        onFallback: (from, to) => {
+          log(ctx, `  unblock model ${displayModel(from)} unavailable — falling back to ${displayModel(to)} (round continues)`);
+        },
+      },
+    );
+    writeFileSync(join(runRoot, `unblock-${round}.log`), `exit=${res.exit} timedOut=${res.timedOut} durationMs=${res.durationMs}\n--- stdout ---\n${res.stdout}\n--- stderr ---\n${res.stderr}\n`, "utf8");
+    if (res.eventsJsonl) {
+      try {
+        writeFileSync(join(runRoot, `unblock-${round}.events.jsonl`), res.eventsJsonl, "utf8");
+      } catch {
+        /* forensics are best-effort */
+      }
+    }
+    unblockStdout = res.stdout;
+    if (res.timedOut) {
+      log(ctx, `  unblock round ${round} timed out — ending run, \`ompo resume\` still works`);
+      return "finish";
+    }
+    if (res.exit !== 0 && extractReportFromOutput(res.stdout) === undefined) {
+      log(ctx, `  unblock round ${round} exited ${res.exit} with no report — ending run, \`ompo resume\` still works`);
+      return "finish";
+    }
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    if (ctx.signal?.aborted) return "aborted";
+    log(ctx, `  unblock round ${round} failed: ${msg} — ending run, \`ompo resume\` still works`);
+    return "finish";
+  }
+  let report;
+  try {
+    const extracted = extractReportFromOutput(unblockStdout);
+    if (extracted === undefined) throw new Error("no <<<OMPO_REPORT>>> block in unblock output");
+    report = validateCompletionReport(extracted, head.id);
+    if (!report.done) throw new Error(`unblocker gave up: ${report.verificationNotes.slice(0, 300)}`);
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    log(ctx, `  unblock inconclusive: ${msg} — ending run, \`ompo resume\` still works`);
+    return "finish";
+  }
+  // Preserve whatever the agent changed in the worktrees onto the slice
+  // branches (best-effort per target), then deterministically re-run each
+  // recorded failing command. Only recheck-green targets demote — the
+  // report is advisory, the recheck decides.
+  for (const t of targets) {
+    try {
+      const cur = loadRun(projectDir, runId).doc.slices.find((s) => s.id === t.sliceId)!;
+      const snap = ctx.wt.commitWork(projectDir, runId, t.sliceId, cur.attempts, `unblock-${round} snapshot`);
+      if (!snap.nothingToCommit) log(ctx, `  preserved unblock work on ${t.sliceId}: ${snap.detail}`);
+    } catch {
+      /* preservation is best-effort */
+    }
+  }
+  const recorded = loadPlaceholders(projectDir, runId);
+  const recheckEnv: Record<string, string> = {
+    ...serviceEnvOf(ctx.cfg),
+    ...Object.fromEntries(Object.values(recorded).map((e) => [e.name, e.value])),
+  };
+  const green = await recheckUnblockTargets({
+    projectDir,
+    targets,
+    env: Object.keys(recheckEnv).length > 0 ? recheckEnv : undefined,
+    onEvent: (m) => log(ctx, m),
+  });
+  if (green.length === 0) {
+    log(ctx, `  unblock claims fixed but recheck is still red — ending run, \`ompo resume\` still works`);
+    return "finish";
+  }
+  for (const id of green) {
+    storeApi.operatorRetry(projectDir, runId, id, `unblock round ${round}: recheck green`);
+  }
+  log(ctx, `  unblocked: ${green.join(", ")} (recheck green — re-queued; failed slices get one extra attempt, attempts keep counting)`);
+  return "continue";
+}
 
 /**
  * Placeholder recovery for missing named credentials/URLs (default on).
@@ -262,19 +383,20 @@ type PlaceholderRecovery =
   | { kind: "passed"; verdict: Verdict; env: Record<string, string> }
   | { kind: "failed"; verdict: Verdict; env: Record<string, string> }
   | { kind: "park"; verdict: Verdict; reason: string; fix: string };
-
 async function recoverWithPlaceholders(
   ctx: AttemptCtx,
   sliceId: string,
   attempt: number,
   verdict: Verdict,
   runGate: (tag: string, env?: Record<string, string>) => Promise<Verdict>,
+  baseEnv?: Record<string, string>,
 ): Promise<PlaceholderRecovery> {
   const { projectDir, runId } = ctx;
   const docRef = placeholdersDocRef(runId);
   // Scoped to this attempt's gate re-runs: never touches process.env, so
-  // concurrent pipelines cannot see each other's placeholders.
-  const extraEnv: Record<string, string> = {};
+  // concurrent pipelines cannot see each other's placeholders. Starts from
+  // the healed service env (real values win — never re-invent those names).
+  const extraEnv: Record<string, string> = { ...(baseEnv ?? {}) };
   let cur = verdict;
   for (let round = 0; round < 5; round++) {
     const tails = cur.steps.map((s) => s.outputTail);
@@ -340,9 +462,22 @@ async function runAttempt(ctx: AttemptCtx, sliceId: string): Promise<void> {
     failAttempt(ctx, sliceId, claimed, join("slices", sliceId, `worktree-${attempt}.error.txt`));
     return;
   }
+  // 1b. Shared services (self-sufficient loop): bring the project's world up
+  // before the worker starts so its own verification uses the shared service
+  // instead of improvising a disposable one. Best-effort here — a failed heal
+  // never fails the attempt; the gate-phase heal re-tries before parking.
+  let workerServiceEnv: Record<string, string> | undefined;
+  if (hasServices(ctx.cfg)) {
+    workerServiceEnv = serviceEnvOf(ctx.cfg);
+    try {
+      const pre = await healServices({ projectDir, cfg: ctx.cfg, onEvent: (m) => log(ctx, m) });
+      if (!pre.ok) log(ctx, `  services: pre-worker heal failed (${pre.detail}) — worker proceeds, gate will retry`);
+    } catch (err) {
+      log(ctx, `  services warning for ${sliceId}: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  }
 
   // 2. Compile worker spec (worker cwd = worktree). A prior review
-  // rejection (review-notes.md) is handed to the next attempt first.
   let reviewNotes: string | undefined;
   try {
     const notesPath = join(dir, "review-notes.md");
@@ -382,7 +517,7 @@ async function runAttempt(ctx: AttemptCtx, sliceId: string): Promise<void> {
     const res = await runWithModelFallbacks(
       ctx.runner,
       { prompt: spec.prompt, sliceId, attempt },
-      { projectDir: wtPath, timeoutMs: workerTimeoutMs, signal: ctx.signal, sessionDir: dir, onProgress },
+      { projectDir: wtPath, timeoutMs: workerTimeoutMs, signal: ctx.signal, sessionDir: dir, onProgress, env: workerServiceEnv },
       workerChain,
       {
         accept: (stdout) => extractReportFromOutput(stdout) !== undefined,
@@ -613,10 +748,30 @@ export async function runCommitPhase(
       // (noted in the run's placeholders.md) and the gate re-runs, so the
       // roadmap keeps moving. Only infra failures still park.
       let envBlock = classifyEnvFailure(verdict.steps.map((s) => s.outputTail));
-      // Attempt-scoped placeholder env: every gate re-run below (debugger
-      // re-verify, reviewer's own checks) sees the same injected values.
+      // Self-sufficient loop: healable infra (DB down, port taken) runs the
+      // project's serviceUp/serviceReady once and re-runs the gate before any
+      // parking. Real service values seed gateEnv so placeholders never invent
+      // names the services already provide.
+      if (envBlock && isHealableBlock(envBlock.reason) && hasServices(ctx.cfg)) {
+        log(ctx, `  services: gate blocked (${envBlock.reason}) — healing before parking`);
+        try {
+          const heal = await healServices({ projectDir, cfg: ctx.cfg, onEvent: (m) => log(ctx, m) });
+          if (heal.ok) {
+            gateEnv = { ...heal.env, ...(gateEnv ?? {}) };
+            log(ctx, `  services healed — re-running the gate`);
+            verdict = await runGate("verify", { ...gateEnv });
+            writeFileSync(join(dir, "verdict.json"), JSON.stringify(verdict, null, 2) + "\n", "utf8");
+            if (!verdict.pass) logTail();
+            envBlock = verdict.pass ? null : classifyEnvFailure(verdict.steps.map((s) => s.outputTail));
+          } else {
+            log(ctx, `  services heal failed (${heal.detail}) — falling through to park path`);
+          }
+        } catch (err) {
+          log(ctx, `  services warning for ${sliceId}: ${err instanceof Error ? err.message : String(err)}`);
+        }
+      }
       if (envBlock && !ctx.noPlaceholders && ctx.cfg.placeholders !== false) {
-        const rec = await recoverWithPlaceholders(ctx, sliceId, attempt, verdict, runGate);
+        const rec = await recoverWithPlaceholders(ctx, sliceId, attempt, verdict, runGate, gateEnv ? { ...gateEnv } : undefined);
         verdict = rec.verdict;
         writeFileSync(join(dir, "verdict.json"), JSON.stringify(verdict, null, 2) + "\n", "utf8");
         if (rec.kind === "park") {
@@ -962,6 +1117,8 @@ export async function runRoadmapLoop(opts: LoopOptions): Promise<LoopResult> {
     reviewTimeoutMs: opts.reviewTimeoutMs,
     noDebug: opts.noDebug ?? false,
     noPlaceholders: opts.noPlaceholders ?? false,
+    noUnblock: opts.noUnblock ?? false,
+    maxUnblocks: opts.maxUnblocksOverride ?? cfg.maxUnblocks ?? 2,
     debugTimeoutMs: opts.debugTimeoutMs
       ?? (cfg.debugTimeoutSec ? cfg.debugTimeoutSec * 1000 : undefined),
     maxRetriesOverride: opts.maxRetriesOverride,
@@ -1111,6 +1268,7 @@ export async function runRoadmapLoop(opts: LoopOptions): Promise<LoopResult> {
   const inflight = new Map<string, Promise<void>>();
   const startedAt = new Map<string, number>();
   let settledTotal = 0;
+  let unblockRounds = 0;
   const settle = (sliceId: string): void => {
     inflight.delete(sliceId);
     startedAt.delete(sliceId);
@@ -1168,6 +1326,27 @@ export async function runRoadmapLoop(opts: LoopOptions): Promise<LoopResult> {
         // during the nap still exits 2 on the next pass.
         await new Promise((r) => setTimeout(r, ctx.controlPollMs));
         continue;
+      }
+      // End-of-run unblock lane: about to stop with pre-deployment slices
+      // blocked? Spend one bounded agent session doing this session's job —
+      // diagnose, fix, prove green — then resume in-process. Deploy-only
+      // remainders and spent budgets finish as before.
+      const snapNow = loadRun(opts.projectDir, opts.runId).doc;
+      const stalledNow = stallTargets(snapNow);
+      if (!ctx.noUnblock && stalledNow.length > 0 && hasPredeployWork(snapNow)) {
+        if (unblockRounds < ctx.maxUnblocks) {
+          unblockRounds += 1;
+          const lane = await runUnblocker(ctx, unblockRounds);
+          if (lane === "aborted") {
+            storeApi.abortRun(opts.projectDir, opts.runId);
+            log(opts, "aborted by signal");
+            const a = finish();
+            return { ...a, exitCode: 2 };
+          }
+          if (lane === "continue") continue;
+        } else {
+          log(opts, `unblock budget spent (${unblockRounds} round(s)) — fix the rest, then \`ompo resume\``);
+        }
       }
       const r = finish();
       storeApi.finishRun(

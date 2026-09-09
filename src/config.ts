@@ -1,7 +1,8 @@
 /**
  * `.omp/roadmap.yml` — project-local overrides (plan §9, §11).
  * Minimal subset parser (no YAML dep): top-level `key: value` pairs,
- * `agentModels:` nested map, and `verifyDefaults:` / list keys.
+ * `agentModels:` / `serviceEnv:` nested maps, and `verifyDefaults:` /
+ * list keys.
  *
  * Supported keys:
  *   workerModel: <model pattern for omp --model>
@@ -17,6 +18,14 @@
  *     - <model pattern>
  *   verifyDefaults:
  *     - <command>
+ *   serviceUp:
+ *     - <idempotent command bringing shared services up (e.g. docker compose up -d db)>
+ *   serviceReady:
+ *     - <readiness probe, exit 0 when the service answers (e.g. pg_isready -h localhost -p 5433)>
+ *   serviceEnv:
+ *     <NAME>: <value passed to worker + gate commands>
+ *   serviceTimeoutSec: <int ready-poll budget, default 120>
+ *   maxUnblocks: <int end-of-run unblock sessions, default 2, 0 disables>
  */
 
 import { existsSync, readFileSync } from "node:fs";
@@ -37,6 +46,16 @@ export interface RoadmapConfig {
   /** Ordered fallback models: tried in order when the primary is unavailable (rate limit, unknown id). No retry consumed. Omp's default model is the implicit last resort. */
   modelFallbacks?: string[];
   verifyDefaults?: string[];
+  /** Idempotent commands run in the base checkout to bring shared services up. */
+  serviceUp?: string[];
+  /** Readiness probes (exit 0 = ready), polled after serviceUp. */
+  serviceReady?: string[];
+  /** Extra env for worker + gate commands (e.g. DATABASE_URL). Scoped to the attempt, never recorded. */
+  serviceEnv?: Record<string, string>;
+  /** Ready-poll budget in seconds (default 120). */
+  serviceTimeoutSec?: number;
+  /** End-of-run unblock sessions before giving up (default 2, 0 disables). */
+  maxUnblocks?: number;
 }
 
 export function configPath(projectDir: string): string {
@@ -81,7 +100,7 @@ function parseConfigBool(raw: string, key: string): boolean {
 
 }
  export function parseRoadmapYml(text: string): RoadmapConfig {
-  let section: "root" | "agentModels" | "modelFallbacks" | "verifyDefaults" = "root";
+  let section: string = "root";
   const cfg: RoadmapConfig = {};
   for (const raw of text.split("\n")) {
     const line = stripComment(raw).replace(/\r$/, "");
@@ -119,6 +138,31 @@ function parseConfigBool(raw: string, key: string): boolean {
             .filter(Boolean);
           section = "root";
         }
+      } else if (key === "serviceUp") {
+        section = "serviceUp";
+        cfg.serviceUp = [];
+        if (val.startsWith("[")) {
+          cfg.serviceUp = val
+            .slice(1, val.endsWith("]") ? -1 : undefined)
+            .split(",")
+            .map((s) => unquote(s.trim()))
+            .filter(Boolean);
+          section = "root";
+        }
+      } else if (key === "serviceReady") {
+        section = "serviceReady";
+        cfg.serviceReady = [];
+        if (val.startsWith("[")) {
+          cfg.serviceReady = val
+            .slice(1, val.endsWith("]") ? -1 : undefined)
+            .split(",")
+            .map((s) => unquote(s.trim()))
+            .filter(Boolean);
+          section = "root";
+        }
+      } else if (key === "serviceEnv") {
+        section = "serviceEnv";
+        cfg.serviceEnv ??= {};
       } else {
         section = "root";
         if (key === "workerModel" && val) cfg.workerModel = val;
@@ -126,8 +170,9 @@ function parseConfigBool(raw: string, key: string): boolean {
         else if (key === "maxRetries" && val) cfg.maxRetries = parseConfigInt(val, "maxRetries", 0, 10);
         else if (key === "specBudget" && val) cfg.specBudget = parseConfigInt(val, "specBudget", 1000, 1_000_000);
         else if (key === "workerTimeoutSec" && val) cfg.workerTimeoutSec = parseConfigInt(val, "workerTimeoutSec", 60, 8 * 3600);
-        else if (key === "debugTimeoutSec" && val) cfg.debugTimeoutSec = parseConfigInt(val, "debugTimeoutSec", 60, 8 * 3600);
         else if (key === "placeholders" && val) cfg.placeholders = parseConfigBool(val, "placeholders");
+        else if (key === "serviceTimeoutSec" && val) cfg.serviceTimeoutSec = parseConfigInt(val, "serviceTimeoutSec", 10, 1800);
+        else if (key === "maxUnblocks" && val) cfg.maxUnblocks = parseConfigInt(val, "maxUnblocks", 0, 5);
       }
     } else if (section === "agentModels") {
       const m = trimmed.match(/^([^:]+?)\s*:\s*(.+)$/);
@@ -141,6 +186,18 @@ function parseConfigBool(raw: string, key: string): boolean {
     } else if (section === "verifyDefaults") {
       const m = trimmed.match(/^-\s+(.+)$/);
       if (m) cfg.verifyDefaults!.push(unquote(m[1]!));
+    } else if (section === "serviceUp") {
+      const m = trimmed.match(/^-\s+(.+)$/);
+      if (m) cfg.serviceUp!.push(unquote(m[1]!));
+    } else if (section === "serviceReady") {
+      const m = trimmed.match(/^-\s+(.+)$/);
+      if (m) cfg.serviceReady!.push(unquote(m[1]!));
+    } else if (section === "serviceEnv") {
+      const m = trimmed.match(/^([^:]+?)\s*:\s*(.+)$/);
+      if (m) {
+        cfg.serviceEnv ??= {};
+        cfg.serviceEnv[m[1]!.trim()] = unquote(m[2]!);
+      }
     }
   }
   return cfg;

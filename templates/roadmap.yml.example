@@ -26,3 +26,17 @@ agentModels:
   task: opencode-go/muse-spark-1.3-contributor
 # verifyDefaults: commands prepended before every slice's `Verify:` steps.
 verifyDefaults: []
+# services: shared infra the loop brings up itself (self-sufficient to deploy).
+#   serviceUp: idempotent bring-up, run before workers + on healable gate blocks.
+#   serviceReady: readiness probes polled after bring-up (exit 0 = ready).
+#   serviceEnv: extra env for worker + gate commands (e.g. DATABASE_URL).
+#   serviceTimeoutSec: ready-poll budget (default 120).
+# serviceUp:
+#   - docker compose up -d db
+# serviceReady:
+#   - pg_isready -h localhost -p 5432
+# serviceEnv:
+#   DATABASE_URL: postgresql://localhost:5432/ompo_dev
+# serviceTimeoutSec: 120
+# maxUnblocks: 2 end-of-run unblock sessions before giving up (0 disables,
+#   --no-unblock / --max-unblocks N override per run)
