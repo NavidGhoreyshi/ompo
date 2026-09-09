@@ -9,6 +9,7 @@ import {
   formatEventTime,
   type ActivityFilter,
 } from "../lib/events.ts";
+import { LaneSymbol } from "./icons.tsx";
 import Terminal from "./Terminal.tsx";
 
 type PanelView = "activity" | "terminal";
@@ -81,6 +82,11 @@ export default function Activity({ events }: { events: RunEvent[] }) {
                     aria-pressed={filter === f}
                     onClick={() => setFilter(f)}
                   >
+                    {f !== "All" && (
+                      <span aria-hidden="true" className="omp-chip-glyph">
+                        <LaneSymbol lane={f.toLowerCase()} />
+                      </span>
+                    )}
                     {f}
                   </button>
                 ))}
@@ -102,6 +108,9 @@ export default function Activity({ events }: { events: RunEvent[] }) {
                   <li key={e.seq} title={`${e.at} ${e.type}\n${e.reason ?? ""}\n${e.detail ?? ""}`}>
                     <span className="omp-activity-time">{formatEventTime(e.at)}</span>
                     <span className="omp-activity-lane" data-lane={lane}>
+                      <span aria-hidden="true" className="omp-lane-glyph">
+                        <LaneSymbol lane={lane} />
+                      </span>
                       {eventLaneLabel(e)}
                     </span>
                     <span className="omp-activity-type">{e.type}</span>

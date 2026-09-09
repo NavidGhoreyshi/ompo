@@ -1,5 +1,5 @@
 import type { SliceDetail } from "../api.ts";
-import StatusBadge from "./StatusBadge.tsx";
+import { StatusSymbol } from "./icons.tsx";
 
 /**
  * Verify tab: declared gates vs executed verdict steps. Each gate is a
@@ -21,7 +21,10 @@ export default function VerifyView({ detail }: { detail: SliceDetail | null }) {
       {detail?.verdictPass === true && <p className="omp-hint">all gates passed</p>}
       {detail?.verdictPass === false && failedIdx >= 0 && (
         <p className="omp-error" style={{ margin: "4px 0" }}>
-          ✕ {steps[failedIdx]!.name} failed{failedIdx > 0 ? ` after ${failedIdx} passing gate${failedIdx === 1 ? "" : "s"}` : " on the first gate"}
+          <span aria-hidden="true" className="omp-inline-glyph" data-tone="red">
+            <StatusSymbol status="failed" />
+          </span>{" "}
+          {steps[failedIdx]!.name} failed{failedIdx > 0 ? ` after ${failedIdx} passing gate${failedIdx === 1 ? "" : "s"}` : " on the first gate"}
         </p>
       )}
       {steps.length === 0 && pendingGates.length === 0 && (
@@ -46,7 +49,23 @@ export default function VerifyView({ detail }: { detail: SliceDetail | null }) {
                     <StatusBadge status={s.exit === 0 ? "passed" : "failed"} />
                   </td>
                   <td>{String(s.exit)}</td>
-                  <td>{String(s.timedOut)}</td>
+                  <td>
+                    {s.timedOut ? (
+                      <span className="omp-inline-glyph" data-tone="red" title="timed out">
+                        <span aria-hidden="true" className="omp-glyph">
+                          <StatusSymbol status="failed" />
+                        </span>
+                        <span className="omp-sr-only">timed out</span>
+                      </span>
+                    ) : (
+                      <span className="omp-inline-glyph" data-tone="muted" title="did not time out">
+                        <span aria-hidden="true" className="omp-glyph">
+                          <StatusSymbol status="skipped" />
+                        </span>
+                        <span className="omp-sr-only">no</span>
+                      </span>
+                    )}
+                  </td>
                 </tr>
               ))}
             </tbody>

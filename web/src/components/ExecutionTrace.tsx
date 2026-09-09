@@ -1,5 +1,5 @@
 import type { SliceDetail, SliceSummary } from "../api.ts";
-import { formatDurationMs, formatTokens } from "../lib/format.ts";
+import { TraceSymbol } from "./icons.tsx";
 
 /**
  * Compact execution lifecycle for the active slice — observed state only,
@@ -62,7 +62,7 @@ export default function ExecutionTrace({
       {stages.map((s) => (
         <li key={s.name} className="omp-trace-step" data-state={s.state}>
           <span aria-hidden="true" className="omp-trace-sym">
-            {s.state === "done" ? "✓" : s.state === "active" ? "●" : s.state === "failed" ? "✕" : "○"}
+            <TraceSymbol state={s.state} />
           </span>
           <span className="omp-trace-name">{s.name}</span>
           <span className="omp-hint">{s.note}</span>

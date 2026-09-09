@@ -1,4 +1,4 @@
-import { PanelLeft } from "lucide-react";
+import { LuPanelLeft } from "react-icons/lu";
 import type { RunSummary } from "../api.ts";
 import { Button } from "./ui/button.tsx";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "./ui/select.tsx";
@@ -30,7 +30,7 @@ export default function Header({
         aria-expanded={!sidebarCollapsed}
         title={sidebarCollapsed ? "Expand navigation" : "Collapse navigation"}
       >
-        <PanelLeft aria-hidden="true" />
+        <LuPanelLeft aria-hidden="true" />
       </Button>
       <span className="omp-brand">
         <span className="omp-brand-mark" aria-hidden="true">o</span>

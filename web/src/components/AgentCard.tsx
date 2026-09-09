@@ -1,6 +1,6 @@
 import type { AgentRow } from "../api.ts";
 import { formatDurationMs, formatTokens } from "../lib/format.ts";
-import StatusBadge from "./StatusBadge.tsx";
+import { LockSymbol } from "./icons.tsx";
 
 /**
  * One live-worker row. Pure projection over the server-derived AgentRow
@@ -75,7 +75,14 @@ export default function AgentCard({
       </td>
       <td title={usageTitle}>{usage}</td>
       <td title={locked ? "holds the verify+merge commit mutex" : "not holding the mutex"}>
-        {locked ? "🔒" : "—"}
+        {locked ? (
+          <span className="omp-mutex">
+            <LockSymbol />
+            <span className="omp-sr-only">holds mutex</span>
+          </span>
+        ) : (
+          "—"
+        )}
       </td>
       <td>
         <div className="omp-ellipsis" title={agent.lastLine}>

@@ -1,4 +1,15 @@
 import { useEffect, useState } from "react";
+import {
+  LuCoins,
+  LuEye,
+  LuFileDiff,
+  LuFileText,
+  LuList,
+  LuMessageSquareText,
+  LuScrollText,
+  LuShieldCheck,
+  type IconType,
+} from "react-icons/lu";
 import type { RunEvent, SliceDetail, SliceSummary } from "../api.ts";
 import ControlPanel from "./ControlPanel.tsx";
 import DiffView from "./DiffView.tsx";
@@ -8,13 +19,25 @@ import LogView from "./LogView.tsx";
 import OutputView from "./OutputView.tsx";
 import PromptView from "./PromptView.tsx";
 import ReviewView from "./ReviewView.tsx";
-import { symbolForStatus, toneForStatus } from "./StatusBadge.tsx";
+import { StatusSymbol } from "./icons.tsx";
+import { toneForStatus } from "./StatusBadge.tsx";
 import { Separator } from "./ui/separator.tsx";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "./ui/tabs.tsx";
 import Usage from "./Usage.tsx";
 import VerifyView from "./VerifyView.tsx";
 
-const TABS = ["Output", "Diff", "Verify", "Review", "Prompt", "Events", "Usage", "Log"] as const;
+type InspectorTab = "Output" | "Diff" | "Verify" | "Review" | "Prompt" | "Events" | "Usage" | "Log";
+
+const TABS: readonly { id: InspectorTab; icon: IconType }[] = [
+  { id: "Output", icon: LuFileText },
+  { id: "Diff", icon: LuFileDiff },
+  { id: "Verify", icon: LuShieldCheck },
+  { id: "Review", icon: LuEye },
+  { id: "Prompt", icon: LuMessageSquareText },
+  { id: "Events", icon: LuList },
+  { id: "Usage", icon: LuCoins },
+  { id: "Log", icon: LuScrollText },
+];
 
 /**
  * Active-slice inspector: the selected slice is always populated — App
@@ -41,7 +64,7 @@ export default function Inspector({
   events?: RunEvent[];
   live?: boolean;
 }) {
-  const [tab, setTab] = useState<(typeof TABS)[number]>("Output");
+  const [tab, setTab] = useState<InspectorTab>("Output");
 
   // New selection starts on Output; tab state never leaks across slices.
   useEffect(() => {
@@ -69,7 +92,7 @@ export default function Inspector({
         </h2>
         <p className="omp-inspector-state">
           <span aria-hidden="true" className="omp-status-sym" data-tone={tone}>
-            {symbolForStatus(sel.status)}
+            <StatusSymbol status={sel.status} />
           </span>
           <span className="omp-board-state" data-tone={tone}>
             {sel.status}
@@ -88,13 +111,17 @@ export default function Inspector({
 
       <ExecutionTrace selected={sel} detail={d} />
 
-      <Tabs value={tab} onValueChange={(v) => setTab(v as (typeof TABS)[number])}>
+      <Tabs value={tab} onValueChange={(v) => setTab(v as InspectorTab)}>
         <TabsList className="omp-tabs" aria-label="Inspector views">
-          {TABS.map((t) => (
-            <TabsTrigger key={t} value={t} className="omp-tab">
-              {t}
-            </TabsTrigger>
-          ))}
+          {TABS.map((t) => {
+            const TabIcon = t.icon;
+            return (
+              <TabsTrigger key={t.id} value={t.id} className="omp-tab">
+                <TabIcon aria-hidden="true" className="size-3.5 shrink-0" />
+                {t.id}
+              </TabsTrigger>
+            );
+          })}
         </TabsList>
 
         <TabsContent value="Output">

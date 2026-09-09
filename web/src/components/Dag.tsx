@@ -6,7 +6,8 @@ import {
   layoutDag,
   type DagEdge,
 } from "../lib/dag.ts";
-import { symbolForStatus, toneForStatus } from "./StatusBadge.tsx";
+import { shapeForStatus, type StatusShape } from "./icons.tsx";
+import { toneForStatus } from "./StatusBadge.tsx";
 
 const TONE_STROKE: Record<string, string> = {
   cyan: "var(--omp-cyan)",
@@ -20,6 +21,28 @@ const TITLE_CHARS = 26;
 
 function truncate(title: string): string {
   return title.length > TITLE_CHARS ? `${title.slice(0, TITLE_CHARS - 1)}…` : title;
+}
+/** State glyph drawn as SVG shape (not a text char) beside the state word. */
+function NodeGlyph({ shape, color }: { shape: StatusShape; color: string }) {
+  return (
+    <g transform="translate(11 49)" color={color} aria-hidden="true">
+      {shape === "check" && (
+        <path d="M1 5.4 3.8 8 9 2.4" fill="none" stroke="currentColor" strokeWidth={1.6} strokeLinecap="round" strokeLinejoin="round" />
+      )}
+      {shape === "dot" && <circle cx={5} cy={5} r={3} fill="currentColor" />}
+      {shape === "cross" && (
+        <path d="M2.2 2.2l5.6 5.6M7.8 2.2L2.2 7.8" fill="none" stroke="currentColor" strokeWidth={1.6} strokeLinecap="round" />
+      )}
+      {shape === "triangle" && (
+        <path d="M5 1 9.4 9H0.6Z" fill="none" stroke="currentColor" strokeWidth={1.4} strokeLinejoin="round" />
+      )}
+      {shape === "ring" && <circle cx={5} cy={5} r={3} fill="none" stroke="currentColor" strokeWidth={1.4} />}
+      {shape === "dash" && (
+        <path d="M1.5 5h7" fill="none" stroke="currentColor" strokeWidth={1.6} strokeLinecap="round" />
+      )}
+      {shape === "point" && <circle cx={5} cy={5} r={1.7} fill="currentColor" />}
+    </g>
+  );
 }
 
 /** Orthogonal elbow path: horizontal out of the dep, vertical, horizontal in. */
@@ -144,9 +167,10 @@ export default function Dag({
           {layout.nodes.map((n) => {
             const isSel = selected === n.id && !n.ghost;
             const tone = n.ghost ? "amber" : toneForStatus(n.status);
-            const stateLine = n.ghost
-              ? "▲ unknown dep"
-              : `${symbolForStatus(n.status)} ${n.status}${n.blocked ? " · blocked" : ""}${n.ready ? " · ready" : ""}`;
+            const shape: StatusShape = n.ghost ? "triangle" : shapeForStatus(n.status);
+            const stateWords = n.ghost
+              ? "unknown dep"
+              : `${n.status}${n.blocked ? " · blocked" : ""}${n.ready ? " · ready" : ""}`;
             return (
               <g
                 key={n.ghost ? `ghost:${n.id}` : n.id}
@@ -157,7 +181,7 @@ export default function Dag({
                 role={n.ghost ? undefined : "button"}
                 tabIndex={n.ghost ? undefined : 0}
                 aria-label={
-                  n.ghost ? `unknown dependency ${n.id}` : `${n.id} ${n.title} — ${stateLine}${isSel ? " (selected)" : ""}`
+                  n.ghost ? `unknown dependency ${n.id}` : `${n.id} ${n.title} — ${stateWords}${isSel ? " (selected)" : ""}`
                 }
                 aria-current={isSel ? "true" : undefined}
                 onClick={n.ghost ? undefined : () => onSelect(n.id)}
@@ -196,13 +220,14 @@ export default function Dag({
                 <text x={12} y={38} className="omp-dag-title">
                   {truncate(n.title)}
                 </text>
+                <NodeGlyph shape={shape} color={TONE_STROKE[tone] ?? "var(--omp-border)"} />
                 <text
-                  x={12}
+                  x={26}
                   y={56}
                   className="omp-dag-state"
                   data-tone={n.ghost ? "amber" : toneForStatus(n.status)}
                 >
-                  {stateLine}
+                  {stateWords}
                 </text>
               </g>
             );

@@ -1,6 +1,6 @@
 import type { AgentRow } from "../api.ts";
-import { Lock } from "lucide-react";
-import { symbolForStatus, toneForStatus } from "./StatusBadge.tsx";
+import { LockSymbol, StatusSymbol } from "./icons.tsx";
+import { toneForStatus } from "./StatusBadge.tsx";
 
 /**
  * Worker lanes: one compact row per live agent, sorted by lane, so
@@ -44,15 +44,15 @@ export default function WorkerLanes({
                 >
                   <span className="omp-lane-id">L{a.lane}</span>
                   <span aria-hidden="true" className="omp-status-sym" data-tone={toneForStatus(a.status)}>
-                    {symbolForStatus(a.status)}
+                    <StatusSymbol status={a.status} />
                   </span>
                   <code className="omp-lane-slice">{a.id}</code>
                   <span className="omp-lane-state">{locked ? "VERIFY" : a.status.toUpperCase()}</span>
                   <span className="omp-hint">
                     attempt {a.attempt} · gen {a.generation}
                     {locked && (
-                      <span className="inline-flex items-center gap-1">
-                        {" "}· <Lock aria-hidden="true" className="size-3 shrink-0" strokeWidth={2} /> commit
+                      <span className="omp-mutex">
+                        {" "}· <LockSymbol /> commit
                       </span>
                     )}
                   </span>

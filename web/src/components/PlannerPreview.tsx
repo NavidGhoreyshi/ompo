@@ -1,4 +1,5 @@
 import type { LintFinding, PlanPreviewEnvelope } from "../api.ts";
+import { StatusSymbol } from "./icons.tsx";
 
 export interface PlannerPreviewProps {
   preview: PlanPreviewEnvelope | null;
@@ -15,9 +16,9 @@ export interface PlannerPreviewProps {
 }
 
 const STATUS_META = {
-  ready: { label: "READY", tone: "green", symbol: "✓" },
-  warnings: { label: "WARNINGS", tone: "amber", symbol: "▲" },
-  blocked: { label: "BLOCKED", tone: "red", symbol: "✕" },
+  ready: { label: "READY", tone: "green", symbol: "done" },
+  warnings: { label: "WARNINGS", tone: "amber", symbol: "blocked-env" },
+  blocked: { label: "BLOCKED", tone: "red", symbol: "failed" },
 } as const;
 
 function FindingList({ items, kind }: { items: LintFinding[]; kind: "error" | "warn" }) {
@@ -58,8 +59,8 @@ export default function PlannerPreview({
         Plan preview{" "}
         {meta && (
           <span className="omp-badge" data-tone={meta.tone}>
-            <span aria-hidden="true" className="omp-badge-sym">
-              {meta.symbol}
+            <span aria-hidden="true" className="omp-badge-sym" data-tone={meta.tone}>
+              <StatusSymbol status={meta.symbol} />
             </span>
             {meta.label}
           </span>

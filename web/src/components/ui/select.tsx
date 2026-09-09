@@ -1,6 +1,6 @@
 import * as React from "react";
 import * as SelectPrimitive from "@radix-ui/react-select";
-import { Check, ChevronDown, ChevronsUpDown } from "lucide-react";
+import { LuCheck, LuChevronDown, LuChevronsUpDown } from "react-icons/lu";
 import { cn } from "../../lib/utils.ts";
 
 function Select({ ...props }: React.ComponentProps<typeof SelectPrimitive.Root>) {
@@ -31,7 +31,7 @@ function SelectTrigger({
     >
       {children}
       <SelectPrimitive.Icon asChild>
-        <ChevronDown className="size-3.5 opacity-60" />
+        <LuChevronDown className="size-3.5 opacity-60" />
       </SelectPrimitive.Icon>
     </SelectPrimitive.Trigger>
   );
@@ -87,7 +87,7 @@ function SelectItem({
     >
       <span className="absolute left-1.5 flex size-3.5 items-center justify-center">
         <SelectPrimitive.ItemIndicator>
-          <Check className="size-3.5" />
+          <LuCheck className="size-3.5" />
         </SelectPrimitive.ItemIndicator>
       </span>
       <SelectPrimitive.ItemText className="truncate">{children}</SelectPrimitive.ItemText>
@@ -96,7 +96,7 @@ function SelectItem({
 }
 
 function SelectIconChevron() {
-  return <ChevronsUpDown className="size-3.5 opacity-60" />;
+  return <LuChevronsUpDown className="size-3.5 opacity-60" />;
 }
 
 export { Select, SelectValue, SelectTrigger, SelectContent, SelectItem, SelectIconChevron };

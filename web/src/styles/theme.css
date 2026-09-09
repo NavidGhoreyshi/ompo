@@ -793,6 +793,112 @@ input:focus-visible,
   font-size: 11px;
   flex: none;
 }
+/* Glyphs: inline SVG shapes replace text symbols. Parents own color via */
+/* data-tone / data-lane / data-state; shapes use currentColor. */
+.omp-status-sym,
+.omp-badge-sym {
+  display: inline-flex;
+  align-items: center;
+}
+
+.omp-status-sym svg,
+.omp-badge-sym svg,
+.omp-inline-glyph svg,
+.omp-glyph svg {
+  width: 11px;
+  height: 11px;
+  display: block;
+  flex: none;
+}
+
+.omp-inline-glyph {
+  display: inline-flex;
+  align-items: center;
+}
+
+.omp-inline-glyph[data-tone="red"] {
+  color: var(--omp-red);
+}
+
+.omp-inline-glyph[data-tone="muted"] {
+  color: var(--omp-muted);
+}
+
+.omp-trace-sym {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.omp-trace-sym svg {
+  width: 12px;
+  height: 12px;
+  display: block;
+}
+
+/* Lock + lane glyphs ride next to their word, never alone. */
+.omp-mutex {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.omp-mutex svg {
+  width: 12px;
+  height: 12px;
+  display: block;
+  flex: none;
+}
+
+.omp-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+}
+
+.omp-chip-glyph,
+.omp-lane-glyph {
+  display: inline-flex;
+  align-items: center;
+}
+
+.omp-chip-glyph svg,
+.omp-lane-glyph svg {
+  width: 10px;
+  height: 10px;
+  display: block;
+}
+
+.omp-activity-lane {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+}
+
+.omp-timeline-tick svg,
+.omp-legend-tick {
+  width: 8px;
+  height: 8px;
+  display: block;
+}
+
+.omp-timeline-legend span {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+}
+
+.omp-sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
 
 .omp-status-sym[data-tone="cyan"] {
   color: var(--omp-cyan);

@@ -2,7 +2,8 @@ import type { AgentRow, RunDetail, RunEvent } from "../api.ts";
 import { formatElapsed, formatTokens } from "../lib/format.ts";
 import { describeEvent } from "../lib/events.ts";
 import { heroAction, preferredSliceId } from "../lib/selection.ts";
-import { symbolForStatus, toneForStatus } from "./StatusBadge.tsx";
+import { StatusSymbol } from "./icons.tsx";
+import { toneForStatus } from "./StatusBadge.tsx";
 import { Separator } from "./ui/separator.tsx";
 
 /**
@@ -75,7 +76,7 @@ export default function RunHeader({
         <div className="omp-hero">
           <h1 className="omp-hero-title">
             <span aria-hidden="true" className="omp-status-sym" data-tone={toneForStatus(hero.status)}>
-              {symbolForStatus(hero.status)}
+              <StatusSymbol status={hero.status} />
             </span>
             <code className="omp-hero-id">{hero.id}</code>
             <span className="omp-hero-name" title={hero.title}>

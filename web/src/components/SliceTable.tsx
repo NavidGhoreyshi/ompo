@@ -1,6 +1,7 @@
 import type { RunEvent, SliceSummary } from "../api.ts";
+import { StatusSymbol } from "./icons.tsx";
+import { toneForStatus } from "./StatusBadge.tsx";
 import { formatDurationMs } from "../lib/format.ts";
-import { symbolForStatus, toneForStatus } from "./StatusBadge.tsx";
 
 /** Last observed worker duration per slice (worker_finished durationMs). */
 function durationBySlice(events: RunEvent[]): Map<string, number> {
@@ -64,7 +65,7 @@ export default function SliceTable({
                 onClick={() => onSelect(s.id)}
               >
                 <span aria-hidden="true" className="omp-status-sym" data-tone={tone}>
-                  {symbolForStatus(s.status)}
+                  <StatusSymbol status={s.status} />
                 </span>
                 <span className="omp-board-main">
                   <span className="omp-board-top">

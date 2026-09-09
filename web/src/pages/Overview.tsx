@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { CircleX, TriangleAlert } from "lucide-react";
+import { LuCircleX, LuGitFork, LuTable, LuTriangleAlert } from "react-icons/lu";
 import type { AgentRow, RunDetail, RunEvent } from "../api.ts";
 import Dag from "../components/Dag.tsx";
 import RunHeader from "../components/RunHeader.tsx";
@@ -56,7 +56,7 @@ export default function Overview({
             {attention.length} need{attention.length === 1 ? "s" : ""} attention
           </strong>{" "}
           {attention.slice(0, 4).map((s) => {
-            const Icon = s.status === "failed" ? CircleX : TriangleAlert;
+            const Icon = s.status === "failed" ? LuCircleX : LuTriangleAlert;
             return (
               <button key={s.id} type="button" className="omp-attention-link" onClick={() => onInspect(s.id)} title={s.reason ?? s.title}>
                 <Icon aria-hidden="true" className="size-3.5 shrink-0" strokeWidth={2} />
@@ -72,9 +72,11 @@ export default function Overview({
           <span className="omp-section-label">Execution board — {detail.slices.length} slices</span>
           <TabsList className="omp-tabs" aria-label="Board mode">
             <TabsTrigger value="board" className="omp-tab">
+              <LuTable aria-hidden="true" className="size-3.5 shrink-0" />
               Board
             </TabsTrigger>
             <TabsTrigger value="dag" className="omp-tab">
+              <LuGitFork aria-hidden="true" className="size-3.5 shrink-0" />
               Graph
             </TabsTrigger>
           </TabsList>

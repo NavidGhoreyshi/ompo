@@ -1,13 +1,13 @@
-import { Bot, ChartColumn, Layers, LayoutDashboard, Route, type LucideIcon } from "lucide-react";
+import { LuBot, LuChartColumn, LuLayers, LuLayoutDashboard, LuRoute, type IconType } from "react-icons/lu";
 
 export type View = "overview" | "runs" | "roadmap" | "agents" | "stats";
 
-export const VIEWS: { id: View; label: string; icon: LucideIcon }[] = [
-  { id: "overview", label: "Overview", icon: LayoutDashboard },
-  { id: "runs", label: "Runs", icon: Layers },
-  { id: "roadmap", label: "Roadmap", icon: Route },
-  { id: "agents", label: "Agents", icon: Bot },
-  { id: "stats", label: "Stats", icon: ChartColumn },
+export const VIEWS: { id: View; label: string; icon: IconType }[] = [
+  { id: "overview", label: "Overview", icon: LuLayoutDashboard },
+  { id: "runs", label: "Runs", icon: LuLayers },
+  { id: "roadmap", label: "Roadmap", icon: LuRoute },
+  { id: "agents", label: "Agents", icon: LuBot },
+  { id: "stats", label: "Stats", icon: LuChartColumn },
 ];
 
 /**

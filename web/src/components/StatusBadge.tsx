@@ -1,3 +1,4 @@
+import { StatusSymbol } from "./icons.tsx";
 import { Badge } from "./ui/badge.tsx";
 
 /** Semantic status indicator: symbol + word, never color alone. */
@@ -70,7 +71,9 @@ export default function StatusBadge({ status }: { status: string }) {
   const tone = toneForStatus(status);
   return (
     <Badge variant={BADGE_BY_TONE[tone]} data-tone={tone}>
-      <span aria-hidden="true">{symbolForStatus(status)}</span>
+      <span aria-hidden="true" className="omp-status-sym" data-tone={tone}>
+        <StatusSymbol status={status} />
+      </span>
       {status}
     </Badge>
   );

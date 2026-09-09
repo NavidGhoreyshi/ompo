@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
-import { Check, Minus, Pause, Play, Plus, RotateCcw, SkipForward, Square, type LucideIcon } from "lucide-react";
+import { LuCheck, LuMinus, LuPause, LuPlay, LuPlus, LuRotateCcw, LuSkipForward, LuSquare, type IconType } from "react-icons/lu";
 import {
   api,
   type ControlIntent,
@@ -9,8 +9,8 @@ import {
 } from "../api.ts";
 import { Badge } from "./ui/badge.tsx";
 import { Button } from "./ui/button.tsx";
+import { StatusSymbol } from "./icons.tsx";
 import { Input } from "./ui/input.tsx";
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "./ui/select.tsx";
 
 /**
  * Contextual control: prefilled from the current selection (inspector or
@@ -28,11 +28,11 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from ".
 type SliceKind = "retry" | "skip" | "park" | "kill";
 type RunKind = "pause" | "resume";
 
-const SLICE_ACTIONS: readonly { kind: SliceKind; label: string; hint: string; icon: LucideIcon }[] = [
-  { kind: "retry", label: "Retry", hint: "re-queue the slice with one more attempt", icon: RotateCcw },
-  { kind: "skip", label: "Skip", hint: "mark skipped — needs confirmation", icon: SkipForward },
-  { kind: "park", label: "Park", hint: "park with a reason (required)", icon: Pause },
-  { kind: "kill", label: "Kill", hint: "kill the slice — needs confirmation", icon: Square },
+const SLICE_ACTIONS: readonly { kind: SliceKind; label: string; hint: string; icon: IconType }[] = [
+  { kind: "retry", label: "Retry", hint: "re-queue the slice with one more attempt", icon: LuRotateCcw },
+  { kind: "skip", label: "Skip", hint: "mark skipped — needs confirmation", icon: LuSkipForward },
+  { kind: "park", label: "Park", hint: "park with a reason (required)", icon: LuPause },
+  { kind: "kill", label: "Kill", hint: "kill the slice — needs confirmation", icon: LuSquare },
 ];
 
 /** Destructive slice actions arm an inline confirm before the same API call. */
@@ -288,11 +288,11 @@ export default function ControlPanel({
               title="pause claiming — in-flight slices finish, nothing new claims"
               onClick={() => sendRun("pause")}
             >
-              <Pause aria-hidden="true" />
+              <LuPause aria-hidden="true" />
               Pause
             </Button>
             <Button size="sm" variant="outline" disabled={busy} title="resume claiming" onClick={() => sendRun("resume")}>
-              <Play aria-hidden="true" />
+              <LuPlay aria-hidden="true" />
               Resume
             </Button>
             <span className="omp-control-label">Jobs</span>
@@ -304,7 +304,7 @@ export default function ControlPanel({
               title="set-jobs −1 (1..32)"
               onClick={() => stepJobs(-1)}
             >
-              <Minus aria-hidden="true" />
+              <LuMinus aria-hidden="true" />
             </Button>
             <Input
               value={jobs}
@@ -330,7 +330,7 @@ export default function ControlPanel({
               title="apply the typed jobs value (1..32)"
               onClick={() => sendJobs(Number(jobs))}
             >
-              <Check aria-hidden="true" />
+              <LuCheck aria-hidden="true" />
               Set
             </Button>
           </>
@@ -346,6 +346,9 @@ export default function ControlPanel({
         {pending && !outcome && (
           <p>
             <Badge variant="warning" data-tone="amber">
+              <span aria-hidden="true" className="omp-badge-sym" data-tone="amber">
+                <StatusSymbol status="pending" />
+              </span>{" "}
               pending
             </Badge>{" "}
             <code>
@@ -362,6 +365,9 @@ export default function ControlPanel({
               variant={outcome.type === "control_applied" ? "success" : "warning"}
               data-tone={outcome.type === "control_applied" ? "green" : "amber"}
             >
+              <span aria-hidden="true" className="omp-badge-sym" data-tone={outcome.type === "control_applied" ? "green" : "amber"}>
+                <StatusSymbol status={outcome.type === "control_applied" ? "done" : "blocked-env"} />
+              </span>{" "}
               {outcome.type === "control_applied" ? "applied" : "rejected"}
             </Badge>{" "}
             <span title={`#${outcome.seq} ${outcome.type} ${outcome.sliceId ?? "run"}${outcome.detail ? ` — ${outcome.detail}` : ""}`}>
@@ -376,6 +382,9 @@ export default function ControlPanel({
         {!pending && direct && (
           <p>
             <Badge variant={direct.ok ? "success" : "warning"} data-tone={direct.ok ? "green" : "amber"}>
+              <span aria-hidden="true" className="omp-badge-sym" data-tone={direct.ok ? "green" : "amber"}>
+                <StatusSymbol status={direct.ok ? "done" : "blocked-env"} />
+              </span>{" "}
               {direct.ok ? "applied" : "rejected"}
             </Badge>{" "}
             {direct.message} <span className="omp-hint">(direct — quiescent run)</span>
@@ -401,6 +410,9 @@ export default function ControlPanel({
                         : "muted"
                   }
                 >
+                  <span aria-hidden="true" className="omp-badge-sym" data-tone={e.type === "control_applied" ? "green" : e.type === "control_rejected" ? "amber" : "muted"}>
+                    <StatusSymbol status={e.type === "control_applied" ? "done" : e.type === "control_rejected" ? "blocked-env" : "pending"} />
+                  </span>{" "}
                   {e.type === "control_requested"
                     ? "pending"
                     : e.type === "control_applied"

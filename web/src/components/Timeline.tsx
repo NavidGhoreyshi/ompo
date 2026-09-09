@@ -2,6 +2,7 @@ import { useMemo } from "react";
 import type { RunEvent, SliceSummary } from "../api.ts";
 import { formatDurationMs, formatSpan, formatTokens } from "../lib/format.ts";
 import { buildTimeline, type TimelineAttempt } from "../lib/timeline.ts";
+import { StatusSymbol } from "./icons.tsx";
 
 type Tone = "cyan" | "green" | "amber" | "red" | "muted";
 
@@ -135,8 +136,11 @@ export default function Timeline({
                             className="omp-timeline-tick"
                             style={{ left: `${tickPct(a, h, model.t1Ms)}%` }}
                             title={`${row.sliceId} generation boundary g${i} → g${i + 1}`}
+                            aria-hidden="true"
                           >
-                            ◆
+                            <svg viewBox="0 0 8 8" focusable="false">
+                              <path d="M4 0 8 4 4 8 0 4Z" fill="currentColor" />
+                            </svg>
                           </span>
                         ))}
                       </button>
@@ -152,7 +156,10 @@ export default function Timeline({
                 )}
                 {longTail.has(row.sliceId) && (
                   <span className="omp-badge" data-tone="amber" title="Disproportionate wall-clock share (≥2× the median slice total)">
-                    <span aria-hidden="true" className="omp-badge-sym">▲</span>long-tail
+                    <span aria-hidden="true" className="omp-badge-sym" data-tone="amber">
+                      <StatusSymbol status="blocked-env" />
+                    </span>
+                    long-tail
                   </span>
                 )}
               </div>
@@ -165,7 +172,12 @@ export default function Timeline({
         <span><i className="omp-timeline-swatch" data-tone="cyan" /> open</span>
         <span><i className="omp-timeline-swatch" data-tone="amber" /> retried / blocked / killed</span>
         <span><i className="omp-timeline-swatch" data-tone="red" /> failed</span>
-        <span>◆ generation boundary</span>
+        <span>
+          <svg viewBox="0 0 8 8" aria-hidden="true" focusable="false" className="omp-legend-tick">
+            <path d="M4 0 8 4 4 8 0 4Z" fill="currentColor" />
+          </svg>{" "}
+          generation boundary
+        </span>
         <span>dashed = still open at the last observed event</span>
         <span>hover or click a bar for attempt · generation · tokens · duration</span>
       </p>
