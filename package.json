@@ -11,6 +11,7 @@
     "check": "bunx tsc --noEmit",
     "start": "bun src/cli.ts",
     "web:build": "bunx vite build --config web/vite.config.ts && bun scripts/embed-web.ts",
+    "release:gate": "bun test tests/release-gate.test.ts",
     "build": "bun run web:build && bun build --compile src/cli.ts --outfile ompo"
   },
   "devDependencies": {
