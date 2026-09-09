@@ -7,11 +7,12 @@ import OutputView from "./OutputView.tsx";
 import PromptView from "./PromptView.tsx";
 import ReviewView from "./ReviewView.tsx";
 import StatusBadge from "./StatusBadge.tsx";
+import Usage from "./Usage.tsx";
 import VerifyView from "./VerifyView.tsx";
 
-const TABS = ["Output", "Diff", "Verify", "Review", "Prompt", "Events"] as const;
+const TABS = ["Output", "Diff", "Verify", "Review", "Prompt", "Events", "Usage"] as const;
 
-/** Right-hand inspector: selected-slice detail as six TUI-parity tabs + contextual control. */
+/** Right-hand inspector: selected-slice detail as tabbed views (six TUI-parity tabs + Usage accounting) with contextual control. */
 export default function Inspector({
   runId,
   selected,
@@ -115,6 +116,7 @@ export default function Inspector({
         {tab === 3 && <ReviewView detail={d} />}
         {tab === 4 && <PromptView selected={sel} detail={d} />}
         {tab === 5 && <EventsView runId={runId} sliceId={sel.id} detail={d} />}
+        {tab === 6 && <Usage detail={d} />}
       </div>
 
       <h3>Control</h3>
