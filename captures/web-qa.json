@@ -1,0 +1,134 @@
+{
+  "generated": "w5d",
+  "scenarios": {
+    "failedRun": {
+      "status": "failed",
+      "counts": {
+        "done": 1,
+        "active": 3,
+        "failed": 1,
+        "skipped": 0,
+        "blockedEnv": 1,
+        "pending": 6
+      }
+    },
+    "completedRun": {
+      "status": "done",
+      "counts": {
+        "done": 1,
+        "active": 0,
+        "failed": 0,
+        "skipped": 0,
+        "blockedEnv": 0,
+        "pending": 0
+      }
+    },
+    "blockedEnvRun": {
+      "status": "blocked-env",
+      "counts": {
+        "done": 0,
+        "active": 0,
+        "failed": 0,
+        "skipped": 0,
+        "blockedEnv": 1,
+        "pending": 2
+      }
+    },
+    "runningRun": {
+      "status": "running",
+      "live": true,
+      "workers": 1
+    },
+    "blockedDep": {
+      "status": "pending",
+      "ready": false
+    },
+    "concurrentWorkers": {
+      "rows": 3,
+      "lanes": [
+        0,
+        1,
+        2
+      ]
+    },
+    "generations": {
+      "generation": 2,
+      "handoffs": 2,
+      "ticks": 2
+    },
+    "verifyMulti": {
+      "steps": 2,
+      "pass": false,
+      "pendingGate": true
+    },
+    "reviews": {
+      "minor": {
+        "approved": true,
+        "findings": [
+          "nit: rename x"
+        ],
+        "notes": "minor nit only"
+      },
+      "majorApproved": false,
+      "priorNotes": true
+    },
+    "diff": {
+      "files": 2,
+      "hunks": [
+        1,
+        2
+      ],
+      "endpointNote": true
+    },
+    "events": {
+      "total": 14,
+      "query": 2
+    },
+    "dag": {
+      "unknown": [
+        "ghost"
+      ],
+      "cycle": [
+        "c1",
+        "c2"
+      ],
+      "nodes": 5,
+      "edges": 4
+    },
+    "timeline": {
+      "rows": 8,
+      "tokens": 230
+    },
+    "narrow": {
+      "breakpoint760": true,
+      "tableScroll": true,
+      "shellClip": true
+    },
+    "longOutput": {
+      "workerTailLines": 60,
+      "promptTailLines": 30
+    },
+    "emptyOutput": {
+      "artifacts": {
+        "report": false,
+        "verdict": false,
+        "review": false,
+        "workerLog": false,
+        "prompt": false
+      }
+    },
+    "control": {
+      "retry": true,
+      "kill": true,
+      "skip": true,
+      "pauseQuiescentOk": false,
+      "pauseLiveQueued": "queued",
+      "park400": 400,
+      "unknown404": 404,
+      "jobs400": 400
+    },
+    "shell": {
+      "servesHtml": true
+    }
+  }
+}
