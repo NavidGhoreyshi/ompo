@@ -319,9 +319,9 @@ export default function ControlPanel({
               disabled={busy}
               aria-label="Increase jobs by one"
               title="set-jobs +1 (1..32)"
-              onClick={() => sendJobs(Number(jobs))}
+              onClick={() => stepJobs(1)}
             >
-              <Plus aria-hidden="true" />
+              <LuPlus aria-hidden="true" />
             </Button>
             <Button
               size="sm"
