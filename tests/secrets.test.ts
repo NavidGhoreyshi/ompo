@@ -1,20 +1,30 @@
 import { describe, expect, test } from "bun:test";
-import { existsSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
   collectScanTargets,
+  findingAccepted,
   formatFindingsRedacted,
+  hashLineContent,
+  isHumanProseValue,
   isScannablePath,
+  preMergeSecretGate,
+  resolveAcceptanceTargets,
   scanCandidateFiles,
   scanTextLines,
 } from "../src/secrets.ts";
-import { runRoadmapLoop } from "../src/loop.ts";
+import { createRun, loadRun, readEvents, sliceDir, storeApi } from "../src/store.ts";
 import { parseRoadmap } from "../src/parse.ts";
 import { REPORT_CLOSE, REPORT_OPEN } from "../src/report.ts";
 import { REVIEW_CLOSE, REVIEW_OPEN } from "../src/review.ts";
-import { createRun, loadRun, sliceDir } from "../src/store.ts";
+import { runRoadmapLoop } from "../src/loop.ts";
+import type { Verdict } from "../src/types.ts";
 import type { WorkerRunner } from "../src/worker.ts";
+
+function mkVerdict(): Verdict {
+  return { sliceId: "s1", attempt: 2, pass: true, steps: [], at: new Date().toISOString() };
+}
 
 describe("scanTextLines", () => {
   test("detects an AWS access key", () => {
@@ -72,6 +82,54 @@ describe("scanTextLines", () => {
     ]);
   });
 });
+describe("human-prose values", () => {
+  test("localized password labels are not credentials", () => {
+    const labels = [
+      `password: "رمز عبور"`,
+      `password: "пароль"`,
+      `password: "contraseña segura"`,
+    ].join("\n");
+    expect(scanTextLines(labels)).toEqual([]);
+    expect(isHumanProseValue("رمز عبور")).toBe(true);
+    expect(isHumanProseValue("s3cr3t-value-9")).toBe(false);
+  });
+
+  test("ASCII assignments still flag, including spaced passphrases", () => {
+    expect(scanTextLines(`password = "s3cr3t-value-9"`)).toEqual([{ line: 1, kind: "secret-assignment" }]);
+    expect(scanTextLines(`password = "correct horse battery staple"`)).toEqual([{ line: 1, kind: "secret-assignment" }]);
+  });
+
+  test("token classes ignore nearby prose", () => {
+    const hits = scanTextLines(`key = "AKIAQZ3K9M2V7X4B8JXS"; // رمز`);
+    expect(hits).toEqual([{ line: 1, kind: "aws-access-key" }]);
+  });
+});
+
+describe("findingAccepted", () => {
+  const acc = [{ file: "lib/strings.ts", line: 74, kind: "secret-assignment", lineHash: hashLineContent(`password: "x"`) }];
+
+  test("matches exact content, voids on edit", () => {
+    expect(findingAccepted(acc, { file: "lib/strings.ts", line: 74, kind: "secret-assignment" }, `password: "x"`)).toBe(true);
+    expect(findingAccepted(acc, { file: "lib/strings.ts", line: 74, kind: "secret-assignment" }, `password: "y"`)).toBe(false);
+    expect(findingAccepted(acc, { file: "lib/strings.ts", line: 75, kind: "secret-assignment" }, `password: "x"`)).toBe(false);
+    expect(findingAccepted(acc, { file: "lib/strings.ts", line: 74, kind: "aws-access-key" }, `password: "x"`)).toBe(false);
+    expect(findingAccepted(acc, { file: "lib/strings.ts", line: 74, kind: "secret-assignment" }, null)).toBe(false);
+  });
+});
+
+describe("resolveAcceptanceTargets", () => {
+  test("pins kind and hash; refuses thin air", () => {
+    const dir = mkdtempSync(join(tmpdir(), "ompo-secrets-accept-"));
+    writeFileSync(join(dir, "scan.json"), JSON.stringify({ findings: [{ file: "a.ts", line: 2, kind: "secret-assignment" }] }), "utf8");
+    writeFileSync(join(dir, "a.ts"), `ok\npassword = "s3cr3t-value-9"\n`, "utf8");
+    const items = resolveAcceptanceTargets({ scanFile: join(dir, "scan.json"), root: dir, specs: ["a.ts:2"] });
+    expect(items).toEqual([{ file: "a.ts", line: 2, kind: "secret-assignment", lineHash: hashLineContent(`password = "s3cr3t-value-9"`) }]);
+    expect(() => resolveAcceptanceTargets({ scanFile: join(dir, "scan.json"), root: dir, specs: ["a.ts:9"] })).toThrow(/thin air/);
+    expect(() => resolveAcceptanceTargets({ scanFile: join(dir, "scan.json"), root: dir, specs: ["nope"] })).toThrow(/file:line/);
+    expect(() => resolveAcceptanceTargets({ scanFile: join(dir, "missing.json"), root: dir, specs: ["a.ts:2"] })).toThrow(/nothing to accept/);
+  });
+});
+
 
 describe("scanCandidateFiles", () => {
   const io = (files: Record<string, string>) => ({
@@ -249,6 +307,36 @@ describe("pre-merge gate in the loop", () => {
     const res = await runRoadmapLoop({ projectDir: dir, runId: "r", runner, noDebug: true, onEvent: () => {} });
     expect(res.exitCode).toBe(0);
     expect(res.done).toBe(1);
+  });
+
+  test("blessed findings stay silent on re-gate; edited lines re-fire", () => {
+    const dir = mkdtempSync(join(tmpdir(), "ompo-secrets-"));
+    createRun(dir, parseRoadmap(LEAK_MD), "r");
+    storeApi.claimSlice(dir, "r", "s1");
+    mkdirSync(sliceDir(dir, "r", "s1"), { recursive: true });
+    writeFileSync(join(dir, "leaked.ts"), `password = "s3cr3t-value-9"\n`, "utf8");
+    const slice = loadRun(dir, "r").doc.slices[0]!;
+    const gateOpts = {
+      projectDir: dir, runId: "r", slice, attempt: 2, dir: sliceDir(dir, "r", "s1"), wtPath: dir,
+      verdict: mkVerdict(),
+      report: { filesChanged: ["leaked.ts"] }, maxRetries: 0, log: () => {},
+    };
+    expect(preMergeSecretGate(gateOpts)).toBe(false);
+    expect(loadRun(dir, "r").doc.slices[0]!.status).toBe("failed");
+    const scanFile = join(sliceDir(dir, "r", "s1"), "secret-scan-2.json");
+    const items = resolveAcceptanceTargets({ scanFile, root: dir, specs: ["leaked.ts:1"] });
+    expect(items).toHaveLength(1);
+    storeApi.acceptSecretFindings(dir, "r", "s1", items, "test blessing");
+    const ev = readEvents(dir, "r").find((e) => e.type === "secret_accepted")!;
+    expect(ev.detail).toContain("leaked.ts:1 (secret-assignment)");
+    expect(ev.detail).toContain("test blessing");
+    expect(JSON.stringify(ev)).not.toContain("s3cr3t-value-9");
+    gateOpts.verdict = mkVerdict();
+    expect(preMergeSecretGate(gateOpts)).toBe(true);
+    // Editing the blessed line voids the blessing.
+    writeFileSync(join(dir, "leaked.ts"), `password = "another-s3cr3t-value"\n`, "utf8");
+    gateOpts.verdict = mkVerdict();
+    expect(preMergeSecretGate(gateOpts)).toBe(false);
   });
 });
 

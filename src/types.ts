@@ -79,6 +79,7 @@ export type RunEventType =
   | "slice_blocked_env"
   | "slice_skipped"
   | "slice_killed"
+  | "secret_accepted"
   | "run_aborted"
   | "run_resumed"
   | "run_finished"

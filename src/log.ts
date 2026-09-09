@@ -36,6 +36,7 @@ const TYPES: Record<RunEvent["type"], { color: number; label: string }> = {
   slice_blocked_env: { color: 35, label: "env blocked" }, // magenta
   slice_skipped: { color: 90, label: "skipped" }, // gray
   slice_killed: { color: 31, label: "killed" }, // red
+  secret_accepted: { color: 33, label: "secret ok" }, // yellow: operator-blessed finding
   run_aborted: { color: 31, label: "ABORTED" }, // red
   run_resumed: { color: 36, label: "resumed" }, // cyan
   run_finished: { color: 90, label: "finished" }, // gray

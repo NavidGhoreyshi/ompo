@@ -17,11 +17,11 @@
  */
 
 import { spawnSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import { readFileSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { storeApi } from "./store.ts";
+import { loadSecretAcceptances, storeApi } from "./store.ts";
 import type { Slice, Verdict } from "./types.ts";
-
 export interface SecretFinding {
   /** Worktree/project-relative path. */
   file: string;
@@ -83,19 +83,39 @@ const PATTERNS: Pattern[] = [
   { kind: "private-key", re: /BEGIN (?:RSA |OPENSSH |EC |DSA |PGP )?PRIVATE KEY/ },
   // Named-secret assignments: a known secret name given a substantial value.
   // Quoted or bare, `=`/`:` separated. Value must be 12+ non-space chars so
-  // `password = test` / `api_key = ""` / `${VAR}` never match.
+  // `password = test` / `api_key = ""` / `${VAR}` never match. The value is
+  // captured (group 1) so human-prose values (i18n labels like
+  // `password: "رمز عبور"`) can be told apart from machine credentials.
   {
     kind: "secret-assignment",
-    re: /\b(?:aws_secret_access_key|secret_access_key|api[_-]?secret|client[_-]?secret)\b\s*[:=]\s*['"]?[^\s'"]{12,}['"]?/i,
+    re: /\b(?:aws_secret_access_key|secret_access_key|api[_-]?secret|client[_-]?secret)\b\s*[:=]\s*['"]?([^\s'"]{12,})['"]?/i,
   },
   {
     kind: "secret-assignment",
-    re: /\bpassword\s*[:=]\s*['"][^'"]{8,}['"]/i,
+    re: /\bpassword\s*[:=]\s*['"]([^'"]{8,})['"]/i,
   },
 ];
 
 function benign(line: string): boolean {
   return BENIGN_VALUE_RE.test(line);
+}
+
+/**
+ * True when an assigned value reads as human-language prose (i18n labels,
+ * display strings) rather than a machine credential: it contains a
+ * non-ASCII character. Credentials are ASCII by construction (base64, hex,
+ * PEM, URL-safe tokens); non-ASCII text cannot be pasted into auth systems.
+ * Accepted miss: a deliberately non-ASCII passphrase literal. The reviewer
+ * still audits tracked files, so the backstop stays narrow by design while
+ * localized `password: "…"` labels stop blocking merges.
+ */
+export function isHumanProseValue(value: string): boolean {
+  return /[^\x00-\x7F]/.test(value);
+}
+
+/** sha256 of a finding line (trimmed) — pins acceptances to exact content. */
+export function hashLineContent(line: string): string {
+  return createHash("sha256").update(line.trim(), "utf8").digest("hex");
 }
 
 /** Scan one text's lines. Pure — the unit-test seam. */
@@ -106,10 +126,12 @@ export function scanTextLines(content: string): { line: number; kind: string }[]
     const line = lines[i]!;
     if (benign(line)) continue;
     for (const p of PATTERNS) {
-      if (p.re.test(line)) {
-        out.push({ line: i + 1, kind: p.kind });
-        break; // one finding per line: class is what matters, not count
-      }
+      const m = p.re.exec(line);
+      if (!m) continue;
+      // A prose value (i18n label) is not a credential — try other patterns.
+      if (p.kind === "secret-assignment" && m[1] !== undefined && isHumanProseValue(m[1])) continue;
+      out.push({ line: i + 1, kind: p.kind });
+      break; // one finding per line: class is what matters, not count
     }
   }
   return out;
@@ -293,12 +315,38 @@ export function preMergeSecretGate(opts: {
     }
     return true;
   }
+  // Operator-blessed findings (audited via `ompo accept-secret`) stay silent
+  // only while the exact blessed line content is unchanged — edited lines
+  // re-fire through the normal refusal path below.
+  const acceptances = loadSecretAcceptances(projectDir, runId, sliceId);
+  const accepted = scan.findings.filter((f) => findingAccepted(acceptances, f, readFindingLine(collected.root, f)));
+  const remaining = scan.findings.filter((f) => !findingAccepted(acceptances, f, readFindingLine(collected.root, f)));
+  if (remaining.length === 0) {
+    const by = acceptances.length > 0 ? ` (blessed by ${acceptances[0]!.acceptedBy}: ${acceptances[0]!.reason})` : "";
+    verdict.steps.push({
+      name: "secret-scan",
+      command: "ompo secret-scan (deterministic pre-merge gate)",
+      exit: 0,
+      timedOut: false,
+      outputTail: `secret scan: ${scan.findings.length} finding(s), all accepted by operator${by}`,
+      logRef: join("slices", sliceId, `secret-scan-${attempt}.json`),
+    });
+    writeFileSync(
+      join(dir, `secret-scan-${attempt}.json`),
+      JSON.stringify({ filesScanned: scan.filesScanned, skipped: scan.skipped, findings: [], accepted: scan.findings }, null, 2) + "\n",
+      "utf8",
+    );
+    opts.log(`  secret scan: ${scan.findings.length} finding(s) all accepted by operator — proceeding to merge`);
+    return true;
+  }
+  const findings = remaining;
   writeFileSync(
     join(dir, `secret-scan-${attempt}.json`),
-    JSON.stringify({ filesScanned: scan.filesScanned, skipped: scan.skipped, findings: scan.findings }, null, 2) + "\n",
+    JSON.stringify({ filesScanned: scan.filesScanned, skipped: scan.skipped, findings, accepted: accepted }, null, 2) + "\n",
     "utf8",
   );
-  const summary = `secret scan: ${scan.findings.length} finding(s) — ${formatFindingsRedacted(scan.findings)}`;
+  const summary = `secret scan: ${findings.length} finding(s) — ${formatFindingsRedacted(findings)}` +
+    (accepted.length > 0 ? ` (${accepted.length} accepted by operator)` : "");
   verdict.steps.push({
     name: "secret-scan",
     command: "ompo secret-scan (deterministic pre-merge gate)",
@@ -332,4 +380,68 @@ export function formatFindingsRedacted(findings: SecretFinding[], max = 10): str
   const shown = findings.slice(0, max).map((f) => `${f.file}:${f.line} (${f.kind})`);
   const rest = findings.length > max ? ` (+${findings.length - max} more)` : "";
   return shown.join("; ") + rest;
+}
+
+/**
+ * True when an operator blessing covers this finding: same file, line, and
+ * kind, AND the current line content still hashes to the blessed hash. Any
+ * edit to the line voids the blessing (safe default — re-bless after review).
+ */
+export function findingAccepted(
+  acceptances: { file: string; line: number; kind: string; lineHash: string }[],
+  finding: SecretFinding,
+  lineContent: string | null,
+): boolean {
+  if (lineContent === null) return false;
+  const hash = hashLineContent(lineContent);
+  return acceptances.some(
+    (a) => a.file === finding.file && a.line === finding.line && a.kind === finding.kind && a.lineHash === hash,
+  );
+}
+
+/** One finding line from a scan root (null when unreadable — never a match). */
+export function readFindingLine(root: string, finding: SecretFinding): string | null {
+  try {
+    const lines = readFileSync(join(root, finding.file), "utf8").split("\n");
+    return lines[finding.line - 1] ?? null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Resolve CLI `--finding file:line` specs against a recorded scan file into
+ * acceptance items (finding kind + content hash pinned). Throws when the
+ * scan file is missing or a spec matches no recorded finding — findings
+ * cannot be blessed out of thin air.
+ */
+export function resolveAcceptanceTargets(opts: {
+  scanFile: string;
+  root: string;
+  specs: string[];
+}): { file: string; line: number; kind: string; lineHash: string }[] {
+  let scan: { findings?: SecretFinding[] };
+  try {
+    scan = JSON.parse(readFileSync(opts.scanFile, "utf8")) as { findings?: SecretFinding[] };
+  } catch {
+    throw new Error(`no secret scan on file at ${opts.scanFile} — nothing to accept (run verify first)`);
+  }
+  const recorded = Array.isArray(scan.findings) ? scan.findings : [];
+  return opts.specs.map((spec) => {
+    const colon = spec.lastIndexOf(":");
+    const file = colon < 0 ? "" : spec.slice(0, colon);
+    const line = colon < 0 ? NaN : Number(spec.slice(colon + 1));
+    if (!file || !Number.isInteger(line) || line < 1) {
+      throw new Error(`bad --finding spec "${spec}" (want file:line, e.g. lib/strings.ts:74)`);
+    }
+    const hit = recorded.find((f) => f.file === file && f.line === line);
+    if (!hit) {
+      throw new Error(`no recorded finding at ${file}:${line} — cannot bless thin air (see ${opts.scanFile})`);
+    }
+    const content = readFindingLine(opts.root, hit);
+    if (content === null) {
+      throw new Error(`cannot read ${file}:${line} under ${opts.root} — refusing to bless an unreadable line`);
+    }
+    return { file, line, kind: hit.kind, lineHash: hashLineContent(content) };
+  });
 }

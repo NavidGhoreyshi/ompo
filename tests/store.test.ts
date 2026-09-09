@@ -70,6 +70,33 @@ describe("store", () => {
     }
     expect(readFileSync).toBeDefined();
   });
+  test("secret_accepted is status-neutral and replays exactly", () => {
+    const dir = tmpProject();
+    const initial = parseRoadmap(MD);
+    createRun(dir, initial, "r");
+    storeApi.claimSlice(dir, "r", "a");
+    storeApi.verifyFailed(dir, "r", "a", "ver", "secret_found");
+    storeApi.acceptSecretFindings(
+      dir, "r", "a",
+      [{ file: "a.ts", line: 1, kind: "secret-assignment", lineHash: "abc" }],
+      "reviewed false positive",
+    );
+    const cursor = loadRun(dir, "r");
+    expect(cursor.doc.slices.find((s) => s.id === "a")!.status).toBe("failed");
+    const events = readEvents(dir, "r");
+    const ev = events.find((e) => e.type === "secret_accepted")!;
+    expect(ev.sliceId).toBe("a");
+    expect(ev.detail).toContain("a.ts:1 (secret-assignment)");
+    const rebuilt = rebuildStatusesFromEvents(initial, events);
+    for (const s of cursor.doc.slices) {
+      expect(rebuilt.get(s.id)).toBe(s.status);
+    }
+    // Guard rejects in-flight slices; quiescent slices pass through unchanged.
+    expect(() => storeApi.acceptSecretFindings(dir, "r", "b", [], "x")).not.toThrow();
+    storeApi.claimSlice(dir, "r", "b");
+    expect(() => storeApi.acceptSecretFindings(dir, "r", "b", [], "x")).toThrow(/kill it first/);
+  });
+
 
   test("resume demotes in-flight slices, preserves attempts", () => {
     const dir = tmpProject();

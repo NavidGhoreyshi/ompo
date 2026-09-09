@@ -41,6 +41,7 @@ import { formatCiEvent, jobSummaryPaths, parseCiFormat, renderProgressBar, summa
 import { collectChecklist, fillChecklist, renderChecklistJson, renderChecklistMd } from "./checklist.ts";
 import { explainConfig, runDoctor } from "./doctor.ts";
 import { diffSliceBranch, pruneWorktrees, renderShowText, showSlice, sliceWorktreePath, tailSliceLog } from "./forensics.ts";
+import { resolveAcceptanceTargets } from "./secrets.ts";
 import { computeStats, exportHtml, queryEvents, replayRun } from "./stats.ts";
 import pkg from "../package.json";
 
@@ -72,6 +73,9 @@ USAGE
   ompo logs <id> [--run ID] [--tail N] [--follow]  newest worker log tail (follow polls)
   ompo retry <id> [--run ID] [--reason R]   one more attempt now (queued on live runs, applied now otherwise)
   ompo skip <id> [--run ID] [--reason R]    skip slice without running (downstream proceeds past skips)
+  ompo accept-secret <id> --finding F:L [--finding ...] --reason R [--run ID]
+                                            bless recorded secret-scan findings as reviewed false positives
+                                            (audited, content-pinned; re-verify with retry afterwards)
   ompo worktrees prune [--project DIR]      git worktree prune + drop dirs for terminal/unknown runs
   ompo checklist [--run ID] [--json]        merged deferred + placeholders list (what — needs value; manual check)
   ompo fill --var K=V [--var ...] [--run ID] re-run gates of slices mentioning the vars (never writes the store)
@@ -118,8 +122,8 @@ WEB FLAGS (bare ompo dashboard)
   --no-open          start the server without launching a browser
   --tui              run the unified terminal UI instead of the dashboard
 
-FORENSICS FLAGS (show/diff/shell/logs/retry/skip/worktrees/checklist/fill/stats/query/export/replay/doctor/config)
-  --var K=V          fill: real value for a placeholder var (repeatable)
+FORENSICS FLAGS (show/diff/shell/logs/retry/skip/accept-secret/worktrees/checklist/fill/stats/query/export/replay/doctor/config)
+  --finding F:L      accept-secret: recorded finding to bless (repeatable)
   --tail N           logs: last N worker-log lines (default 50)
   --html             export: self-contained HTML report
   --out FILE         export: write to FILE instead of stdout
@@ -188,6 +192,8 @@ interface Args {
   format?: string;
   /** `fill --var K=V` (repeatable). */
   vars: Record<string, string>;
+  /** `accept-secret --finding file:line` (repeatable). */
+  findings: string[];
   /** `export --html`: write a self-contained HTML report. */
   html?: boolean;
   /** `export --out FILE`, `logs --out` target. */
@@ -232,6 +238,7 @@ function parseArgs(argv: string[]): Args {
     dryRun: false,
     rest: [],
     vars: {},
+    findings: [],
   };
   // argv[0] doubles as the command slot, so a leading `--tui` never reaches
   // the flag loop below — detect it up front.
@@ -279,6 +286,8 @@ function parseArgs(argv: string[]): Args {
       const eq = raw.indexOf("=");
       if (eq <= 0) throw new Error(`--var needs K=V (got "${raw}")`);
       a.vars[raw.slice(0, eq)!.trim()] = raw.slice(eq + 1);
+    } else if (t === "--finding" && argv[i + 1]) {
+      a.findings.push(argv[++i]!);
     } else if (t === "--html") a.html = true;
     else if (t === "--out" && argv[i + 1]) a.out = argv[++i]!;
     else if (t === "--tail" && argv[i + 1]) a.tail = parsePositiveInt(argv[++i]!, "--tail");
@@ -758,8 +767,55 @@ function cmdDirectControl(a: Args, kind: "retry" | "skip"): number {
     requestControl(a.project, runId, intent);
     console.log(`queued ${kind} ${sliceId} on live run ${runId} — loop applies within ~2s (watch \`ompo log --run ${runId} --follow\`)`);
     return 0;
+
   } catch (err) {
     console.error(`control failed: ${String((err as Error).message)}`);
+    return 1;
+  }
+}
+/**
+ * Bless recorded secret-scan findings as reviewed false positives.
+ * Every --finding must match a recorded finding in the slice's latest
+ * secret-scan JSON (nothing is blessed out of thin air); the blessing pins
+ * the exact line content, so edited lines re-fire at the next verify.
+ * File-only effect read at gate time — safe on live runs by construction
+ * (per-slice file, and the slice guard rejects in-flight slices).
+ */
+function cmdAcceptSecret(a: Args): number {
+  const sliceId = a.sub ?? a.slice;
+  if (!sliceId) {
+    console.error("ompo accept-secret needs a slice id (ompo accept-secret <id> --finding file:line --reason R)");
+    return 1;
+  }
+  if (a.findings.length === 0) {
+    console.error("ompo accept-secret needs --finding file:line (repeatable)");
+    return 1;
+  }
+  if (!a.reason) {
+    console.error("ompo accept-secret needs --reason R (audit trail)");
+    return 1;
+  }
+  const runId = needRun(a.project, a.run);
+  if (!runId) {
+    console.error(`unknown run ${JSON.stringify(a.run ?? "(none)")} — use ompo list`);
+    return 1;
+  }
+  try {
+    const cursor = loadRun(a.project, runId);
+    const slice = cursor.doc.slices.find((s) => s.id === sliceId);
+    if (!slice) {
+      console.error(`unknown slice "${sliceId}"`);
+      return 1;
+    }
+    const scanFile = join(a.project, ".omp", "roadmap", "runs", runId, "slices", sliceId, `secret-scan-${slice.attempts}.json`);
+    const wt = sliceWorktreePath(a.project, runId, sliceId);
+    const root = existsSync(wt) ? wt : a.project;
+    const items = resolveAcceptanceTargets({ scanFile, root, specs: a.findings });
+    storeApi.acceptSecretFindings(a.project, runId, sliceId, items, a.reason);
+    console.log(`accepted ${items.map((i) => `${i.file}:${i.line} (${i.kind})`).join("; ")} on ${sliceId} — re-verify with \`ompo retry ${sliceId} --run ${runId}\``);
+    return 0;
+  } catch (err) {
+    console.error(`accept-secret failed: ${(err as Error).message}`);
     return 1;
   }
 }
@@ -1196,6 +1252,8 @@ async function main(): Promise<number> {
       return cmdDirectControl(a, "retry");
     case "skip":
       return cmdDirectControl(a, "skip");
+    case "accept-secret":
+      return cmdAcceptSecret(a);
     case "worktrees":
       return cmdWorktrees(a);
     case "checklist":

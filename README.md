@@ -305,6 +305,24 @@ TUI twins (run + unified TUIs): `R` retry · `S` skip · `B` park · `K` kill ·
 slice intents immediately; `jobs`/`pause`/`resume` need a live loop.
 Stale intents reject instead of double-running (status guards).
 
+## Overriding a secret-scan false positive (`ompo accept-secret`)
+
+The pre-merge secret scan refuses on any finding through the normal
+retry path, and the debugger lane never touches secrets — so a reviewed
+false positive (e.g. an i18n `password:` label) would wedge the slice.
+The audited override pins the exact line content; edited lines re-fire:
+
+```bash
+ompo accept-secret s5b --finding lib/strings.ts:74 --finding lib/strings.ts:178 \
+  --reason "Persian UI labels, reviewed — no credentials"
+ompo retry s5b   # re-runs verify; untouched blessed lines stay silent
+```
+
+Every `--finding` must match a recorded finding in the slice's latest
+`secret-scan-<attempt>.json` (nothing is blessed out of thin air), and
+`--reason` is required — the blessing lands in the event log as
+`secret_accepted` with operator, content hash, and reason.
+
 ## Replan an edited roadmap (`ompo replan`)
 
 ```bash

@@ -7,6 +7,7 @@
  *       roadmap.json      # { doc, nextSeq, runId, createdAt } (materialized cursor)
  *       events.jsonl      # append-only RunEvents (audit + replay)
  *       slices/<sliceId>/report.json | verdict.json | worker-<n>.log
+ *         | secret-accept.json (operator-blessed scan findings, gate-read)
  *     runs/<runId>.lock   # exclusive run lock { pid, startedAt }
  *
  * Write discipline: events are appended (O_APPEND) BEFORE the cursor is
@@ -321,6 +322,35 @@ function mutateSlice(
   return cursor;
 }
 
+/** Operator-blessed secret-scan finding. The blessing pins the exact line
+ * content hash at accept time — the gate re-checks it, so edited lines
+ * re-fire while untouched blessed lines stay silent. */
+export interface SecretAcceptance {
+  /** Worktree/project-relative path. */
+  file: string;
+  /** 1-based line number at accept time. */
+  line: number;
+  /** Pattern class, e.g. "secret-assignment". No secret value, ever. */
+  kind: string;
+  /** sha256 of the trimmed line content when blessed. */
+  lineHash: string;
+  acceptedBy: string;
+  acceptedAt: string;
+  reason: string;
+}
+
+/** Blessed findings for a slice (missing file = none). Never throws. */
+export function loadSecretAcceptances(projectDir: string, runId: string, sliceId: string): SecretAcceptance[] {
+  try {
+    const raw = readJson<{ findings?: SecretAcceptance[] }>(
+      join(sliceDir(projectDir, runId, sliceId), "secret-accept.json"),
+    );
+    return Array.isArray(raw.findings) ? raw.findings : [];
+  } catch {
+    return [];
+  }
+}
+
 export const storeApi = {
   /** Claim fence (plan §14): pending → running, attempts++. */
   claimSlice(projectDir: string, runId: string, sliceId: string): RunCursor {
@@ -492,6 +522,38 @@ export const storeApi = {
     }, reason ?? "operator skip");
   },
   /**
+   * Operator blesses secret-scan findings as reviewed false positives.
+   * File-only effect read at gate time (no cursor status change), so it is
+   * safe on live runs by construction — but the slice guard ensures no
+   * in-flight gate is mid-scan for this slice. Retrying afterwards re-runs
+   * verify; untouched blessed lines stay silent, edited lines re-fire.
+   */
+  acceptSecretFindings(
+    projectDir: string,
+    runId: string,
+    sliceId: string,
+    items: { file: string; line: number; kind: string; lineHash: string }[],
+    reason: string,
+  ): RunCursor {
+    const by = process.env.USER ?? process.env.USERNAME ?? "operator";
+    const at = new Date().toISOString();
+    const list = items.map((i) => `${i.file}:${i.line} (${i.kind})`).join("; ");
+    return mutateSlice(projectDir, runId, sliceId, "secret_accepted", (s) => {
+      if (s.status !== "pending" && s.status !== "failed" && s.status !== "blocked-env") {
+        throw new Error(`cannot accept secrets for slice "${sliceId}" in status ${s.status} (kill it first if running)`);
+      }
+      const dest = join(sliceDir(projectDir, runId, sliceId), "secret-accept.json");
+      mkdirSync(sliceDir(projectDir, runId, sliceId), { recursive: true });
+      const prev = loadSecretAcceptances(projectDir, runId, sliceId);
+      for (const it of items) {
+        if (!prev.some((m) => m.file === it.file && m.line === it.line && m.kind === it.kind)) {
+          prev.push({ ...it, acceptedBy: by, acceptedAt: at, reason });
+        }
+      }
+      writeJsonAtomic(dest, { version: 1, findings: prev });
+    }, `accepted ${list} — ${reason}`);
+  },
+  /**
    * Operator kill: pending or in-flight work stops and parks as aborted
    * (resume re-queues it). The loop also watches for the kill at stage
    * boundaries and discards post-kill worker output. Terminal slices
@@ -613,7 +675,9 @@ export function rebuildStatusesFromEvents(
           status.set(ev.sliceId, "aborted");
         }
         break;
-      default:
+      case "secret_accepted":
+        // No status impact by design: the acceptance file carries the effect
+        // at gate time; replay must reproduce cursor statuses exactly.
         break;
     }
   }
