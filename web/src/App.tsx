@@ -109,6 +109,8 @@ export default function App() {
   const [sliceDetail, setSliceDetail] = useState<Record<string, unknown> | null>(null);
   const [error, setError] = useState<string | null>(null);
   const seqRef = useRef(-1);
+  const selRef = useRef<string | null>(null);
+  selRef.current = sel;
 
   useEffect(() => {
     api.health()
@@ -144,13 +146,19 @@ export default function App() {
     let stop = false;
     let es: EventSource | null = null;
     try {
-      es = new EventSource(`/api/runs/${runId}/stream?afterSeq=${seqRef.current}`);
+      es = new EventSource(api.streamUrl(runId, seqRef.current));
       es.addEventListener("event", (m) => {
         try {
           const ev = JSON.parse((m as MessageEvent).data) as RunEvent;
           if (typeof ev.seq === "number" && ev.seq > seqRef.current) {
             seqRef.current = ev.seq;
             setEvents((prev) => [...prev.slice(-400), ev]);
+            // Targeted refresh: the frame only signals *what* changed — board/slice
+            // state always re-derives from the read endpoints, never from the payload.
+            void api.run(runId).then(setDetail).catch(() => {});
+            if (typeof ev.sliceId === "string" && ev.sliceId === selRef.current) {
+              void api.slice(runId, ev.sliceId).then(setSliceDetail).catch(() => {});
+            }
           }
         } catch {
           /* ignore malformed frames */

@@ -127,6 +127,8 @@ export const api = {
     if (filter?.sliceId) params.set("sliceId", filter.sliceId);
     return req<{ events: RunEvent[]; offset: number }>(`/api/runs/${runId}/events?${params}`);
   },
+  /** Canonical SSE live tail (arch §4): same RunEvent frames as `events` polling. Frames only signal *what* changed — state always refreshes via the read endpoints. */
+  streamUrl: (runId: string, afterSeq = -1) => `/api/runs/${runId}/events/stream?afterSeq=${afterSeq}`,
   stats: (runId: string) => req<Record<string, unknown>>(`/api/runs/${runId}/stats`),
   control: (runId: string, body: Record<string, unknown>) =>
     req<Record<string, unknown>>(`/api/runs/${runId}/control`, {

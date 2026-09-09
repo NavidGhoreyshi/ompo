@@ -775,7 +775,8 @@ async function route(projectDir: string, req: Request): Promise<Response> {
       if (missing) return missing;
       return json(replayRun(projectDir, runId));
     }
-    if (req.method === "GET" && rest === "stream") {
+    // Canonical live tail is …/events/stream (arch §4); …/stream is the legacy alias older bundles use.
+    if (req.method === "GET" && (rest === "stream" || rest === "events/stream")) {
       const missing = requireRun(projectDir, runId);
       if (missing) return missing;
       const q = url.searchParams.get("afterSeq");
