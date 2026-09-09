@@ -190,7 +190,7 @@ export default function App() {
             <RoadmapPage detail={detail} selected={sel} onSelect={setSel} />
           )}
           {view === "agents" && (
-            <AgentsPage agents={agents} live={detail?.live ?? false} />
+            <AgentsPage agents={agents} live={detail?.live ?? false} selected={sel} onSelect={setSel} />
           )}
           {view === "stats" && <StatsPage stats={stats} />}
         </main>
