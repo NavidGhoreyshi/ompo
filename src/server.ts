@@ -648,6 +648,12 @@ async function handleControl(projectDir: string, runId: string, req: Request): P
   const intent: ControlIntent = { kind: raw.kind as ControlIntent["kind"], sliceId: raw.sliceId, jobs: raw.jobs, reason: raw.reason };
   const invalid = validateIntent(intent);
   if (invalid) return bad(invalid);
+  // Quiescent loop-local intents need a live loop (cmdCtl parity): reject
+  // before appending so the log never holds an outcome-less control_requested.
+  const loopLocal = intent.kind === "set-jobs" || intent.kind === "pause" || intent.kind === "resume";
+  if (loopLocal && !lockHeld(projectDir, runId)) {
+    return json({ ok: false, message: `${intent.kind} needs a live loop (no lock on run ${runId})`, applied: "direct" }, 200);
+  }
   let requested;
   try {
     requested = requestControl(projectDir, runId, intent);
@@ -661,10 +667,6 @@ async function handleControl(projectDir: string, runId: string, req: Request): P
     return json({ seq: requested.seq, kind: intent.kind, ...(intent.sliceId ? { sliceId: intent.sliceId } : {}), applied: "queued" }, 202);
   }
   // Quiescent run: cmdCtl pattern — drain what we just queued and apply now.
-  const loopLocal = intent.kind === "set-jobs" || intent.kind === "pause" || intent.kind === "resume";
-  if (loopLocal) {
-    return json({ ok: false, message: `${intent.kind} needs a live loop (no lock on run ${runId})`, applied: "direct" }, 200);
-  }
   // `requestControl` already appended; drain everything up to our seq and apply it.
   const { intents } = drainIntents(projectDir, runId, requested.seq - 1);
   const target = intents.find((i) => i.seq === requested.seq) ?? intents[intents.length - 1];

@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useRef, useState } from "react";
-import { api, type ControlKind, type RunDetail, type RunEvent, type RunSummary, type SliceSummary } from "./api.ts";
+import { api, type ControlIntent, type ControlKind, type RunDetail, type RunEvent, type RunSummary, type SliceSummary } from "./api.ts";
 
 const POLL_MS = 900;
 
@@ -45,7 +45,7 @@ function ControlPanel({ runId, slices, onDone }: { runId: string; slices: SliceS
     setBusy(true);
     setResult(null);
     try {
-      const body: Record<string, unknown> = { kind };
+      const body: ControlIntent = { kind };
       if (needsSlice) body.sliceId = sliceId;
       if (kind === "set-jobs") body.jobs = Number(jobs);
       if (reason.trim()) body.reason = reason.trim();
