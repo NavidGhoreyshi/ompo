@@ -1,5 +1,6 @@
 import { useMemo, useState } from "react";
 import type { RunDetail } from "../api.ts";
+import Dag from "../components/Dag.tsx";
 import StatusBadge from "../components/StatusBadge.tsx";
 
 const FILTERS = ["all", "pending", "running", "verifying", "failed", "blocked-env", "done", "skipped"] as const;
@@ -51,6 +52,7 @@ export default function RoadmapPage({
           ))}
         </div>
       </div>
+      {detail && <Dag slices={detail.slices} selected={selected} onSelect={onSelect} />}
       {!detail ? (
         <p className="omp-hint">Loading run…</p>
       ) : rows.length === 0 ? (
