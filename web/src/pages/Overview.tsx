@@ -32,13 +32,15 @@ export default function Overview({
   const recent = events.slice(-8).reverse();
 
   return (
-    <>
-      <RunHeader detail={detail} events={events} />
-      <SliceTable slices={detail.slices} selected={selected} onSelect={onInspect} events={events} />
-
-      <Timeline events={events} slices={detail.slices} selected={selected} onSelect={onInspect} />
-
-      <section className="omp-panel" aria-label="Needs attention">
+    <div className="omp-overview">
+      <div className="omp-bento-full">
+        <RunHeader detail={detail} events={events} />
+      </div>
+      <div className="omp-bento-wide">
+        <SliceTable slices={detail.slices} selected={selected} onSelect={onInspect} events={events} />
+      </div>
+      <section className="omp-panel omp-bento-side" aria-label="Needs attention">
+        <span className="omp-eyebrow">Triage</span>
         <h2>Needs attention ({attention.length})</h2>
         {attention.length === 0 ? (
           <p className="omp-hint">Nothing failed or blocked.</p>
@@ -54,12 +56,14 @@ export default function Overview({
           </ul>
         )}
       </section>
-
-      <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(280px, 1fr))", gap: 12 }}>
-        <section className="omp-panel" aria-label="Up next">
-          <h2>Up next</h2>
-          {upNext.length === 0 ? (
-            <p className="omp-hint">No pending slices.</p>
+      <div className="omp-bento-full">
+        <Timeline events={events} slices={detail.slices} selected={selected} onSelect={onInspect} />
+      </div>
+      <section className="omp-panel omp-bento-half" aria-label="Up next">
+        <span className="omp-eyebrow">Queue</span>
+        <h2>Up next</h2>
+        {upNext.length === 0 ? (
+          <p className="omp-hint">No pending slices.</p>
           ) : (
             <ul className="omp-list">
               {upNext.map((s) => (
@@ -71,7 +75,8 @@ export default function Overview({
             </ul>
           )}
         </section>
-        <section className="omp-panel" aria-label="Latest events">
+        <section className="omp-panel omp-bento-half" aria-label="Latest events">
+          <span className="omp-eyebrow">Stream</span>
           <h2>Latest events</h2>
           {recent.length === 0 ? (
             <p className="omp-hint">No events yet.</p>
@@ -87,12 +92,12 @@ export default function Overview({
             </ul>
           )}
         </section>
-      </div>
-
-      <p className="omp-hint">
-        <button className="omp-btn" onClick={() => onNavigate("roadmap")}>Open roadmap</button>{" "}
-        <button className="omp-btn" onClick={() => onNavigate("stats")}>View stats</button>
-      </p>
-    </>
+        <div className="omp-bento-full">
+          <p className="omp-hint">
+            <button className="omp-btn" onClick={() => onNavigate("roadmap")}>Open roadmap</button>{" "}
+            <button className="omp-btn" onClick={() => onNavigate("stats")}>View stats</button>
+          </p>
+        </div>
+    </div>
   );
 }

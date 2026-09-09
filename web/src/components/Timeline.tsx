@@ -79,6 +79,7 @@ export default function Timeline({
 
   return (
     <section className="omp-panel" aria-label="Timeline">
+      <span className="omp-eyebrow">History</span>
       <h2>
         Timeline — {attemptCount} attempt{attemptCount === 1 ? "" : "s"} across {model.rows.length} slice
         {model.rows.length === 1 ? "" : "s"}{" "}

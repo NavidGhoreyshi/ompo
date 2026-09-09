@@ -23,7 +23,8 @@ function contentType(path: string): string {
   if (path.endsWith(".json")) return "application/json; charset=utf-8";
   if (path.endsWith(".svg")) return "image/svg+xml";
   if (path.endsWith(".png")) return "image/png";
-  if (path.endsWith(".ico")) return "image/x-icon";
+  if (path.endsWith(".woff2")) return "font/woff2";
+  if (path.endsWith(".woff")) return "font/woff";
   return "application/octet-stream";
 }
 

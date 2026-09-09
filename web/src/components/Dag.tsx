@@ -64,6 +64,7 @@ export default function Dag({
 
   return (
     <section className="omp-panel" aria-label="Dependency graph">
+      <span className="omp-eyebrow">Graph</span>
       <h2>Dependency graph — {slices.length} slices</h2>
       {layout.unknownIds.length > 0 && (
         <p className="omp-warn" role="note">

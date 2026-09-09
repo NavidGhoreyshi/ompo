@@ -33,6 +33,7 @@ export default function RunHeader({
   }
   return (
     <section className="omp-panel" aria-label="Run header">
+      <span className="omp-eyebrow">Run</span>
       <h2>
         {detail.runId}{" "}
         <StatusBadge status={detail.status} />{" "}

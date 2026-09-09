@@ -41,6 +41,7 @@ export default function SliceTable({
 
   return (
     <section className="omp-panel" aria-label="Slice board">
+      <span className="omp-eyebrow">Board</span>
       <h2>Slice board — {slices.length} slices</h2>
       <div className="omp-table-wrap">
         <table className="omp-table">
