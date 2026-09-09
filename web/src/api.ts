@@ -186,6 +186,13 @@ export interface ControlDirect {
 }
 
 export type ControlResult = ControlQueued | ControlDirect;
+/** Detached resume loop spawned for a quiescent run (202). */
+export interface ResumeResult {
+  ok: boolean;
+  applied: "spawned";
+  pid: number;
+  log: string;
+}
 /** One lint finding, verbatim from `lintRoadmap` (docs/web-dashboard-architecture.md §3). */
 export interface LintFinding {
   level: "error" | "warn";
@@ -281,6 +288,13 @@ export const api = {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify(body),
+    }),
+  /** Spawn a detached resume loop for a quiescent run (409 while live). */
+  resume: (runId: string) =>
+    req<ResumeResult>(`/api/runs/${runId}/resume`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: "{}",
     }),
   planPreview: () => req<PlanPreviewEnvelope>("/api/plan/preview"),
   planRoadmap: () => req<{ path: string; markdown: string }>("/api/plan/roadmap"),

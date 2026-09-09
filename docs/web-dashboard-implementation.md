@@ -15,10 +15,12 @@ mode, opens a browser, and stops on SIGINT/SIGTERM. Binding `0.0.0.0`
 prints a no-auth warning. `projectDir` comes from `--project`/cwd — never
 from the client.
 
-The dashboard is read-mostly: the only mutation surface is
+The dashboard is read-mostly: the mutation surfaces are
 `POST /api/runs/:runId/control` (plus the plan accept/abort/edit decision,
-§4). There is deliberately no shell, file-write, replan, or checkout
-endpoint.
+§4) and `POST /api/runs/:runId/resume`, which spawns a detached resume loop
+for a quiescent run — the explicit consent boundary, since bare `ompo` never
+claims slices. There is deliberately no shell, file-write, replan, or
+checkout endpoint.
 
 ## 2. Backend: `src/server.ts` (Bun.serve)
 
@@ -86,7 +88,7 @@ The channel is server→client only; control returns over POST. Semantics:
   `GET …/events?afterSeq=N` polling yields identical state — SSE is an
   optimization, not a second model.
 
-### 2.4 Control POST (the only mutation)
+### 2.4 Control POST and resume POST (the only mutations)
 
 `POST /api/runs/:runId/control` takes `ControlIntent` verbatim and reuses
 exactly the `control.ts` path (`validateIntent` → `requestControl` →
@@ -110,6 +112,16 @@ construction:
   ``ompo resume --run <id>`` — because loop-`resume` and run-`resume`
   share a name and a bare "needs a live loop" sends operators back to the
   same doomed button.
+
+`POST /api/runs/:runId/resume` spawns a detached `resume --run <id>` loop
+(same `cmdRun` path as the CLI; headless without a TTY, chatter to
+`resume-<ts>.log` in the run dir via the exported `runDir` builder). Unknown
+run is 404, live run is 409, cross-origin is 403; success is `202 { ok,
+applied: "spawned", pid, log }`. Single-flight rides the run lock. The
+spawner is a `DashboardOptions.spawnResume` seam so tests stub it and never
+launch real workers. Runs table rows (quiescent only) and the inspector Run
+group offer it as a Resume button; liveness settles through existing
+channels (`live` flips, `run_resumed` lands on SSE).
 
 ### 2.5 Security boundary
 
@@ -182,7 +194,7 @@ flow rules:
   `SliceTable` (dense execution rows: state symbol + id + title + one
   attempt/gen/agent/deps/duration meta line) or `Dag` (first-class
   dependency graph, same selection → Inspector contract).
-- `RunsPage` — run list with live markers; opens a run into Overview.
+- `RunsPage` — run list with live markers; opens a run into Overview; quiescent rows carry a Resume button (`POST …/resume`).
 - `RoadmapPage` — searchable slice table; same selection → Inspector
   contract as Overview.
 - `AgentsPage` — live-worker rows (`AgentCard`: pure projection over
@@ -234,9 +246,10 @@ intents. Outcome state derives from actual outcomes only:
   `control_applied`/`control_rejected` lands in the event tail
   (matched on `${kind}: ${message}` detail prefix).
 - `200 direct` → applied/rejected badge with the server message. On
-  quiescent runs the Run group is replaced by the restart command
+  quiescent runs the Run group offers a Resume run button (`POST …/resume`,
+  `202 spawned` with pid/log reported inline) beside the restart command
   (``ompo resume --run <id>``) — pause/resume/jobs are guaranteed-rejected
-  without a live loop, so the buttons are not offered. Slice intents
+  without a live loop, so those buttons are not offered. Slice intents
   still apply directly.
 - Recent control traffic (last 4 in scope) renders from events; with no
   traffic the hint states the mode (queued-vs-direct) from the `live`

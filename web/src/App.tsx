@@ -35,7 +35,7 @@ function useRuns() {
 export default function App() {
   const [version, setVersion] = useState<string | null>(null);
   const [stale, setStale] = useState(false);
-  const { runs, error: runsError } = useRuns();
+  const { runs, error: runsError, reload: reloadRuns } = useRuns();
   const [runId, setRunId] = useState<string | null>(null);
   const [detail, setDetail] = useState<RunDetail | null>(null);
   const [events, setEvents] = useState<RunEvent[]>([]);
@@ -168,6 +168,14 @@ export default function App() {
     setView("overview");
   }, []);
 
+  // Resume settles through existing channels: the spawned loop takes the
+  // lock (`live` flips) and appends `run_resumed` to the event tail. Reload
+  // both lists so run markers and detail agree even before SSE lands it.
+  const afterResume = useCallback((id: string) => {
+    void reloadRuns();
+    if (id === runId) void loadRun(id);
+  }, [reloadRuns, runId, loadRun]);
+
   return (
     <div className="omp-shell" data-sidebar={sidebarCollapsed ? "collapsed" : "open"}>
       <Header
@@ -199,7 +207,7 @@ export default function App() {
             <Overview detail={detail} events={events} agents={agents} selected={sel} onInspect={inspect} onNavigate={setView} />
           )}
           {view === "runs" && (
-            <RunsPage runs={runs} activeRunId={runId} onOpen={openRun} />
+            <RunsPage runs={runs} activeRunId={runId} onOpen={openRun} onResumed={afterResume} />
           )}
           {view === "roadmap" && (
             <RoadmapPage detail={detail} selected={sel} onSelect={setSel} />
@@ -215,7 +223,7 @@ export default function App() {
               runId={runId}
               selected={selected}
               detail={sliceDetail}
-              onControlDone={() => void loadRun(runId)}
+              onControlDone={() => { void loadRun(runId); void reloadRuns(); }}
               slices={detail?.slices ?? []}
               events={events}
               live={detail?.live}

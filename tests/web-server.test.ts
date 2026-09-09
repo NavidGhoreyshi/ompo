@@ -3,7 +3,7 @@ import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { parseRoadmap } from "../src/parse.ts";
-import { createRun } from "../src/store.ts";
+import { acquireLock, createRun, releaseLock } from "../src/store.ts";
 import { HEARTBEAT_MS, IDLE_TIMEOUT_S, startDashboardServer } from "../src/server.ts";
 // The sandbox sets HTTP(S)_PROXY without NO_PROXY; loopback test traffic
 // must not go through the proxy.
@@ -177,6 +177,51 @@ describe("dashboard server", () => {
       expect((await getJSON(`${url}/api/runs/r1/events/stream?afterSeq=bogus`)).status).toBe(400);
     } finally {
       stop();
+    }
+  });
+
+  test("resume spawns a detached loop for quiescent runs, refuses live ones", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "ompo-web-"));
+    createRun(dir, parseRoadmap(MD), "r1");
+    const calls: { cmd: string[]; cwd: string; logPath: string }[] = [];
+    const server = startDashboardServer({
+      projectDir: dir,
+      spawnResume: (cmd, opts) => {
+        calls.push({ cmd, cwd: opts.cwd, logPath: opts.logPath });
+        return { pid: 4242 };
+      },
+    });
+    try {
+      const post = (runId: string, headers?: Record<string, string>) =>
+        getJSON(`${server.url}/api/runs/${runId}/resume`, {
+          method: "POST",
+          headers: { "content-type": "application/json", ...(headers ?? {}) },
+          body: "{}",
+        });
+      expect((await post("nope")).status).toBe(404);
+      expect((await post("bad!id")).status).toBe(400);
+      expect((await post("r1", { origin: "https://evil.test" })).status).toBe(403);
+
+      // Quiescent: spawns the same `resume --run` path as the CLI, detached.
+      const spawned = await post("r1");
+      expect(spawned.status).toBe(202);
+      expect(spawned.body).toMatchObject({ ok: true, applied: "spawned", pid: 4242 });
+      expect(calls.length).toBe(1);
+      expect(calls[0]!.cmd.slice(-3)).toEqual(["resume", "--run", "r1"]);
+      expect(calls[0]!.cwd).toBe(dir);
+      expect(calls[0]!.logPath).toContain("r1");
+
+      // Live: single-flight — the lock holder wins, dashboard refuses.
+      acquireLock(dir, "r1");
+      try {
+        const live = await post("r1");
+        expect(live.status).toBe(409);
+        expect(calls.length).toBe(1);
+      } finally {
+        releaseLock(dir, "r1");
+      }
+    } finally {
+      server.stop();
     }
   });
 

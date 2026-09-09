@@ -1,4 +1,5 @@
-import type { RunSummary } from "../api.ts";
+import { useState } from "react";
+import { api, type RunSummary } from "../api.ts";
 import StatusBadge from "../components/StatusBadge.tsx";
 import { formatCostUsd } from "../components/Usage.tsx";
 import { formatElapsed, formatTokens } from "../lib/format.ts";
@@ -9,18 +10,37 @@ import { formatElapsed, formatTokens } from "../lib/format.ts";
  * counts, retries, handoffs, tokens, cost). Tokens/cost sum finished-worker
  * envelopes on the server — unknown renders "—", never 0 or an estimate.
  * Selecting a row switches the entire workspace to that run via onOpen
- * (same path as the header run picker). No run comparison here.
+ * (same path as the header run picker). Quiescent rows carry a Resume
+ * button that spawns a detached loop (POST …/resume) — viewing stays free,
+ * resuming is explicit. No run comparison here.
  */
 export default function RunsPage({
   runs,
   activeRunId,
   onOpen,
+  onResumed,
 }: {
   runs: RunSummary[];
   activeRunId: string | null;
   onOpen: (runId: string) => void;
+  onResumed: (runId: string) => void;
 }) {
   const ordered = [...runs].reverse();
+  const [busyId, setBusyId] = useState<string | null>(null);
+  const [resumeError, setResumeError] = useState<string | null>(null);
+
+  async function resume(runId: string) {
+    setBusyId(runId);
+    setResumeError(null);
+    try {
+      await api.resume(runId);
+      onResumed(runId);
+    } catch (err) {
+      setResumeError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setBusyId(null);
+    }
+  }
   return (
     <section className="omp-panel" aria-label="Runs">
       <h2>Runs ({runs.length})</h2>
@@ -45,6 +65,7 @@ export default function RunsPage({
                 <th scope="col" title="sum of worker_finished stats.tokens.total where reported">tokens</th>
                 <th scope="col" title="sum of stats.tokens.cost.total where the envelope reported cost">cost</th>
                 <th scope="col"><span className="omp-hint">open</span></th>
+                <th scope="col" title="spawn a detached resume loop for quiescent runs"><span className="omp-hint">resume</span></th>
               </tr>
             </thead>
             <tbody>
@@ -97,12 +118,32 @@ export default function RunsPage({
                         Open
                       </button>
                     </td>
+                    <td>
+                      {r.live ? (
+                        <span className="omp-hint" title="a live loop already holds this run">live</span>
+                      ) : (
+                        <button
+                          className="omp-btn"
+                          disabled={busyId !== null}
+                          onClick={(e) => { e.stopPropagation(); void resume(r.runId); }}
+                          aria-label={`Resume run ${r.runId}`}
+                          title={`Spawn a detached resume loop for ${r.runId}`}
+                        >
+                          {busyId === r.runId ? "Resuming…" : "Resume"}
+                        </button>
+                      )}
+                    </td>
                   </tr>
                 );
               })}
             </tbody>
           </table>
         </div>
+      )}
+      {resumeError && (
+        <p className="omp-error" role="alert">
+          {resumeError}
+        </p>
       )}
     </section>
   );

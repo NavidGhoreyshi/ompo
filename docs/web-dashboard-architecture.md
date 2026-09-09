@@ -99,6 +99,7 @@ GET  /api/runs/:runId/query?q=<dsl>               # { events: RunEvent[] }
 GET  /api/runs/:runId/replay                      # ReplayResult
 GET  /api/runs/:runId/events/stream           # SSE (§4; …/stream is a legacy alias)
 POST /api/runs/:runId/control                     # (§5)
+POST /api/runs/:runId/resume                      # (§5: spawn detached resume loop, quiescent only)
 ```
 
 List/detail pagination: runs and slices are small (roadmap scale); full
@@ -172,6 +173,20 @@ Server handling is `requestControl` → outcome observation, byte-for-byte the
   (``ompo resume --run <id>``), and the dashboard hides the Run pause/resume/jobs
   buttons on quiescent runs (`live === false`) behind that same restart command —
   never offer a button whose intent is guaranteed-rejected.
+
+5. Run resume is a separate endpoint, not a control intent: `POST
+   /api/runs/:runId/resume` spawns a detached `resume --run <id>` loop (the
+   same `cmdRun` path as the CLI — headless without a TTY, loop chatter to a
+   `resume-<ts>.log` file in the run dir). Guards: unknown run is 404, live
+   run (`lockHeld`) is 409, cross-origin writes are 403 like …/control;
+   success is `202 { ok, applied: "spawned", pid, log }`. Single-flight rides
+   the run lock (a spawn race is settled by the child's own `acquireLock`).
+   No new outcome protocol: liveness flips via `lockHeld` and `resumeRun`
+   appends `run_resumed`, both already on the SSE stream. Bare `ompo` never
+   claims — viewing stays free; this endpoint is the explicit consent to
+   spend. The dashboard offers it as a Resume button per quiescent run (runs
+   table) and in the inspector Run group (replacing the restart-command hint
+   as the primary action, command kept as fallback text).
 
 ## 6. Static asset strategy
 

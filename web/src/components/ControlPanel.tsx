@@ -164,6 +164,20 @@ export default function ControlPanel({
     void sendIntent(body);
   }
 
+  async function sendResume() {
+    setBusy(true);
+    setRequestError(null);
+    setDirect(null);
+    try {
+      const res = await api.resume(runId);
+      setDirect({ ok: res.ok, message: `resume loop spawned (pid ${res.pid}, log ${res.log}) — liveness follows on Activity` });
+      onDone();
+    } catch (err) {
+      setRequestError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setBusy(false);
+    }
+  }
   function sendJobs(value: number) {
     if (!Number.isInteger(value) || value < 1 || value > 32) {
       setRequestError(`set-jobs needs an integer jobs 1..32 (got ${value})`);
@@ -275,12 +289,16 @@ export default function ControlPanel({
       </div>
 
       <div className="omp-control-group" role="group" aria-label="Run actions">
-        <span className="omp-control-label">Run</span>
         {live === false ? (
-          <p className="omp-hint">
-            Run is quiescent (no live loop) — pause/resume/jobs need a live loop. Restart it with{" "}
-            <code>ompo resume --run {runId}</code>
-          </p>
+          <div style={{ display: "flex", gap: 8, alignItems: "center", flexWrap: "wrap" }}>
+            <Button size="sm" variant="outline" disabled={busy} title={`Spawn a detached resume loop for ${runId}`} onClick={() => void sendResume()}>
+              <LuPlay aria-hidden="true" />
+              Resume run
+            </Button>
+            <p className="omp-hint" style={{ margin: 0 }}>
+              Quiescent (no live loop) — or restart it with <code>ompo resume --run {runId}</code>
+            </p>
+          </div>
         ) : (
           <>
             <Button

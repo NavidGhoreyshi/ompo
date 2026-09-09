@@ -61,7 +61,7 @@ function runsDir(projectDir: string): string {
   return join(projectDir, RUNS_DIR);
 }
 
-function runDir(projectDir: string, runId: string): string {
+export function runDir(projectDir: string, runId: string): string {
   return join(runsDir(projectDir), runId);
 }
 

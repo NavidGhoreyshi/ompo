@@ -8,7 +8,9 @@
  * Security boundary (§7 of that note): binds loopback only by default,
  * `projectDir` is server-side config (never a client parameter), run/slice
  * ids are validated (no client-supplied paths), reads are capped like their
- * TUI counterparts, and the only mutation surface is POST …/control.
+ * TUI counterparts, and the only mutation surfaces are POST …/control (loop
+ * intents) and POST …/resume (spawn a detached `resume` loop for a
+ * quiescent run — refused while a live loop holds the run).
  */
 import { existsSync, readFileSync, readdirSync } from "node:fs";
 import { join, normalize } from "node:path";
@@ -23,8 +25,8 @@ import {
 import { diffSliceBranch, tailSliceLog } from "./forensics.ts";
 import { collectDocCandidates } from "./import.ts";
 import { resolveRunId } from "./log.ts";
+import { listRuns, loadRun, lockHeld, readEvents, runDir } from "./store.ts";
 import { computeStats, queryEvents, replayRun } from "./stats.ts";
-import { listRuns, loadRun, lockHeld, readEvents } from "./store.ts";
 import type { Effort, RunEvent, SliceStatus } from "./types.ts";
 import { loadRoadmapConfig } from "./config.ts";
 import { loadHandoffs, type HandoffEntry } from "./handoffs.ts";
@@ -880,6 +882,59 @@ async function handleControl(projectDir: string, runId: string, req: Request): P
   const res = applyIntent(projectDir, runId, target, { jobs: { value: 0 }, paused: false });
   return json({ ok: res.ok, message: res.message, applied: "direct" }, 200);
 }
+// ---- run resume (explicit consent to spend: spawn a detached loop) ----
+//
+// Bare `ompo` never claims slices — viewing stays free. POST …/resume is the
+// explicit consent boundary: it spawns a detached `resume --run` loop (the
+// same `cmdRun` path as the CLI, headless without a TTY, logs to a
+// `resume-<ts>.log` file in the run dir). Single-flight via the run lock: a
+// live loop gets 409, and a spawn race is settled by the child's own
+// `acquireLock` (loser exits 3, harmless). Liveness then rides the existing
+// channels — `lockHeld` flips `live`, `run_resumed` lands in the event tail.
+
+/** Detached loop spawner; injectable so tests never launch real workers. */
+export type ResumeSpawner = (cmd: string[], opts: { cwd: string; logPath: string }) => { pid: number };
+
+function defaultSpawnResume(cmd: string[], opts: { cwd: string; logPath: string }): { pid: number } {
+  const proc = Bun.spawn(cmd, {
+    cwd: opts.cwd,
+    stdin: "ignore",
+    stdout: Bun.file(opts.logPath),
+    stderr: Bun.file(opts.logPath),
+  });
+  proc.unref();
+  return { pid: proc.pid };
+}
+
+/** Self relaunch: compiled binary re-executes itself, `bun src/cli.ts` re-invokes bun. */
+function resumeCommand(): string[] {
+  const exe = process.execPath;
+  const base = exe.split("/").pop() ?? "";
+  if (base === "bun" || base.startsWith("bun-")) {
+    return [exe, join(import.meta.dir, "cli.ts")];
+  }
+  return [exe];
+}
+
+async function handleResume(
+  projectDir: string,
+  runId: string,
+  req: Request,
+  spawnResume: ResumeSpawner = defaultSpawnResume,
+): Promise<Response> {
+  if (!originAllowed(req)) return json({ error: "cross-origin resume is forbidden" }, 403);
+  if (lockHeld(projectDir, runId)) {
+    return json({ error: `run "${runId}" already has a live loop — resume refused` }, 409);
+  }
+  const logPath = join(runDir(projectDir, runId), `resume-${Date.now()}.log`);
+  let pid: number;
+  try {
+    pid = spawnResume([...resumeCommand(), "resume", "--run", runId], { cwd: projectDir, logPath }).pid;
+  } catch (err) {
+    return json({ error: err instanceof Error ? err.message : String(err) }, 500);
+  }
+  return json({ ok: true, applied: "spawned", pid, log: logPath.split("/").pop() }, 202);
+}
 // ---- plan preview (roadmap inspection boundary; arch §3) ----
 //
 // Project-scoped (no runId): reads ROADMAP.md from disk and runs it through
@@ -994,7 +1049,7 @@ async function handlePlanDecision(projectDir: string, req: Request): Promise<Res
 
 // ---- router ----
 
-async function route(projectDir: string, req: Request): Promise<Response> {
+async function route(projectDir: string, req: Request, routeSpawner?: ResumeSpawner): Promise<Response> {
   const url = new URL(req.url);
   const path = url.pathname;
 
@@ -1110,6 +1165,11 @@ async function route(projectDir: string, req: Request): Promise<Response> {
       if (missing) return missing;
       return handleControl(projectDir, runId, req);
     }
+    if (req.method === "POST" && rest === "resume") {
+      const missing = requireRun(projectDir, runId);
+      if (missing) return missing;
+      return handleResume(projectDir, runId, req, routeSpawner);
+    }
   }
   if (path === "/api/plan/preview" && req.method === "GET") return planPreviewEnvelope(projectDir);
   if (path === "/api/plan/roadmap" && req.method === "GET") return planRoadmapRaw(projectDir);
@@ -1140,6 +1200,8 @@ export interface DashboardOptions {
   /** Explicit port; omitted/0 → automatically selected available localhost port. */
   port?: number;
   host?: string;
+  /** Override the detached-loop spawner (tests stub this; production spawns `resume`). */
+  spawnResume?: ResumeSpawner;
 }
 
 export interface DashboardServer {
@@ -1168,7 +1230,7 @@ export function startDashboardServer(opts: DashboardOptions): DashboardServer {
     hostname: host,
     port: opts.port ?? 0,
     idleTimeout: IDLE_TIMEOUT_S,
-    fetch: (req) => route(opts.projectDir, req),
+    fetch: (req) => route(opts.projectDir, req, opts.spawnResume),
   });
   const port = server.port ?? opts.port ?? 0;
   return {
