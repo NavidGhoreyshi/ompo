@@ -140,7 +140,7 @@ export default function RoadmapPage({
         <p className="omp-hint">No slices match.</p>
       ) : (
         <div className="omp-table-wrap">
-          <table className="omp-table">
+          <table className="omp-table" data-table="roadmap">
             <thead>
               <tr>
                 <th scope="col">slice</th>
@@ -165,7 +165,7 @@ export default function RoadmapPage({
                   }}
                 >
                   <td><code>{s.id}</code></td>
-                  <td>{s.title}</td>
+                  <td><div className="omp-ellipsis" title={s.title}>{s.title}</div></td>
                   <td><StatusBadge status={s.status} /></td>
                   <td>{s.attempts}</td>
                   <td><div className="omp-ellipsis" title={s.reason ?? ""}>{s.reason ?? ""}</div></td>

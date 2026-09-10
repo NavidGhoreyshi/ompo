@@ -1,20 +1,19 @@
-import { useState } from "react";
-import { LuCircleX, LuGitFork, LuTable, LuTriangleAlert } from "react-icons/lu";
+import { LuCircleX, LuTriangleAlert } from "react-icons/lu";
 import type { AgentRow, RunDetail, RunEvent } from "../api.ts";
-import Dag from "../components/Dag.tsx";
+import LiveFeed from "../components/LiveFeed.tsx";
 import RunHeader from "../components/RunHeader.tsx";
 import SliceTable from "../components/SliceTable.tsx";
 import WorkerLanes from "../components/WorkerLanes.tsx";
 import { Skeleton } from "../components/ui/skeleton.tsx";
-import { Tabs, TabsContent, TabsList, TabsTrigger } from "../components/ui/tabs.tsx";
+import { preferredSliceId } from "../lib/selection.ts";
 
 /**
- * Overview workspace: RUN STATUS / BOARD-or-DAG + INSPECTOR (aside, owned
- * by App) / LIVE ACTIVITY (footer, owned by App). This column owns the run
- * strip, worker lanes, and the board — the execution itself, not its
- * accounting. Attention items render as one inline banner, not a side
- * panel competing with the board. The board panel scrolls internally; the
- * page shell never scrolls.
+ * Overview workspace: RUN STATUS / LIVE FEED / LANES + BOARD (aside owned
+ * by App: Inspector; footer owned by App: Activity). The live worker feed
+ * sits front and center under the hero — the TUI-equivalent stream of what
+ * the current worker is doing turn by turn. The board below is slice
+ * execution states, not a second roadmap: the dependency graph, slice
+ * table, and plan preview live in exactly one place (Roadmap view).
  */
 export default function Overview({
   detail,
@@ -30,8 +29,6 @@ export default function Overview({
   onInspect: (sliceId: string) => void;
   onNavigate: (v: "overview" | "runs" | "roadmap" | "agents" | "stats") => void;
 }) {
-  const [mode, setMode] = useState<"board" | "dag">("board");
-
   if (!detail) {
     return (
       <div className="omp-workspace" aria-label="Overview workspace">
@@ -44,11 +41,18 @@ export default function Overview({
     );
   }
 
+  // The feed follows the selection so clicking a board row or lane retargets
+  // it; with nothing selected it follows the slice that needs eyes — the
+  // same slice the hero leads with.
+  const activeId = selected ?? preferredSliceId(detail.slices);
+  const active = detail.slices.find((s) => s.id === activeId) ?? null;
+  const agent = active ? agents.find((a) => a.id === active.id) : undefined;
   const attention = detail.slices.filter((s) => s.status === "failed" || s.status === "blocked-env");
 
   return (
     <div className="omp-workspace" aria-label="Overview workspace">
       <RunHeader detail={detail} events={events} agents={agents} activeId={selected} />
+      <LiveFeed runId={detail.runId} slice={active} agent={agent} live={detail.live} />
       <WorkerLanes agents={agents} live={detail.live} selected={selected} onSelect={onInspect} />
       {attention.length > 0 && (
         <p className="omp-attention" role="alert">
@@ -67,29 +71,15 @@ export default function Overview({
           {attention.length > 4 && <span className="omp-hint">+{attention.length - 4} more</span>}
         </p>
       )}
-      <Tabs value={mode} onValueChange={(v) => setMode(v as "board" | "dag")} className="omp-board-tabs">
+      <section className="omp-board-panel" aria-label={`Slice board — ${detail.slices.length} slices`}>
         <div className="omp-board-bar">
-          <span className="omp-section-label">Execution board — {detail.slices.length} slices</span>
-          <TabsList className="omp-tabs" aria-label="Board mode">
-            <TabsTrigger value="board" className="omp-tab">
-              <LuTable aria-hidden="true" className="size-3.5 shrink-0" />
-              Board
-            </TabsTrigger>
-            <TabsTrigger value="dag" className="omp-tab">
-              <LuGitFork aria-hidden="true" className="size-3.5 shrink-0" />
-              Graph
-            </TabsTrigger>
-          </TabsList>
+          <span className="omp-section-label">Board — {detail.slices.length} slices</span>
+          <span className="omp-hint">roadmap graph + plan live under Roadmap</span>
         </div>
         <div className="omp-board-scroll">
-          <TabsContent value="board">
-            <SliceTable slices={detail.slices} selected={selected} onSelect={onInspect} events={events} />
-          </TabsContent>
-          <TabsContent value="dag">
-            <Dag slices={detail.slices} selected={selected} onSelect={onInspect} />
-          </TabsContent>
+          <SliceTable slices={detail.slices} selected={selected} onSelect={onInspect} events={events} />
         </div>
-      </Tabs>
+      </section>
     </div>
   );
 }

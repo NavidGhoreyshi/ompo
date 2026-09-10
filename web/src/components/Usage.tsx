@@ -172,7 +172,7 @@ export default function Usage({ detail }: { detail: SliceDetail | null }) {
         <p className="omp-hint">no generations yet — rows land when attempt workers spawn</p>
       ) : (
         <div className="omp-table-wrap">
-          <table className="omp-table">
+          <table className="omp-table" data-table="usage">
             <thead>
               <tr>
                 <th scope="col">Generation</th>

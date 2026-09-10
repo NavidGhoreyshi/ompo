@@ -184,19 +184,19 @@ flow rules:
 
 ### 3.2 Pages (`web/src/pages/`)
 
-- `Overview` — composition-first workspace: `RunHeader` run hero (run id,
-  then the auto-selected slice as `id title STATUS`, then a gen/attempt/
-  lane/action subline from `heroAction` — live worker line, latest slice
-  event, or status fallback — with counts/elapsed/tokens/workers demoted
-  to one muted telemetry line), `WorkerLanes` (one row per live agent,
-  sorted by lane, selecting a lane inspects its slice), an inline
-  failed/blocked-env attention banner, and a Board/Graph toggle over
-  `SliceTable` (dense execution rows: state symbol + id + title + one
-  attempt/gen/agent/deps/duration meta line) or `Dag` (first-class
-  dependency graph, same selection → Inspector contract).
-- `RunsPage` — run list with live markers; opens a run into Overview; quiescent rows carry a Resume button (`POST …/resume`).
-- `RoadmapPage` — searchable slice table; same selection → Inspector
-  contract as Overview.
+ - `Overview` — composition-first workspace: `RunHeader` run hero (run id,
+   then the auto-selected slice as `id title STATUS`, then a gen/attempt/
+   lane/action subline from `heroAction` — live worker line, latest slice
+   event, or status fallback — with counts/elapsed/tokens/workers demoted
+   to one muted telemetry line), `LiveFeed` (front and center under the
+   hero: the followed slice's lane/attempt/gen/turns-tools, latest worker
+   progress line, and live tail of its worker log via `useSliceLog`, same
+   slice the hero leads with), `WorkerLanes` (one row per live agent,
+   sorted by lane, selecting a lane inspects its slice), an inline
+   failed/blocked-env attention banner, and the `SliceTable` board (dense
+   execution rows: state symbol + id + title + one attempt/gen/agent/
+   deps/duration meta line). No graph here: `Dag`, the slice table, and
+   the plan preview live in exactly one place (`RoadmapPage`).
 - `AgentsPage` — live-worker rows (`AgentCard`: pure projection over
   server `AgentRow`; `verifying` shows the commit-mutex holder). Empty on
   quiescent runs by design — rows are point-in-time derivations, not

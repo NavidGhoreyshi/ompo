@@ -50,7 +50,7 @@ export default function RunsPage({
         <p className="omp-hint">No runs yet.</p>
       ) : (
         <div className="omp-table-wrap">
-          <table className="omp-table">
+          <table className="omp-table" data-table="runs">
             <thead>
               <tr>
                 <th scope="col">run</th>

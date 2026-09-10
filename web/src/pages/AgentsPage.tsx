@@ -23,7 +23,7 @@ export default function AgentsPage({
       ) : (
         <>
         <div className="omp-table-wrap">
-          <table className="omp-table">
+          <table className="omp-table" data-table="agents">
             <thead>
               <tr>
                 <th scope="col">lane</th>

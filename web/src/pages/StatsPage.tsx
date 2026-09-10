@@ -172,7 +172,7 @@ function QueryPanel({ runId }: { runId: string }) {
       )}
       {results !== null && results.length > 0 && !error && (
         <div className="omp-table-wrap">
-          <table className="omp-table" style={{ minWidth: 0 }}>
+          <table className="omp-table" data-table="query" style={{ minWidth: 0 }}>
             <thead>
               <tr>
                 <th scope="col">seq</th>
@@ -189,7 +189,7 @@ function QueryPanel({ runId }: { runId: string }) {
                     <code>{e.type}</code>
                   </td>
                   <td>{e.sliceId ?? "—"}</td>
-                  <td style={{ overflowWrap: "anywhere" }}>{e.detail ?? e.reason ?? "—"}</td>
+                  <td><div className="omp-ellipsis" style={{ maxWidth: "min(40vw, 480px)" }}>{e.detail ?? e.reason ?? "—"}</div></td>
                 </tr>
               ))}
             </tbody>
@@ -297,7 +297,7 @@ export default function StatsPage({ stats, runId }: { stats: StatsInput; runId?:
             <p className="omp-hint">No effort breakdown.</p>
           ) : (
             <div className="omp-table-wrap">
-              <table className="omp-table" style={{ minWidth: 0 }}>
+              <table className="omp-table" data-table="effort" style={{ minWidth: 0 }}>
                 <thead>
                   <tr>
                     <th scope="col">effort</th>
@@ -349,7 +349,7 @@ export default function StatsPage({ stats, runId }: { stats: StatsInput; runId?:
             <p className="omp-hint">No model fallbacks recorded.</p>
           ) : (
             <div className="omp-table-wrap">
-              <table className="omp-table" style={{ minWidth: 0 }}>
+              <table className="omp-table" data-table="fallbacks" style={{ minWidth: 0 }}>
                 <thead>
                   <tr>
                     <th scope="col">model</th>

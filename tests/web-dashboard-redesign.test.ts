@@ -102,14 +102,15 @@ describe("viewport app shell (no page-level scroll)", () => {
     expect(css).toMatch(/\.omp-activity-list\s*\{[^}]*overflow-y:\s*auto/s);
   });
 
-  test("board tabs root is the flex parent that enables board scrolling", () => {
+  test("board panel root is the flex parent that enables board scrolling", () => {
     // Regression: .omp-board-scroll is flex:1, which is inert unless its
     // parent is flex — without this the board grew with content and clipped
     // under .omp-workspace overflow:hidden with no scroll.
-    expect(css).toMatch(/\.omp-board-tabs\s*\{[^}]*display:\s*flex/s);
-    expect(css).toMatch(/\.omp-board-tabs\s*\{[^}]*flex-direction:\s*column/s);
-    expect(css).toMatch(/\.omp-board-tabs\s*\{[^}]*overflow:\s*hidden/s);
-    expect(src("web/src/pages/Overview.tsx")).toContain("omp-board-tabs");
+    expect(css).toMatch(/\.omp-board-panel\s*\{[^}]*display:\s*flex/s);
+    expect(css).toMatch(/\.omp-board-panel\s*\{[^}]*flex-direction:\s*column/s);
+    expect(css).toMatch(/\.omp-board-panel\s*\{[^}]*overflow:\s*hidden/s);
+    expect(src("web/src/pages/Overview.tsx")).toContain("omp-board-panel");
+    expect(src("web/src/pages/Overview.tsx")).not.toContain("omp-board-tabs");
   });
 
   test("secondary pages scroll as a whole inside .omp-page", () => {
@@ -164,11 +165,15 @@ describe("overview composition (execution first)", () => {
   const app = src("web/src/App.tsx");
   const inspector = src("web/src/components/Inspector.tsx");
   const board = src("web/src/components/SliceTable.tsx");
-
-  test("overview renders run strip, lanes, and board/graph — not the bento grid", () => {
+  test("overview leads with the live worker feed, not the roadmap — not the bento grid", () => {
     expect(overview).toContain("RunHeader");
+    expect(overview).toContain("LiveFeed");
     expect(overview).toContain("WorkerLanes");
-    expect(overview).toContain("Dag");
+    expect(overview).toContain("SliceTable");
+    // The roadmap graph lives in exactly one place (RoadmapPage), not in
+    // Overview alongside the board.
+    expect(overview).not.toContain("Dag");
+    expect(src("web/src/pages/RoadmapPage.tsx")).toContain("Dag");
     expect(overview).not.toContain("Timeline");
     expect(overview).not.toContain("omp-bento");
   });
@@ -203,5 +208,40 @@ describe("overview composition (execution first)", () => {
     expect(board).toContain("omp-board-row");
     expect(board).toContain("attempt");
     expect(board).not.toContain("<table");
+  });
+
+  test("live feed follows the hero slice and streams its worker log", () => {
+    const feed = src("web/src/components/LiveFeed.tsx");
+    // Same slice the hero leads with: explicit selection, else the slice
+    // that needs eyes — never a hardcoded first row.
+    expect(feed).toContain("useSliceLog");
+    expect(feed).toContain("useSliceLog(runId");
+    expect(feed).toContain("omp-livefeed");
+    expect(feed).toContain("lastLine");
+    // Feed sits front and center: hero, feed, lanes — board below.
+    const heroIdx = overview.indexOf("<RunHeader");
+    const feedIdx = overview.indexOf("<LiveFeed");
+    const lanesIdx = overview.indexOf("<WorkerLanes");
+    const boardIdx = overview.indexOf("omp-board-panel");
+    expect(heroIdx).toBeGreaterThanOrEqual(0);
+    expect(feedIdx).toBeGreaterThan(heroIdx);
+    expect(lanesIdx).toBeGreaterThan(feedIdx);
+    expect(boardIdx).toBeGreaterThan(lanesIdx);
+  });
+
+  test("worker-log polling lives in one shared hook, not two pollers", () => {
+    const hook = src("web/src/lib/useSliceLog.ts");
+    const logView = src("web/src/components/LogView.tsx");
+    expect(hook).toContain("sliceLog");
+    expect(hook).toMatch(/setInterval.*2000/s);
+    expect(logView).toContain("useSliceLog");
+    expect(logView).not.toContain("setInterval");
+  });
+
+  test("live feed chrome is fixed-height with an internal log scroll", () => {
+    expect(css).toContain(".omp-livefeed");
+    expect(css).toMatch(/\.omp-livefeed\s*\{[^}]*flex:\s*none/s);
+    expect(css).toMatch(/\.omp-livefeed-log\s*\{[^}]*max-height:\s*\d+px/s);
+    expect(css).toMatch(/\.omp-livefeed-log\s*\{[^}]*overflow-y:\s*auto/s);
   });
 });

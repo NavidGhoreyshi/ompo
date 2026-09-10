@@ -33,7 +33,7 @@ export default function VerifyView({ detail }: { detail: SliceDetail | null }) {
       )}
       {steps.length > 0 && (
         <div className="omp-table-wrap">
-          <table className="omp-table">
+          <table className="omp-table" data-table="verify">
             <thead>
               <tr>
                 <th scope="col">Gate</th>

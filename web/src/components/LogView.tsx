@@ -1,12 +1,12 @@
-import { useEffect, useRef, useState } from "react";
-import { api } from "../api.ts";
+import { useEffect, useRef } from "react";
+import { useSliceLog } from "../lib/useSliceLog.ts";
 
 /**
  * Log tab: live tail of the current generation's worker log (`ompo logs`
- * parity for the browser). Polls every 2s while the slice is active — the
- * dashboard event stream only advances at stage boundaries (claim, handoff,
- * finish), so without this tab a running slice looks dead for the whole
- * attempt. The TUI needs no such tab: it streams the worker to the terminal.
+ * parity for the browser). Polling lives in `useSliceLog` (shared with the
+ * overview LiveFeed) — this tab is the per-slice deep view, the feed is the
+ * always-visible one. The TUI needs no such tab: it streams the worker to
+ * the terminal.
  */
 export default function LogView({
   runId,
@@ -18,39 +18,8 @@ export default function LogView({
   /** True while the slice is running/verifying: poll for new lines. */
   active: boolean;
 }) {
-  const [name, setName] = useState<string | null>(null);
-  const [lines, setLines] = useState<string[]>([]);
-  const [error, setError] = useState<string | null>(null);
-  const [loading, setLoading] = useState(true);
+  const { name, lines, error, loading } = useSliceLog(runId, sliceId, active, 100);
   const preRef = useRef<HTMLPreElement | null>(null);
-
-  useEffect(() => {
-    let live = true;
-    setLoading(true);
-    setError(null);
-    const load = (quiet: boolean) => {
-      api
-        .sliceLog(runId, sliceId, 100)
-        .then((r) => {
-          if (!live) return;
-          setName(r.name);
-          setLines(r.lines);
-        })
-        .catch((err) => {
-          if (!live || quiet) return;
-          setError(err instanceof Error ? err.message : String(err));
-        })
-        .finally(() => {
-          if (live && !quiet) setLoading(false);
-        });
-    };
-    load(false);
-    const timer = active ? setInterval(() => load(true), 2000) : undefined;
-    return () => {
-      live = false;
-      clearInterval(timer);
-    };
-  }, [runId, sliceId, active]);
 
   // Tail-following: stay pinned to the newest line as polls land.
   useEffect(() => {

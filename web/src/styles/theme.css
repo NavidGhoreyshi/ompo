@@ -660,6 +660,69 @@ input:focus-visible,
   max-width: 140px;
   min-width: 0;
 }
+ /* Live worker feed: the TUI-equivalent stream, front and center under the
+  * hero. Fixed chrome (flex:none) with a capped internal log scroll so the
+  * board below keeps the remaining viewport instead of being pushed away. */
+ .omp-livefeed {
+   flex: none;
+   min-width: 0;
+   background: var(--omp-panel);
+   border: 1px solid var(--omp-hairline);
+   border-radius: var(--omp-radius);
+   padding: 10px 12px;
+   display: flex;
+   flex-direction: column;
+   gap: 6px;
+ }
+
+ .omp-livefeed-head {
+   display: flex;
+   align-items: baseline;
+   gap: 8px;
+   min-width: 0;
+   flex-wrap: wrap;
+ }
+
+ .omp-livefeed-dot {
+   width: 8px;
+   height: 8px;
+   border-radius: 50%;
+   background: var(--omp-muted);
+   flex: none;
+   align-self: center;
+ }
+
+ .omp-livefeed[data-live="true"] .omp-livefeed-dot {
+   background: var(--omp-cyan);
+   animation: omp-pulse 1.8s ease-in-out infinite;
+ }
+
+ .omp-livefeed-id {
+   font-family: var(--omp-mono);
+   font-size: 12px;
+   flex: none;
+ }
+
+ .omp-livefeed-title {
+   flex: 1 1 160px;
+   font-weight: 600;
+   font-size: 13px;
+ }
+
+ .omp-livefeed-latest {
+   color: var(--omp-secondary);
+   font-size: 12.5px;
+   margin: 0;
+ }
+
+ .omp-livefeed-log {
+   margin: 0;
+   max-height: 220px;
+   overflow-y: auto;
+   white-space: pre-wrap;
+   overflow-wrap: anywhere;
+   scrollbar-gutter: stable;
+ }
 
 /* Inline attention banner: failures attract eyes without a side panel. */
 
@@ -714,17 +777,18 @@ input:focus-visible,
   border-radius: var(--omp-radius);
   background: var(--omp-panel);
 }
-/* Board tabs root must be a flex column: it is the flex parent that lets
- * .omp-board-scroll (flex:1, min-height:0) actually scroll instead of growing
- * with content and clipping under .omp-workspace overflow:hidden. */
-.omp-board-tabs {
-  flex: 1;
-  min-height: 0;
-  min-width: 0;
-  display: flex;
-  flex-direction: column;
-  overflow: hidden;
-}
+ /* Board panel root must be a flex column: it is the flex parent that lets
+  * .omp-board-scroll (flex:1, min-height:0) actually scroll instead of growing
+  * with content and clipping under .omp-workspace overflow:hidden. */
+ .omp-board-panel {
+   flex: 1;
+   min-height: 0;
+   min-width: 0;
+   display: flex;
+   flex-direction: column;
+   overflow: hidden;
+   gap: 6px;
+ }
 
 .omp-board {
   padding: 4px;
@@ -1398,9 +1462,11 @@ input:focus-visible,
  }
 
  /* Ellipsis inside tables must be capped — nowrap content otherwise forces
-  * the table wider than its scrolling wrapper and spills past the panel. */
+  * the table wider than its scrolling wrapper and spills past the panel.
+  * Default cap fits multi-column tables (runs/agents); wide single-text
+  * columns override it per table below. */
  .omp-table .omp-ellipsis {
-   max-width: min(38vw, 420px);
+   max-width: min(28vw, 280px);
    display: block;
  }
 
@@ -1482,37 +1548,58 @@ input:focus-visible,
   flex: 1;
 }
 
-/* ---------- tables (secondary surfaces) ---------- */
+ .omp-table-wrap {
+   overflow: auto;
+   border: 1px solid var(--omp-hairline);
+   border-radius: var(--omp-radius-sm);
+   max-width: 100%;
+   /* Tall tables (run history, roadmap, query results) scroll internally
+    * instead of pushing the page to any height. Small tables are unaffected
+    * — max-height only caps, never stretches. */
+   max-height: min(56vh, 520px);
+   overscroll-behavior: contain;
+   scrollbar-gutter: stable;
+ }
 
-.omp-table-wrap {
-  overflow: auto;
-  border: 1px solid var(--omp-hairline);
-  border-radius: var(--omp-radius-sm);
-  max-width: 100%;
-}
+ /* Inspector column is narrow (400px) and already scrolls: keep its tables
+  * short so gate/usage rows never dominate the inspector body. */
+ .omp-inspector .omp-table-wrap {
+   max-height: 300px;
+ }
 
-.omp-table {
-  border-collapse: collapse;
-  width: 100%;
-  font-size: 13px;
-}
+ .omp-table {
+   /* separate (spacing 0) renders the same hairlines as collapse but lets
+    * sticky thead cells actually stick — collapse breaks sticky in Chrome. */
+   border-collapse: separate;
+   border-spacing: 0;
+   width: max-content;
+   min-width: 100%;
+   font-size: 13px;
+   line-height: 1.35;
+   font-variant-numeric: tabular-nums;
+ }
 
-.omp-table th {
-  text-align: left;
-  font-size: 11px;
-  letter-spacing: 0.06em;
-  text-transform: uppercase;
-  color: var(--omp-muted);
-  font-weight: 700;
-  padding: 6px 10px;
-  border-bottom: 1px solid var(--omp-border);
-  white-space: nowrap;
-}
+ .omp-table th {
+   text-align: left;
+   font-size: 11px;
+   letter-spacing: 0.06em;
+   text-transform: uppercase;
+   color: var(--omp-muted);
+   font-weight: 700;
+   padding: 6px 10px;
+   border-bottom: 1px solid var(--omp-border);
+   white-space: nowrap;
+   /* Sticky header: stays visible while a capped table-wrap scrolls. */
+   position: sticky;
+   top: 0;
+   z-index: 1;
+   background: var(--omp-panel);
+ }
 
  .omp-table td {
-   padding: 6px 10px;
+   padding: 5px 10px;
    border-bottom: 1px solid var(--omp-hairline);
-   vertical-align: top;
+   vertical-align: middle;
    min-width: 0;
    overflow-wrap: anywhere;
    word-break: break-word;
@@ -1535,6 +1622,124 @@ input:focus-visible,
    font-size: 12px;
    overflow-wrap: anywhere;
    word-break: break-word;
+ }
+
+ /* Shrink-to-fit columns: ids, counts, badges, and row actions hug their
+  * content (width:1% + nowrap) so the flexible text column gets the rest. */
+ .omp-table[data-table="runs"] td:nth-child(1),
+ .omp-table[data-table="runs"] td:nth-child(2),
+ .omp-table[data-table="runs"] td:nth-child(3),
+ .omp-table[data-table="runs"] td:nth-child(4),
+ .omp-table[data-table="runs"] td:nth-child(5),
+ .omp-table[data-table="runs"] td:nth-child(6),
+ .omp-table[data-table="runs"] td:nth-child(7),
+ .omp-table[data-table="runs"] td:nth-child(8),
+ .omp-table[data-table="runs"] td:nth-child(9),
+ .omp-table[data-table="runs"] td:nth-child(10),
+ .omp-table[data-table="runs"] td:nth-child(11),
+ .omp-table[data-table="runs"] td:nth-child(12),
+ .omp-table[data-table="runs"] td:nth-child(13),
+ .omp-table[data-table="runs"] td:nth-child(14),
+ .omp-table[data-table="agents"] td:nth-child(1),
+ .omp-table[data-table="agents"] td:nth-child(3),
+ .omp-table[data-table="agents"] td:nth-child(4),
+ .omp-table[data-table="agents"] td:nth-child(5),
+ .omp-table[data-table="agents"] td:nth-child(6),
+ .omp-table[data-table="agents"] td:nth-child(7) {
+   white-space: nowrap;
+   width: 1%;
+ }
+
+ /* Numeric/count columns read cleaner right-aligned under a nowrap header. */
+ .omp-table[data-table="runs"] td:nth-child(5),
+ .omp-table[data-table="runs"] td:nth-child(6),
+ .omp-table[data-table="runs"] td:nth-child(7),
+ .omp-table[data-table="runs"] td:nth-child(8),
+ .omp-table[data-table="runs"] td:nth-child(9),
+ .omp-table[data-table="runs"] td:nth-child(10),
+ .omp-table[data-table="runs"] td:nth-child(11),
+ .omp-table[data-table="runs"] td:nth-child(12),
+ .omp-table[data-table="agents"] td:nth-child(1),
+ .omp-table[data-table="agents"] td:nth-child(4) {
+   text-align: right;
+ }
+
+ .omp-table[data-table="runs"] th:nth-child(5),
+ .omp-table[data-table="runs"] th:nth-child(6),
+ .omp-table[data-table="runs"] th:nth-child(7),
+ .omp-table[data-table="runs"] th:nth-child(8),
+ .omp-table[data-table="runs"] th:nth-child(9),
+ .omp-table[data-table="runs"] th:nth-child(10),
+ .omp-table[data-table="runs"] th:nth-child(11),
+ .omp-table[data-table="runs"] th:nth-child(12),
+ .omp-table[data-table="agents"] th:nth-child(1),
+ .omp-table[data-table="agents"] th:nth-child(4) {
+   text-align: right;
+ }
+
+ /* Flexible text columns get the remaining width, single-line truncated. */
+ .omp-table[data-table="agents"] td:nth-child(8) .omp-ellipsis {
+   max-width: min(30vw, 340px);
+ }
+
+ .omp-table[data-table="roadmap"] td:nth-child(1),
+ .omp-table[data-table="roadmap"] td:nth-child(3),
+ .omp-table[data-table="roadmap"] td:nth-child(4) {
+   white-space: nowrap;
+   width: 1%;
+ }
+
+ .omp-table[data-table="roadmap"] td:nth-child(2) .omp-ellipsis {
+   max-width: min(30vw, 340px);
+ }
+
+ .omp-table[data-table="roadmap"] td:nth-child(5) .omp-ellipsis {
+   max-width: min(32vw, 380px);
+ }
+
+ .omp-table[data-table="plan"] td:nth-child(1),
+ .omp-table[data-table="plan"] td:nth-child(3),
+ .omp-table[data-table="plan"] td:nth-child(7) {
+   white-space: nowrap;
+   width: 1%;
+ }
+
+ .omp-table[data-table="plan"] td:nth-child(2) .omp-ellipsis {
+   max-width: min(24vw, 260px);
+ }
+
+ /* Narrow inspector tables (verify/usage) always fill the column. */
+ .omp-table[data-table="verify"],
+ .omp-table[data-table="usage"] {
+   width: 100%;
+ }
+
+ .omp-table[data-table="verify"] td:nth-child(2),
+ .omp-table[data-table="verify"] td:nth-child(3),
+ .omp-table[data-table="verify"] td:nth-child(4),
+ .omp-table[data-table="usage"] td {
+   white-space: nowrap;
+   width: 1%;
+ }
+
+ .omp-table[data-table="usage"] td:first-child {
+   white-space: normal;
+ }
+
+ /* Small stats tables fill their panel; model names wrap instead of
+  * forcing horizontal scroll. */
+ .omp-table[data-table="effort"],
+ .omp-table[data-table="fallbacks"],
+ .omp-table[data-table="query"] {
+   width: 100%;
+ }
+
+ .omp-table[data-table="effort"] td,
+ .omp-table[data-table="query"] td:nth-child(1),
+ .omp-table[data-table="query"] td:nth-child(2),
+ .omp-table[data-table="query"] td:nth-child(3) {
+   white-space: nowrap;
+   width: 1%;
  }
 
 /* ---------- code ---------- */
@@ -2030,12 +2235,11 @@ input:focus-visible,
   animation: omp-fade var(--omp-dur-state) var(--omp-ease-out) both;
 }
 
-/* Inspector + board tab content: crossfade on switch (exit unmounts, so */
-/* entrance-only at ~75% of layout duration reads as a transition). */
-.omp-inspector-panel [role="tabpanel"][data-state="active"],
-.omp-board-scroll [role="tabpanel"][data-state="active"] {
-  animation: omp-fade 260ms var(--omp-ease-out) both;
-}
+ /* Inspector tab content: crossfade on switch (exit unmounts, so */
+ /* entrance-only at ~75% of layout duration reads as a transition). */
+ .omp-inspector-panel [role="tabpanel"][data-state="active"] {
+   animation: omp-fade 260ms var(--omp-ease-out) both;
+ }
 
 /* Board + lanes: selection is a color transition, hover is a 2px nudge. */
 /* Transform + background-color/border-color only — no layout properties. */

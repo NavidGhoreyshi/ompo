@@ -80,7 +80,7 @@ export default function PlannerPreview({
       )}
       {preview && preview.rows.length > 0 && (
         <div className="omp-table-wrap">
-          <table className="omp-table">
+          <table className="omp-table" data-table="plan">
             <thead>
               <tr>
                 <th scope="col">slice</th>
@@ -98,7 +98,7 @@ export default function PlannerPreview({
                   <td>
                     <code>{r.id}</code>
                   </td>
-                  <td>{r.title}</td>
+                  <td><div className="omp-ellipsis" title={r.title}>{r.title}</div></td>
                   <td>
                     <code>{r.effort}</code>
                   </td>
