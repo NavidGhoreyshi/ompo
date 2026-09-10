@@ -137,7 +137,11 @@ describe("viewport app shell (no page-level scroll)", () => {
     expect(css).toContain('.omp-shell[data-sidebar="collapsed"] .omp-sidebar-run');
     expect(css).toMatch(/data-sidebar="collapsed"[^}]*display:\s*none/s);
   });
+
+  test("rail collapse glides instead of snapping", () => {
+    expect(css).toMatch(/\.omp-body\s*\{[^}]*transition:\s*grid-template-columns/s);
   });
+});
 
 describe("run strip replaces KPI cards", () => {
   test("no KPI card language remains in the shell stylesheet", () => {

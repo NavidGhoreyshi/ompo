@@ -134,6 +134,9 @@ body {
   max-width: var(--omp-shell-max);
   margin: 0 auto;
   box-sizing: border-box;
+  /* Rail open/close glides instead of snapping: column widths interpolate.
+   * Reduced-motion already zeroes transitions globally. */
+  transition: grid-template-columns var(--omp-dur-layout) var(--omp-ease-out);
 }
 
 .omp-main {
@@ -521,15 +524,19 @@ input:focus-visible,
 .omp-shell[data-sidebar="collapsed"] .omp-sidebar-run {
   display: none;
 }
-
 .omp-shell[data-sidebar="collapsed"] .omp-nav-btn {
   justify-content: center;
 }
 
-/* ---------- overview workspace: strip / lanes / board ---------- */
+/* Expanding fades labels back in behind the widening rail instead of
+ * popping them. (Collapsing hides instantly so text never squishes.) */
+.omp-shell[data-sidebar="open"] .omp-nav-label,
+.omp-shell[data-sidebar="open"] .omp-nav-count,
+.omp-shell[data-sidebar="open"] .omp-sidebar-run {
+  animation: omp-fade var(--omp-dur-state) var(--omp-ease-out) 120ms both;
+}
 
 .omp-workspace {
-  flex: 1;
   min-height: 0;
   display: flex;
   flex-direction: column;
