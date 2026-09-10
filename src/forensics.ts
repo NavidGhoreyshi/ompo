@@ -15,7 +15,7 @@
 import { spawnSync } from "node:child_process";
 import { existsSync, readFileSync, readdirSync, rmSync } from "node:fs";
 import { join } from "node:path";
-import { listRuns, loadRun, readEvents, sliceDir } from "./store.ts";
+ import { listRuns, loadRun, readEvents, runDir, sliceDir } from "./store.ts";
 
 export interface SliceShow {
   sliceId: string;
@@ -419,3 +419,129 @@ export function tailSliceLog(
     return [];
   }
 }
+
+ /**
+  * Operator sessions: the loop's own agent sessions (end-of-run unblock
+  * rounds, per-slice debug sessions). Same durable-state rule as everything
+  * else the dashboard reads: sessions stream their progress transcript into
+  * unblock-{round}.log / debug-{attempt}.log as they render (worker parity),
+  * so a tail here is live mid-session. `running` means a prompt was recorded
+  * without a completion footer — the only honest signal on disk. Never throws.
+  */
+ export interface OperatorSession {
+   /** "unblock-1" (run-level) or "debug-4" (slice-level — see sliceId). */
+   name: string;
+   kind: "unblock" | "debug";
+   /** Debug sessions only; unblock targets ride `targets`. */
+   sliceId: string | null;
+   /** Blocked slice ids from unblock-{round}.meta.json ([] when absent). */
+   targets: string[];
+   status: "running" | "done";
+   exit: number | null;
+   timedOut: boolean;
+   durationMs: number | null;
+ }
+
+ function parseCompletionFooter(firstLine: string): { exit: number | null; timedOut: boolean; durationMs: number | null } | null {
+   const m = firstLine.match(/^exit=(\S+) timedOut=(\S+) durationMs=(\S+)/);
+   if (!m) return null;
+   const exit = Number(m[1]);
+   const durationMs = Number(m[3]);
+   return { exit: Number.isFinite(exit) ? exit : null, timedOut: m[2] === "true", durationMs: Number.isFinite(durationMs) ? durationMs : null };
+ }
+
+ function sessionCompletion(
+   io: ForensicsIo | undefined,
+   logPath: string,
+ ): Pick<OperatorSession, "status" | "exit" | "timedOut" | "durationMs"> {
+   const pending = { status: "running", exit: null, timedOut: false, durationMs: null } as const;
+   try {
+     const first = ioRead(io, logPath).split("\n", 1)[0] ?? "";
+     const parsed = parseCompletionFooter(first);
+     return parsed ? { status: "done", ...parsed } : { ...pending };
+   } catch {
+     return { ...pending };
+   }
+ }
+ export function listSessions(projectDir: string, runId: string, io?: ForensicsIo): OperatorSession[] {
+   const out: OperatorSession[] = [];
+   let root: string;
+   try {
+     root = runDir(projectDir, runId);
+   } catch {
+     return [];
+   }
+   for (const f of ioList(io, root)) {
+     const m = f.match(/^unblock-(\d+)\.prompt\.md$/);
+     if (!m) continue;
+     const round = m[1]!;
+     const meta = tryReadJson(io, join(root, `unblock-${round}.meta.json`)) as { targets?: unknown } | undefined;
+     const targets = Array.isArray(meta?.targets) ? meta.targets.filter((t): t is string => typeof t === "string") : [];
+     out.push({
+       name: `unblock-${round}`,
+       kind: "unblock",
+       sliceId: null,
+       targets,
+       ...sessionCompletion(io, join(root, `unblock-${round}.log`)),
+     });
+   }
+  for (const entry of ioList(io, join(root, "slices"))) {
+    const dir = sliceDir(projectDir, runId, entry);
+    const attempts: string[] = [];
+    for (const f of ioList(io, dir)) {
+      const m = f.match(/^debug-(?:prompt-)?(\d+)\.(?:md|log)$/);
+      if (m?.[1] && !attempts.includes(m[1])) attempts.push(m[1]);
+    }
+    for (const attempt of attempts) {
+      out.push({
+        name: `debug-${attempt}`,
+        kind: "debug",
+        sliceId: entry,
+        targets: [],
+        ...sessionCompletion(io, join(dir, `debug-${attempt}.log`)),
+      });
+    }
+  }
+  const rank = (s: OperatorSession): [number, string, number] => [
+    s.kind === "unblock" ? 0 : 1,
+    s.sliceId ?? "",
+    Number(s.name.match(/(\d+)$/)?.[1] ?? 0),
+  ];
+  return out.sort((a, b) => {
+    const ra = rank(a);
+    const rb = rank(b);
+    return ra[0] - rb[0] || (ra[1] < rb[1] ? -1 : ra[1] > rb[1] ? 1 : 0) || ra[2] - rb[2];
+  });
+ }
+ /**
+  * Last `n` lines of one operator session log. `name` must be a session id
+  * from listSessions (`unblock-{round}`, or `debug-{attempt}` with its
+  * sliceId) — anything else resolves to no file. Empty array when there is
+  * no log yet. Never throws.
+  */
+ export function tailSessionLog(
+   projectDir: string,
+   runId: string,
+   name: string,
+   sliceId: string | null,
+   n = 50,
+   io?: ForensicsIo,
+ ): string[] {
+   try {
+     let file = "";
+     if (/^unblock-\d+$/.test(name) && sliceId === null) {
+       file = join(runDir(projectDir, runId), `${name}.log`);
+     } else {
+       const dm = name.match(/^debug-(\d+)$/);
+       if (dm && sliceId !== null && /^[\w][\w.-]*$/.test(sliceId)) {
+         file = join(sliceDir(projectDir, runId, sliceId), `${name}.log`);
+       }
+     }
+     if (!file) return [];
+     const lines = ioRead(io, file).split("\n");
+     if (lines.length > 0 && lines[lines.length - 1] === "") lines.pop();
+     return lines.slice(-n);
+   } catch {
+     return [];
+   }
+ }

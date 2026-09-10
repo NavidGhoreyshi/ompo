@@ -288,6 +288,33 @@ describe("loop", () => {
     expect(existsSync(join(sliceDir(dir, "r", "a"), "debug-1.log"))).toBe(true);
   });
 
+  test("debug session streams its transcript while running", async () => {
+    const dir = tmpProject();
+    createRun(dir, parseRoadmap("## [a] A\nDo A.\nVerify: exit 1\nRetries: 0\n"), "r");
+    const logPath = join(sliceDir(dir, "r", "a"), "debug-1.log");
+    // Observed synchronously inside the fake runner: the loop appends the
+    // transcript line before onProgress returns, while the session is still
+    // running — no timers, no polling.
+    let streamed = false;
+    const runner = reviewAware(async (call, ctx) => {
+      if (call.label?.endsWith("debug")) {
+        ctx.onProgress?.("mid-run diagnosis line");
+        try {
+          const mid = readFileSync(logPath, "utf8");
+          streamed = mid.includes("mid-run diagnosis line") && !mid.startsWith("exit=");
+        } catch {
+          streamed = false;
+        }
+        return { exit: 0, timedOut: false, stdout: reportFor(call.sliceId), stderr: "", durationMs: 1 };
+      }
+      return { exit: 0, timedOut: false, stdout: reportFor(call.sliceId), stderr: "", durationMs: 1 };
+    });
+    await runRoadmapLoop({ projectDir: dir, runId: "r", runner });
+    expect(streamed).toBe(true);
+    // Completion still lands the forensic footer (unchanged contract).
+    expect(readFileSync(logPath, "utf8").startsWith("exit=")).toBe(true);
+  });
+
   test("inconclusive debug falls back to the retry budget, never recurses", async () => {
     const dir = tmpProject();
     createRun(dir, parseRoadmap("## [a] A\nDo A.\nVerify: echo still-broken && exit 1\nRetries: 0\n"), "r");

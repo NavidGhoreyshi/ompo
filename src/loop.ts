@@ -162,7 +162,27 @@ async function runDebugger(
     return false;
   }
 
-  const onProgress = progressFn(ctx, sliceId, "debug");
+  const progress = progressFn(ctx, sliceId, "debug");
+  // Live transcript (worker parity): the same progress lines the TUI streams
+  // land in debug-{attempt}.log as they render, so tails and the dashboard
+  // stay live mid-session. The completion footer below overwrites this file
+  // with the exit/stdout/stderr dump — same forensic contract as before.
+  let transcriptPath = join(dir, `debug-${attempt}.log`);
+  try {
+    writeFileSync(transcriptPath, "", "utf8");
+  } catch {
+    transcriptPath = "";
+  }
+  const onProgress = (line: string) => {
+    progress(line);
+    if (transcriptPath !== "") {
+      try {
+        appendFileSync(transcriptPath, formatProgressLine(sliceId, "debug", line) + "\n");
+      } catch {
+        /* transcript is observational */
+      }
+    }
+  };
   let debugOut = "";
   let debugStdout = "";
   try {
@@ -206,7 +226,13 @@ async function runDebugger(
     }
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
-    writeFileSync(join(dir, `debug-${attempt}.log`), debugOut + `\nDEBUG ERROR: ${msg}\n`, "utf8");
+    // Append (not overwrite): the streamed transcript above is the evidence;
+    // the error footer just closes it.
+    try {
+      appendFileSync(join(dir, `debug-${attempt}.log`), `\nDEBUG ERROR: ${msg}\n`);
+    } catch {
+      /* forensics are best-effort */
+    }
     if (ctx.signal?.aborted) {
       storeApi.abortSlice(projectDir, runId, sliceId);
       log(ctx, summarize5(claimed, `aborted during debug (no retry consumed)`));
@@ -284,7 +310,37 @@ async function runUnblocker(ctx: AttemptCtx, round: number): Promise<"continue" 
   const unblockBudgetMs = ctx.debugTimeoutMs ?? DEFAULT_DEBUG_TIMEOUT_MS;
   log(ctx, `◐ unblock round ${round}/${ctx.maxUnblocks} — ${targets.length} blocked slice(s): ${targets.map((t) => t.sliceId).join(", ")} (budget ${formatTimeout(unblockBudgetMs)})`);
   if (ctx.signal?.aborted) return "aborted";
-  const onProgress = progressFn(ctx, head.id, "unblock");
+  const progress = progressFn(ctx, head.id, "unblock");
+  // Live transcript (worker parity): progress lines land in
+  // unblock-{round}.log as they render so tails and the dashboard stay live
+  // mid-session. The completion footer below overwrites this file with the
+  // exit/stdout/stderr dump — same forensic contract as before. The meta
+  // file names the blocked targets so readers never parse the prompt.
+  try {
+    writeFileSync(
+      join(runRoot, `unblock-${round}.meta.json`),
+      JSON.stringify({ targets: targets.map((t) => t.sliceId), startedAt: new Date().toISOString() }) + "\n",
+      "utf8",
+    );
+  } catch {
+    /* meta is auxiliary */
+  }
+  let transcriptPath = join(runRoot, `unblock-${round}.log`);
+  try {
+    writeFileSync(transcriptPath, "", "utf8");
+  } catch {
+    transcriptPath = "";
+  }
+  const onProgress = (line: string) => {
+    progress(line);
+    if (transcriptPath !== "") {
+      try {
+        appendFileSync(transcriptPath, formatProgressLine(head.id, "unblock", line) + "\n");
+      } catch {
+        /* transcript is observational */
+      }
+    }
+  };
   let unblockStdout = "";
   try {
     const res = await runWithModelFallbacks(

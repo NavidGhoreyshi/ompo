@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { api, type AgentRow, type RunDetail, type RunEvent, type RunStats, type RunSummary, type SliceDetail } from "./api.ts";
+ import { api, type AgentRow, type OperatorSession, type RunDetail, type RunEvent, type RunStats, type RunSummary, type SliceDetail } from "./api.ts";
 import { preferredSliceId } from "./lib/selection.ts";
 import Activity from "./components/Activity.tsx";
 import Header from "./components/Header.tsx";
@@ -40,6 +40,7 @@ export default function App() {
   const [detail, setDetail] = useState<RunDetail | null>(null);
   const [events, setEvents] = useState<RunEvent[]>([]);
   const [agents, setAgents] = useState<AgentRow[]>([]);
+  const [sessions, setSessions] = useState<OperatorSession[]>([]);
   const [stats, setStats] = useState<RunStats | null>(null);
   const [sel, setSel] = useState<string | null>(null);
   const [sliceDetail, setSliceDetail] = useState<SliceDetail | Record<string, unknown> | null>(null);
@@ -66,17 +67,19 @@ export default function App() {
 
   const loadRun = useCallback(async (id: string) => {
     try {
-      const [d, ev, st, ag] = await Promise.all([
+      const [d, ev, st, ag, se] = await Promise.all([
         api.run(id),
         api.events(id),
         api.stats(id),
         api.agents(id).catch((): AgentRow[] => []),
+        api.sessions(id).catch((): OperatorSession[] => []),
       ]);
       setDetail(d);
       setEvents(ev.events);
       seqRef.current = ev.offset;
       setStats(st);
       setAgents(ag);
+      setSessions(se);
       setError(null);
     } catch (err) {
       setError(err instanceof Error ? err.message : String(err));
@@ -128,9 +131,15 @@ export default function App() {
         /* offline tick — next poll retries */
       }
     }, POLL_MS);
+    // Operator sessions start/end without emitting run events (prompt + log
+    // files only), so refresh the list on a slow tick regardless of SSE.
+    const sessPoll = setInterval(() => {
+      void api.sessions(runId).then(setSessions).catch(() => {});
+    }, 10000);
     return () => {
       es?.close();
       clearInterval(poll);
+      clearInterval(sessPoll);
     };
   }, [runId, loadRun]);
 
@@ -204,7 +213,7 @@ export default function App() {
           {stale && <p className="omp-warn">Bundle built against a different ompo version — rebuild the dashboard (`bun run web:build`).</p>}
           {(error ?? runsError) && <p className="omp-error" role="alert">{error ?? runsError}</p>}
           {view === "overview" && (
-            <Overview detail={detail} events={events} agents={agents} selected={sel} onInspect={inspect} onNavigate={setView} />
+            <Overview detail={detail} events={events} agents={agents} sessions={sessions} selected={sel} onInspect={inspect} onNavigate={setView} />
           )}
           {view === "runs" && (
             <RunsPage runs={runs} activeRunId={runId} onOpen={openRun} onResumed={afterResume} />

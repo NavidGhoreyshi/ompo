@@ -1,11 +1,10 @@
-import { LuCircleX, LuTriangleAlert } from "react-icons/lu";
-import type { AgentRow, RunDetail, RunEvent } from "../api.ts";
-import LiveFeed from "../components/LiveFeed.tsx";
-import RunHeader from "../components/RunHeader.tsx";
-import SliceTable from "../components/SliceTable.tsx";
-import WorkerLanes from "../components/WorkerLanes.tsx";
-import { Skeleton } from "../components/ui/skeleton.tsx";
-import { preferredSliceId } from "../lib/selection.ts";
+ import { LuCircleX, LuTriangleAlert } from "react-icons/lu";
+ import type { AgentRow, OperatorSession, RunDetail, RunEvent } from "../api.ts";
+ import LiveFeed from "../components/LiveFeed.tsx";
+ import RunHeader from "../components/RunHeader.tsx";
+ import SessionsPanel from "../components/SessionsPanel.tsx";
+ import SliceTable from "../components/SliceTable.tsx";
+ import WorkerLanes from "../components/WorkerLanes.tsx";
 
 /**
  * Overview workspace: RUN STATUS / LIVE FEED / LANES + BOARD (aside owned
@@ -15,20 +14,22 @@ import { preferredSliceId } from "../lib/selection.ts";
  * execution states, not a second roadmap: the dependency graph, slice
  * table, and plan preview live in exactly one place (Roadmap view).
  */
-export default function Overview({
-  detail,
-  events,
-  agents,
-  selected,
-  onInspect,
-}: {
-  detail: RunDetail | null;
-  events: RunEvent[];
-  agents: AgentRow[];
-  selected?: string | null;
-  onInspect: (sliceId: string) => void;
-  onNavigate: (v: "overview" | "runs" | "roadmap" | "agents" | "stats") => void;
-}) {
+ export default function Overview({
+   detail,
+   events,
+   agents,
+   sessions,
+   selected,
+   onInspect,
+ }: {
+   detail: RunDetail | null;
+   events: RunEvent[];
+   agents: AgentRow[];
+   sessions: OperatorSession[];
+   selected?: string | null;
+   onInspect: (sliceId: string) => void;
+   onNavigate: (v: "overview" | "runs" | "roadmap" | "agents" | "stats") => void;
+ }) {
   if (!detail) {
     return (
       <div className="omp-workspace" aria-label="Overview workspace">
@@ -53,6 +54,7 @@ export default function Overview({
     <div className="omp-workspace" aria-label="Overview workspace">
       <RunHeader detail={detail} events={events} agents={agents} activeId={selected} />
       <LiveFeed runId={detail.runId} slice={active} agent={agent} live={detail.live} />
+      <SessionsPanel runId={detail.runId} sessions={sessions} />
       <WorkerLanes agents={agents} live={detail.live} selected={selected} onSelect={onInspect} />
       {attention.length > 0 && (
         <p className="omp-attention" role="alert">

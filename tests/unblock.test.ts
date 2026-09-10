@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { existsSync, mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
+ import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { parseRoadmap } from "../src/parse.ts";
@@ -148,6 +148,40 @@ describe("end-of-run unblock lane", () => {
     expect(events.some((m) => m.includes("unblock round 1/2"))).toBe(true);
     expect(events.some((m) => m.includes("unblocked: a"))).toBe(true);
     expect(existsSync(join(dir, ".omp", "roadmap", "runs", "r", "unblock-1.prompt.md"))).toBe(true);
+  });
+
+  test("unblock session streams its transcript and records targets", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "ompo-unblock-stream-"));
+    createRun(dir, parseRoadmap(`## [a] A\nDo A.\nVerify: ${DB_DOWN_GATE}\nRetries: 0\n`), "r");
+    const runRoot = join(dir, ".omp", "roadmap", "runs", "r");
+    // Observed synchronously inside the fake runner: the loop appends the
+    // transcript line before onProgress returns, while round 1 is running.
+    let streamed = false;
+    const runner: WorkerRunner = async (call, ctx) => {
+      if (call.label?.endsWith(" review")) {
+        return { exit: 0, timedOut: false, stdout: verdictFor(call.sliceId), stderr: "", durationMs: 1 };
+      }
+      if (call.label?.endsWith(" unblock")) {
+        ctx.onProgress?.("mid-run unblock line");
+        try {
+          const mid = readFileSync(join(runRoot, "unblock-1.log"), "utf8");
+          streamed = mid.includes("mid-run unblock line") && !mid.startsWith("exit=");
+        } catch {
+          streamed = false;
+        }
+        const wts = [...call.prompt.matchAll(/^Worktree: (\S+)/gm)].map((m) => m[1]!);
+        return okUnblock(wts);
+      }
+      return { exit: 0, timedOut: false, stdout: reportFor(call.sliceId), stderr: "", durationMs: 1 };
+    };
+    const res = await runRoadmapLoop({ projectDir: dir, runId: "r", runner, noDebug: true, onEvent: () => {} });
+    expect(res.done).toBe(1);
+    expect(streamed).toBe(true);
+    expect(JSON.parse(readFileSync(join(runRoot, "unblock-1.meta.json"), "utf8"))).toEqual(
+      expect.objectContaining({ targets: ["a"] }),
+    );
+    // Completion still lands the forensic footer (unchanged contract).
+    expect(readFileSync(join(runRoot, "unblock-1.log"), "utf8").startsWith("exit=")).toBe(true);
   });
 
   test("agent giving up ends the run blocked as before", async () => {

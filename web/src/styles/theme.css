@@ -723,6 +723,55 @@ input:focus-visible,
    overflow-wrap: anywhere;
    scrollbar-gutter: stable;
  }
+ /* Operator sessions: unblock rounds + debug sessions with the same
+  * live-tail treatment as slice workers. Fixed chrome (flex:none); each
+  * session log scrolls internally so the board below keeps the viewport. */
+ .omp-sessions {
+   flex: none;
+   min-width: 0;
+   background: var(--omp-panel);
+   border: 1px solid var(--omp-hairline);
+   border-radius: var(--omp-radius);
+   padding: 10px 12px;
+   display: flex;
+   flex-direction: column;
+   gap: 8px;
+ }
+
+ .omp-sessions-head {
+   display: flex;
+   align-items: baseline;
+   justify-content: space-between;
+   gap: 8px;
+ }
+
+ .omp-session {
+   min-width: 0;
+   display: flex;
+   flex-direction: column;
+   gap: 6px;
+   border-top: 1px solid var(--omp-hairline);
+   padding-top: 8px;
+ }
+
+ .omp-session:first-of-type {
+   border-top: none;
+   padding-top: 0;
+ }
+
+ .omp-session[data-live="true"] .omp-livefeed-dot {
+   background: var(--omp-amber);
+   animation: omp-pulse 1.8s ease-in-out infinite;
+ }
+
+ .omp-session-log {
+   margin: 0;
+   max-height: 160px;
+   overflow-y: auto;
+   white-space: pre-wrap;
+   overflow-wrap: anywhere;
+   scrollbar-gutter: stable;
+ }
 
 /* Inline attention banner: failures attract eyes without a side panel. */
 

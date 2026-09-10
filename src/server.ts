@@ -22,7 +22,7 @@ import {
   validateIntent,
   type ControlIntent,
 } from "./control.ts";
-import { diffSliceBranch, tailSliceLog } from "./forensics.ts";
+ import { diffSliceBranch, listSessions, tailSessionLog, tailSliceLog } from "./forensics.ts";
 import { collectDocCandidates } from "./import.ts";
 import { resolveRunId } from "./log.ts";
 import { listRuns, loadRun, lockHeld, readEvents, runDir } from "./store.ts";
@@ -1102,6 +1102,33 @@ async function route(projectDir: string, req: Request, routeSpawner?: ResumeSpaw
       if (req.method === "GET" && tail === "diff") {
         return json(diffSliceBranch(projectDir, runId, sliceId));
       }
+    }
+    if (req.method === "GET" && rest === "sessions") {
+      const missing = requireRun(projectDir, runId);
+      if (missing) return missing;
+      return json(listSessions(projectDir, runId));
+    }
+    const sessionMatch = rest.match(/^sessions\/([^/]+)\/log$/);
+    if (sessionMatch && req.method === "GET") {
+      const missing = requireRun(projectDir, runId);
+      if (missing) return missing;
+      const name = decodeURIComponent(sessionMatch[1]!);
+      const sliceParam = url.searchParams.get("slice");
+      // Strict dispatch — no path traversal: unblock logs are run-level,
+      // debug logs need the owning slice (which must be in the cursor).
+      if (/^unblock-\d+$/.test(name) && sliceParam === null) {
+        const n = url.searchParams.has("tail") ? Number(url.searchParams.get("tail")) : LOG_DEFAULT;
+        if (!Number.isInteger(n) || n < 1 || n > LOG_MAX) return bad(`tail must be an integer 1..${LOG_MAX}`);
+        return json({ name, lines: tailSessionLog(projectDir, runId, name, null, n) });
+      }
+      if (/^debug-\d+$/.test(name) && sliceParam !== null) {
+        const unknown = requireSlice(projectDir, runId, sliceParam);
+        if (unknown) return unknown;
+        const n = url.searchParams.has("tail") ? Number(url.searchParams.get("tail")) : LOG_DEFAULT;
+        if (!Number.isInteger(n) || n < 1 || n > LOG_MAX) return bad(`tail must be an integer 1..${LOG_MAX}`);
+        return json({ name, lines: tailSessionLog(projectDir, runId, name, sliceParam, n) });
+      }
+      return bad(`unknown session ${JSON.stringify(name)}`);
     }
     if (req.method === "GET" && rest === "agents") {
       const missing = requireRun(projectDir, runId);

@@ -244,4 +244,26 @@ describe("overview composition (execution first)", () => {
     expect(css).toMatch(/\.omp-livefeed-log\s*\{[^}]*max-height:\s*\d+px/s);
     expect(css).toMatch(/\.omp-livefeed-log\s*\{[^}]*overflow-y:\s*auto/s);
   });
-});
+
+  test("overview shows operator sessions under the live feed", () => {
+    const panel = src("web/src/components/SessionsPanel.tsx");
+    expect(overview).toContain("SessionsPanel");
+    expect(overview).toContain("sessions={sessions}");
+    expect(src("web/src/App.tsx")).toContain("api.sessions");
+    expect(panel).toContain("useSessionLog");
+    expect(panel).toContain("omp-sessions");
+    // Feed first, sessions right after, lanes then board below.
+    const feedIdx = overview.indexOf("<LiveFeed");
+    const sessIdx = overview.indexOf("<SessionsPanel");
+    const lanesIdx = overview.indexOf("<WorkerLanes");
+    expect(sessIdx).toBeGreaterThan(feedIdx);
+    expect(lanesIdx).toBeGreaterThan(sessIdx);
+  });
+
+  test("operator sessions chrome is fixed-height with internal log scroll", () => {
+    expect(css).toContain(".omp-sessions");
+    expect(css).toMatch(/\.omp-sessions\s*\{[^}]*flex:\s*none/s);
+    expect(css).toMatch(/\.omp-session-log\s*\{[^}]*max-height:\s*\d+px/s);
+    expect(css).toMatch(/\.omp-session-log\s*\{[^}]*overflow-y:\s*auto/s);
+  });
+ });

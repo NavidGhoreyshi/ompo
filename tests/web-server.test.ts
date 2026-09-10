@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { mkdtempSync } from "node:fs";
+ import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { parseRoadmap } from "../src/parse.ts";
@@ -237,4 +237,111 @@ describe("dashboard server", () => {
       stop();
     }
   });
+
+ describe("operator sessions", () => {
+   function sessionFixture(): { dir: string; stop: () => void; url: string; root: string } {
+     const dir = mkdtempSync(join(tmpdir(), "ompo-web-sess-"));
+     createRun(dir, parseRoadmap(MD), "r1");
+     const root = join(dir, ".omp", "roadmap", "runs", "r1");
+     writeFileSync(join(root, "unblock-1.prompt.md"), "# unblock 1\n", "utf8");
+     writeFileSync(
+       join(root, "unblock-1.meta.json"),
+       JSON.stringify({ targets: ["a"], startedAt: "2026-09-10T00:00:00.000Z" }) + "\n",
+       "utf8",
+     );
+     writeFileSync(join(root, "unblock-1.log"), "exit=0 timedOut=false durationMs=10\n--- stdout ---\nok\n", "utf8");
+     writeFileSync(join(root, "unblock-2.prompt.md"), "# unblock 2\n", "utf8");
+     const sliceA = join(root, "slices", "a");
+     mkdirSync(sliceA, { recursive: true });
+     writeFileSync(join(sliceA, "debug-1.log"), "exit=1 timedOut=false durationMs=5\n--- stdout ---\nnope\n", "utf8");
+     writeFileSync(join(sliceA, "debug-prompt-2.md"), "# debug 2\n", "utf8");
+     const server = startDashboardServer({ projectDir: dir });
+     return { dir, stop: server.stop, url: server.url, root };
+   }
+
+   function sessionRows(body: unknown): { key: string; targets: unknown; exit: unknown }[] {
+     if (!Array.isArray(body)) throw new Error("expected sessions array");
+     return body.map((s) => {
+       if (
+         !s ||
+         typeof s !== "object" ||
+         !("name" in s) ||
+         !("kind" in s) ||
+         !("sliceId" in s) ||
+         !("status" in s) ||
+         !("targets" in s) ||
+         !("exit" in s)
+       ) {
+         throw new Error("expected session rows");
+       }
+       return {
+         key: `${String(s.kind)}:${String(s.name)}:${s.sliceId === null ? "" : String(s.sliceId)}:${String(s.status)}`,
+         targets: s.targets,
+         exit: s.exit,
+       };
+     });
+   }
+
+   function logLines(body: unknown): string[] {
+     if (!body || typeof body !== "object" || !("lines" in body) || !Array.isArray(body.lines)) {
+       throw new Error("expected { lines }");
+     }
+     return body.lines.filter((l): l is string => typeof l === "string");
+   }
+
+   test("sessions list reports running vs done with targets and exit", async () => {
+     const { stop, url } = sessionFixture();
+     try {
+       const res = await getJSON(`${url}/api/runs/r1/sessions`);
+       expect(res.status).toBe(200);
+       const sessions = sessionRows(res.body);
+       expect(sessions.map((s) => s.key)).toEqual([
+         "unblock:unblock-1::done",
+         "unblock:unblock-2::running",
+         "debug:debug-1:a:done",
+         "debug:debug-2:a:running",
+       ]);
+       expect(sessions[0]).toMatchObject({ targets: ["a"], exit: 0 });
+       expect(sessions[2]).toMatchObject({ exit: 1 });
+     } finally {
+       stop();
+     }
+   });
+
+   test("empty runs report no sessions", async () => {
+     const { stop, url } = fixture();
+     try {
+       const res = await getJSON(`${url}/api/runs/r1/sessions`);
+       expect(res.status).toBe(200);
+       expect(res.body).toEqual([]);
+     } finally {
+       stop();
+     }
+   });
+
+   test("session log tails unblock and debug logs, rejects traversal", async () => {
+     const { stop, url } = sessionFixture();
+     try {
+       const unblock = await getJSON(`${url}/api/runs/r1/sessions/unblock-1/log?tail=10`);
+       expect(unblock.status).toBe(200);
+       expect(logLines(unblock.body)[0]).toBe("exit=0 timedOut=false durationMs=10");
+
+       const debug = await getJSON(`${url}/api/runs/r1/sessions/debug-1/log?slice=a&tail=10`);
+       expect(debug.status).toBe(200);
+       expect(logLines(debug.body)[0]).toBe("exit=1 timedOut=false durationMs=5");
+
+       // Dispatch is strict: unknown names, missing/wrong scope, bad tails.
+       expect((await getJSON(`${url}/api/runs/r1/sessions/nope-9/log`)).status).toBe(400);
+       expect((await getJSON(`${url}/api/runs/r1/sessions/unblock-1x/log`)).status).toBe(400);
+       expect((await getJSON(`${url}/api/runs/r1/sessions/debug-1/log`)).status).toBe(400);
+       expect((await getJSON(`${url}/api/runs/r1/sessions/unblock-1/log?slice=a`)).status).toBe(400);
+       expect((await getJSON(`${url}/api/runs/r1/sessions/debug-1/log?slice=nope`)).status).toBe(404);
+       expect((await getJSON(`${url}/api/runs/r1/sessions/unblock-1/log?tail=0`)).status).toBe(400);
+       // Encoded traversal never reaches a session file (rejected, nothing served).
+       expect((await getJSON(`${url}/api/runs/r1/sessions/..%2F..%2Fsecret/log`)).status).toBe(400);
+     } finally {
+       stop();
+     }
+   });
+ });
 });

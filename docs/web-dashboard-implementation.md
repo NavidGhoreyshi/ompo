@@ -57,7 +57,9 @@ the server invents no domain model:
 | `…/slices`, `…/slices/:sliceId` | cursor `SliceLine` → `SliceSummary`; `showSlice` → `SliceDetail` (same caps as the TUI inspector) |
 | `…/slices/:id/log?tail=N` | `tailSliceLog` → `{ name, lines }` |
 | `…/slices/:id/diff` | `diffSliceBranch` (`DIFF_CAP` 20000) |
-| `…/agents` | `agentStates`-style derivation from published lines (point-in-time, never persisted) |
+ | `…/agents` | `agentStates`-style derivation from published lines (point-in-time, never persisted) |
+ | `…/sessions` | `listSessions` → run-level unblock rounds + per-slice debug sessions (`running` = prompt without completion footer) |
+ | `…/sessions/:name/log?tail=N(&slice=X)` | `tailSessionLog` → `{ name, lines }`; strict name dispatch, no paths |
 | `…/events?afterSeq&types&sliceId&limit` | `readEvents` page + `offset` (drain rule: max seq seen) |
 | `…/stats`, `…/query?q`, `…/replay` | `computeStats`, `queryEvents`, `replayRun` verbatim |
 | `/api/plan/preview`, `/plan/roadmap`, `POST /plan/decision` | `buildPlanPreview` over `ROADMAP.md`; accept/abort/edit validated against current disk state (blocked plans can never be accepted) |
@@ -191,9 +193,11 @@ flow rules:
    to one muted telemetry line), `LiveFeed` (front and center under the
    hero: the followed slice's lane/attempt/gen/turns-tools, latest worker
    progress line, and live tail of its worker log via `useSliceLog`, same
-   slice the hero leads with), `WorkerLanes` (one row per live agent,
-   sorted by lane, selecting a lane inspects its slice), an inline
-   failed/blocked-env attention banner, and the `SliceTable` board (dense
+   slice the hero leads with), `SessionsPanel` (operator sessions only when
+   they exist: unblock rounds + debug sessions with live tails via
+   `useSessionLog`, amber pulse while running), `WorkerLanes` (one row per
+   live agent, sorted by lane, selecting a lane inspects its slice), an
+   inline failed/blocked-env attention banner, and the `SliceTable` board (dense
    execution rows: state symbol + id + title + one attempt/gen/agent/
    deps/duration meta line). No graph here: `Dag`, the slice table, and
    the plan preview live in exactly one place (`RoadmapPage`).

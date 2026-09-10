@@ -107,17 +107,28 @@ export interface SliceDetail {
   };
 }
 
-export interface AgentRow {
-  id: string;
-  lane: number;
-  status: string;
-  attempt: number;
-  generation: number;
-  agent?: string;
-  effort?: string;
-  lastLine: string;
-  metrics?: { turns: number; tools: number; durationMs?: number; tokens?: TokenUsage };
-}
+ export interface AgentRow {
+   id: string;
+   lane: number;
+   status: string;
+   attempt: number;
+   generation: number;
+   agent?: string;
+   effort?: string;
+   lastLine: string;
+   metrics?: { turns: number; tools: number; durationMs?: number; tokens?: TokenUsage };
+ }
+
+ export interface OperatorSession {
+   name: string;
+   kind: "unblock" | "debug";
+   sliceId: string | null;
+   targets: string[];
+   status: "running" | "done";
+   exit: number | null;
+   timedOut: boolean;
+   durationMs: number | null;
+ }
 
 export interface EffortStats {
   count: number;
@@ -268,6 +279,13 @@ export const api = {
   sliceDiff: (runId: string, sliceId: string) =>
     req<Record<string, unknown>>(`/api/runs/${runId}/slices/${sliceId}/diff`),
   agents: (runId: string) => req<AgentRow[]>(`/api/runs/${runId}/agents`),
+  sessions: (runId: string) => req<OperatorSession[]>(`/api/runs/${runId}/sessions`),
+  sessionLog: (runId: string, name: string, opts?: { slice?: string; tail?: number }) => {
+    const params = new URLSearchParams();
+    if (opts?.slice) params.set("slice", opts.slice);
+    params.set("tail", String(opts?.tail ?? 100));
+    return req<{ name: string | null; lines: string[] }>(`/api/runs/${runId}/sessions/${name}/log?${params}`);
+  },
   events: (runId: string, afterSeq = -1, limit = 200, filter?: EventsFilter) => {
     const params = new URLSearchParams({ afterSeq: String(afterSeq), limit: String(limit) });
     if (filter?.types?.length) params.set("types", filter.types.join(","));

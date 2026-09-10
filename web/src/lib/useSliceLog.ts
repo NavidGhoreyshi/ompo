@@ -1,5 +1,5 @@
-import { useEffect, useState } from "react";
-import { api } from "../api.ts";
+import { useEffect, useRef, useState } from "react";
+import { api, type OperatorSession } from "../api.ts";
 
 export interface SliceLogState {
   name: string | null;
@@ -9,26 +9,26 @@ export interface SliceLogState {
 }
 
 /**
- * Live tail of a slice's current-generation worker log (`ompo logs` parity
- * for the browser). Polls every 2s while the slice is active — the dashboard
- * event stream only advances at stage boundaries (claim, handoff, finish),
- * so without polling a running slice looks dead for the whole attempt.
- * Lines reset on slice change so a newly followed slice never flashes the
- * previous slice's tail.
+ * Live tail of a server-side log file (worker, debug, or unblock transcript).
+ * Polls every 2s while active — the dashboard event stream only advances at
+ * stage boundaries, so without polling a running session looks dead. Lines
+ * reset on target change so a newly followed log never flashes the previous
+ * tail. `target` must encode every fetch input; the fetcher always matches it.
  */
-export function useSliceLog(
-  runId: string | null,
-  sliceId: string | null,
+export function useTailedLog(
+  target: string | null,
   active: boolean,
-  tail = 100,
+  fetchLines: () => Promise<{ name: string | null; lines: string[] }>,
 ): SliceLogState {
   const [name, setName] = useState<string | null>(null);
   const [lines, setLines] = useState<string[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
+  const fetchRef = useRef(fetchLines);
+  fetchRef.current = fetchLines;
 
   useEffect(() => {
-    if (!runId || !sliceId) {
+    if (!target) {
       setLoading(false);
       setLines([]);
       setName(null);
@@ -40,8 +40,8 @@ export function useSliceLog(
     setLines([]);
     setName(null);
     const load = (quiet: boolean) => {
-      api
-        .sliceLog(runId, sliceId, tail)
+      fetchRef
+        .current()
         .then((r) => {
           if (!live) return;
           setName(r.name);
@@ -61,7 +61,40 @@ export function useSliceLog(
       live = false;
       clearInterval(timer);
     };
-  }, [runId, sliceId, active, tail]);
+  }, [target, active]);
 
   return { name, lines, error, loading };
+}
+
+/**
+ * Live tail of a slice's current-generation worker log (`ompo logs` parity
+ * for the browser). Without polling, a running slice looks dead for the
+ * whole attempt — events only advance at stage boundaries (claim, handoff,
+ * finish).
+ */
+export function useSliceLog(
+  runId: string | null,
+  sliceId: string | null,
+  active: boolean,
+  tail = 100,
+): SliceLogState {
+  const target = runId && sliceId ? `${runId}/${sliceId}/${tail}` : null;
+  return useTailedLog(target, active, () => api.sliceLog(runId!, sliceId!, tail));
+}
+
+/** Live tail of one operator session (unblock round or debug session). */
+export function useSessionLog(
+  runId: string | null,
+  session: OperatorSession | null,
+  active: boolean,
+  tail = 100,
+): SliceLogState {
+  const target =
+    runId && session ? `${runId}/${session.kind}/${session.name}/${session.sliceId ?? ""}/${tail}` : null;
+  return useTailedLog(target, active, () =>
+    api.sessionLog(runId!, session!.name, {
+      ...(session!.sliceId ? { slice: session!.sliceId } : {}),
+      tail,
+    }),
+  );
 }

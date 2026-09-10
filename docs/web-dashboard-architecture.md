@@ -90,8 +90,10 @@ GET  /api/runs/latest                             # RunDetail (resolveRunId)
 GET  /api/runs/:runId                             # RunDetail
 GET  /api/runs/:runId/slices                      # SliceSummary[]
 GET  /api/runs/:runId/slices/:sliceId             # SliceDetail | null→404
-GET  /api/runs/:runId/slices/:sliceId/log?tail=N  # { name, lines[] } (tailSliceLog, default 50, max 500)
-GET  /api/runs/:runId/slices/:sliceId/diff        # SliceDiff (DIFF_CAP 20000, git failures → { note })
+ GET  /api/runs/:runId/slices/:sliceId/log?tail=N  # { name, lines[] } (tailSliceLog, default 50, max 500)
+ GET  /api/runs/:runId/slices/:sliceId/diff        # SliceDiff (DIFF_CAP 20000, git failures → { note })
+ GET  /api/runs/:runId/sessions                    # OperatorSession[] (listSessions: unblock rounds + debug sessions)
+ GET  /api/runs/:runId/sessions/:name/log?tail=N[&slice=X]  # { name, lines[] } (tailSessionLog; debug needs slice)
 GET  /api/runs/:runId/events?afterSeq=N&types=a,b&sliceId=X&limit=N
      # { events: RunEvent[], offset } — offset = max seq seen (drainIntents rule)
 GET  /api/runs/:runId/stats                       # RunStats
