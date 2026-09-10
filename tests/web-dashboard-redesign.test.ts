@@ -104,8 +104,8 @@ describe("viewport app shell (no page-level scroll)", () => {
 
   test("board panel root is the flex parent that enables board scrolling", () => {
     // Regression: .omp-board-scroll is flex:1, which is inert unless its
-    // parent is flex — without this the board grew with content and clipped
-    // under .omp-workspace overflow:hidden with no scroll.
+    // parent is flex — without this the board grew with content and had no
+    // scroll path.
     expect(css).toMatch(/\.omp-board-panel\s*\{[^}]*display:\s*flex/s);
     expect(css).toMatch(/\.omp-board-panel\s*\{[^}]*flex-direction:\s*column/s);
     expect(css).toMatch(/\.omp-board-panel\s*\{[^}]*overflow:\s*hidden/s);
@@ -113,6 +113,14 @@ describe("viewport app shell (no page-level scroll)", () => {
     expect(src("web/src/pages/Overview.tsx")).not.toContain("omp-board-tabs");
   });
 
+  test("workspace fills the column and scrolls when sections overflow", () => {
+    // Fixed-chrome sections (feed, sessions) must never be clipped without
+    // a scroll path on short viewports: the board floors at 200px with its
+    // internal scroll, the rest rides the workspace fallback scroll.
+    expect(css).toMatch(/\.omp-workspace\s*\{[^}]*flex:\s*1/s);
+    expect(css).toMatch(/\.omp-workspace\s*\{[^}]*overflow-y:\s*auto/s);
+    expect(css).toMatch(/\.omp-board-panel\s*\{[^}]*min-height:\s*200px/s);
+  });
   test("secondary pages scroll as a whole inside .omp-page", () => {
     expect(css).toMatch(/\.omp-page\s*\{[^}]*overflow-y:\s*auto/s);
     for (const p of ["RunsPage", "AgentsPage", "StatsPage", "RoadmapPage"]) {
