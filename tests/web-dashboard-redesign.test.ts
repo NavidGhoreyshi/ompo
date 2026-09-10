@@ -128,7 +128,16 @@ describe("viewport app shell (no page-level scroll)", () => {
     expect(css).toMatch(/@media\s*\(max-width:\s*900px\)/);
     expect(css).toMatch(/prefers-reduced-motion/);
   });
-});
+
+  test("collapsed rail hides labels, counts, and run id", () => {
+    // Regression: the nav restyle dropped these selectors and collapsed
+    // buttons overflowed their 56px rail with visible text.
+    expect(css).toContain('.omp-shell[data-sidebar="collapsed"] .omp-nav-label');
+    expect(css).toContain('.omp-shell[data-sidebar="collapsed"] .omp-nav-count');
+    expect(css).toContain('.omp-shell[data-sidebar="collapsed"] .omp-sidebar-run');
+    expect(css).toMatch(/data-sidebar="collapsed"[^}]*display:\s*none/s);
+  });
+  });
 
 describe("run strip replaces KPI cards", () => {
   test("no KPI card language remains in the shell stylesheet", () => {

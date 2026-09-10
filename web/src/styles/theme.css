@@ -516,6 +516,16 @@ input:focus-visible,
   grid-template-columns: 56px minmax(0, 1fr) 372px;
 }
 
+.omp-shell[data-sidebar="collapsed"] .omp-nav-label,
+.omp-shell[data-sidebar="collapsed"] .omp-nav-count,
+.omp-shell[data-sidebar="collapsed"] .omp-sidebar-run {
+  display: none;
+}
+
+.omp-shell[data-sidebar="collapsed"] .omp-nav-btn {
+  justify-content: center;
+}
+
 /* ---------- overview workspace: strip / lanes / board ---------- */
 
 .omp-workspace {
