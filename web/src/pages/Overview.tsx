@@ -5,6 +5,8 @@
  import SessionsPanel from "../components/SessionsPanel.tsx";
  import SliceTable from "../components/SliceTable.tsx";
  import WorkerLanes from "../components/WorkerLanes.tsx";
+ import { Skeleton } from "../components/ui/skeleton.tsx";
+ import { preferredSliceId } from "../lib/selection.ts";
 
 /**
  * Overview workspace: RUN STATUS / LIVE FEED / LANES + BOARD (aside owned

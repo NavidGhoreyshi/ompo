@@ -266,4 +266,15 @@ describe("overview composition (execution first)", () => {
     expect(css).toMatch(/\.omp-session-log\s*\{[^}]*max-height:\s*\d+px/s);
     expect(css).toMatch(/\.omp-session-log\s*\{[^}]*overflow-y:\s*auto/s);
   });
+
+  test("overview imports every component it renders", () => {
+    // Regression: dropped Skeleton/preferredSliceId imports shipped a
+    // runtime ReferenceError that neither the bundler nor the old
+    // tsconfig (which excluded web/) caught.
+    for (const name of ["Skeleton", "preferredSliceId", "LiveFeed", "SessionsPanel", "RunHeader", "WorkerLanes", "SliceTable"]) {
+      expect(overview).toContain(name);
+    }
+    expect(overview).toMatch(/import\s*\{[^}]*Skeleton[^}]*\}\s*from/);
+    expect(overview).toMatch(/import\s*\{[^}]*preferredSliceId[^}]*\}\s*from/);
+  });
  });

@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { api, type PlanPreviewEnvelope } from "../api.ts";
+ import { api, type PlanPreviewEnvelope, type RunDetail } from "../api.ts";
 import Dag from "../components/Dag.tsx";
 import PlannerPreview from "../components/PlannerPreview.tsx";
 import StatusBadge from "../components/StatusBadge.tsx";

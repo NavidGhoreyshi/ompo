@@ -38,7 +38,7 @@ const SLICE_ACTIONS: readonly { kind: SliceKind; label: string; hint: string; ic
 ];
 
 /** Destructive slice actions arm an inline confirm before the same API call. */
-const DESTRUCTIVE: Record<SliceKind, true> = { skip: true, kill: true };
+ const DESTRUCTIVE: Partial<Record<SliceKind, true>> = { skip: true, kill: true };
 
 interface PendingIntent {
   seq: number;
