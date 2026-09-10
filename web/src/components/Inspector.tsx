@@ -86,7 +86,7 @@ export default function Inspector({
   return (
     <div className="omp-inspector-panel" aria-label="Inspector" aria-live="polite">
       <div className="omp-inspector-head">
-        <span className="omp-section-label">Active slice</span>
+        <span className="omp-inspector-eyebrow">Active slice</span>
         <h2 className="omp-inspector-title">
           <code>{sel.id}</code> {sel.title}
         </h2>
@@ -94,10 +94,10 @@ export default function Inspector({
           <span aria-hidden="true" className="omp-status-sym" data-tone={tone}>
             <StatusSymbol status={sel.status} />
           </span>
-          <span className="omp-board-state" data-tone={tone}>
+          <span className="omp-inspector-status" data-tone={tone}>
             {sel.status}
           </span>
-          <span className="omp-hint">
+          <span>
             attempt {sel.attempts} · gen {sel.generation}
             {sel.effort ? ` · ${sel.effort}` : ""}
             {sel.agent ? ` · ${sel.agent}` : ""}

@@ -4,6 +4,17 @@ import { useSliceLog } from "../lib/useSliceLog.ts";
 import { StatusSymbol } from "./icons.tsx";
 import { toneForStatus } from "./StatusBadge.tsx";
 
+type FeedTagKind = "read" | "shell" | "turn";
+
+function tagForLine(line: string): { tag: string; kind: FeedTagKind } | null {
+  const read = line.match(/^\s*(read|glob|grep)\b/i);
+  if (read) return { tag: read[1]!.toLowerCase(), kind: "read" };
+  if (/^\s*bash\b/i.test(line)) return { tag: "bash", kind: "shell" };
+  const turn = line.match(/turn\s+\d+\s+done\b/i);
+  if (turn) return { tag: turn[0]!.toLowerCase(), kind: "turn" };
+  return null;
+}
+
 /**
  * Live worker feed: the TUI-equivalent stream, front and center. Follows the
  * active slice (selection, else the slice that needs eyes): who is working
@@ -12,6 +23,11 @@ import { toneForStatus } from "./StatusBadge.tsx";
  * turn-by-turn progress the event stream can't show (events only advance at
  * stage boundaries). Quiescent runs show the settled tail, marked settled;
  * a slice with no log yet says so honestly. Never empty, never estimated.
+ *
+ * Lines render as index · tag · content: read-type calls (read/glob/grep)
+ * in blue, shell calls (bash) in amber, turn markers muted. Tool-type color
+ * is categorical, not a run status — the feed and the status pills never
+ * share a visual unit.
  */
 export default function LiveFeed({
   runId,
@@ -26,11 +42,11 @@ export default function LiveFeed({
 }) {
   const active = slice !== null && (slice.status === "running" || slice.status === "verifying");
   const { name, lines, error, loading } = useSliceLog(runId, slice?.id ?? null, active, 100);
-  const preRef = useRef<HTMLPreElement | null>(null);
+  const logRef = useRef<HTMLDivElement | null>(null);
 
   // Tail-following: stay pinned to the newest line as polls land.
   useEffect(() => {
-    const el = preRef.current;
+    const el = logRef.current;
     if (el) el.scrollTop = el.scrollHeight;
   }, [lines]);
 
@@ -39,8 +55,8 @@ export default function LiveFeed({
       <section className="omp-livefeed" data-live="false" aria-label="Live worker feed">
         <div className="omp-livefeed-head">
           <span className="omp-section-label">Live feed</span>
+          <span className="omp-hint">no slices yet</span>
         </div>
-        <p className="omp-hint">{live ? "live run — waiting for the first slice to claim…" : "no slices yet — the feed populates once the run has slices."}</p>
       </section>
     );
   }
@@ -53,6 +69,7 @@ export default function LiveFeed({
       : agent !== undefined
         ? `attempt ${agent.attempt} · gen ${agent.generation}`
         : `attempt ${slice.attempts} · gen ${slice.generation}`;
+  const lastLine = lines.length > 0 ? lines[lines.length - 1]! : null;
 
   return (
     <section className="omp-livefeed" data-live={active ? "true" : "false"} aria-label={`Live worker feed — ${slice.id}`}>
@@ -100,10 +117,38 @@ export default function LiveFeed({
           {active ? "worker started — lines appear once it starts writing" : `no worker lines yet · ${name ?? "no log file"}`}
         </p>
       )}
+      {!loading && !error && lastLine !== null && (
+        <p className="omp-ellipsis omp-livefeed-latest" data-fresh="true" title={lastLine}>
+          <span className="omp-hint">last line · </span>
+          {lastLine}
+        </p>
+      )}
       {!loading && !error && lines.length > 0 && (
-        <pre ref={preRef} className="omp-code omp-livefeed-log" aria-label={`Worker log tail — ${slice.id}`} tabIndex={0}>
-          {lines.join("\n")}
-        </pre>
+        <div
+          ref={logRef}
+          className="omp-code omp-livefeed-log"
+          role="log"
+          aria-label={`Worker log tail — ${slice.id}`}
+          tabIndex={0}
+        >
+          {lines.map((line, i) => {
+            const tagged = tagForLine(line);
+            const fresh = i === lines.length - 1;
+            return (
+              <div key={`${i}-${line.length}`} className="omp-feed-line" data-fresh={fresh ? "true" : "false"}>
+                <span aria-hidden="true" className="omp-feed-idx">
+                  {String(i + 1).padStart(2, "0")}
+                </span>
+                {tagged && (
+                  <span className="omp-feed-tag" data-kind={tagged.kind}>
+                    {tagged.tag}
+                  </span>
+                )}
+                <span className="omp-feed-text">{line}</span>
+              </div>
+            );
+          })}
+        </div>
       )}
     </section>
   );

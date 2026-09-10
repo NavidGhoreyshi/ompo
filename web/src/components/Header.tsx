@@ -1,4 +1,4 @@
-import { LuPanelLeft } from "react-icons/lu";
+import { LuChevronDown, LuPanelLeft } from "react-icons/lu";
 import type { RunSummary } from "../api.ts";
 import { Button } from "./ui/button.tsx";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "./ui/select.tsx";
@@ -33,7 +33,18 @@ export default function Header({
         <LuPanelLeft aria-hidden="true" />
       </Button>
       <span className="omp-brand">
-        <span className="omp-brand-mark" aria-hidden="true">o</span>
+        <span className="omp-brand-mark" aria-hidden="true">
+          <svg viewBox="0 0 14 14" focusable="false" aria-hidden="true">
+            <path
+              d="M4 2.5 9.5 7 4 11.5"
+              fill="none"
+              stroke="currentColor"
+              strokeWidth={2.2}
+              strokeLinecap="round"
+              strokeLinejoin="round"
+            />
+          </svg>
+        </span>
         <span className="omp-brand-name">ompo dashboard</span>
       </span>
       <span className="omp-live" data-live={live ? "true" : "false"} title={live ? "Live run (loop holds the lock)" : "Quiescent run"}>
@@ -42,11 +53,13 @@ export default function Header({
       </span>
       <div className="omp-header-run">
         {version && <span className="omp-version">server {version}</span>}
-        <label className="flex items-center gap-1.5">
+        <label className="omp-run-picker-label flex items-center gap-1.5">
           <span className="omp-hint">run </span>
           <Select value={runId ?? ""} onValueChange={onSelectRun}>
-            <SelectTrigger size="sm" className="w-44" aria-label="Select run">
+            <SelectTrigger size="sm" className="omp-run-picker w-44" aria-label="Select run">
+              <span aria-hidden="true" className="omp-run-picker-dot" data-live={live ? "true" : "false"} />
               <SelectValue placeholder="select run" />
+              <LuChevronDown aria-hidden="true" className="omp-run-picker-chevron size-3.5 shrink-0" />
             </SelectTrigger>
             <SelectContent>
               {runs.map((r) => (

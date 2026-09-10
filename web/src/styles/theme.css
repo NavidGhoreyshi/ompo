@@ -28,32 +28,61 @@
   font-display: swap;
 }
 
+/* JetBrains Mono for data/code/log. Variable woff2 can be dropped at
+ * ../assets/fonts/JetBrainsMono-var.woff2 — until then this resolves to
+ * any locally installed copy and falls back to the system mono stack. */
+@font-face {
+  font-family: "JetBrains Mono";
+  src: local("JetBrains Mono"), local("JetBrainsMono-Regular");
+  font-weight: 400 500;
+  font-style: normal;
+  font-display: swap;
+}
+
 :root {
-  --omp-bg: #0e131a;
-  --omp-bg-2: #111823;
-  --omp-panel: #151d29;
-  --omp-panel-2: #1a2333;
-  --omp-border: #243043;
-  --omp-hairline: rgba(148, 163, 184, 0.14);
-  --omp-text: #e8eef5;
-  --omp-secondary: #a8b5c6;
-  --omp-muted: #6d7b8f;
-  --omp-cyan: #4cc9f0;
-  --omp-cyan-dim: rgba(76, 201, 240, 0.12);
-  --omp-green: #4ade80;
-  --omp-green-dim: rgba(74, 222, 128, 0.12);
-  --omp-amber: #fbbf24;
-  --omp-amber-dim: rgba(251, 191, 36, 0.12);
-  --omp-red: #f87171;
-  --omp-red-dim: rgba(248, 113, 113, 0.12);
-  --omp-focus: #93c5fd;
-  --omp-row-hover: rgba(148, 163, 184, 0.08);
-  --omp-row-active: rgba(76, 201, 240, 0.1);
-  --omp-radius: 8px;
-  --omp-radius-sm: 6px;
+  /* surfaces — near-black anchor, three elevation steps up */
+  --omp-bg: #0a0d12;
+  --omp-bg-2: #0d1219;
+  --omp-panel: #0f141b;
+  --omp-panel-2: #131a23;
+  --omp-raised: #161e29;
+  /* borders */
+  --omp-border: #1c2530;
+  --omp-border-strong: #26313f;
+  --omp-hairline: rgba(148, 163, 184, 0.12);
+  /* text */
+  --omp-text: #eef2f7;
+  --omp-secondary: #96a3b5;
+  --omp-muted: #57687d;
+  /* brand / selection accent */
+  --omp-signal: #8b7cff;
+  --omp-signal-dim: rgba(139, 124, 255, 0.18);
+  /* status semantics — running / done / pending / failed */
+  --omp-cyan: #22d3ee;
+  --omp-cyan-dim: rgba(34, 211, 238, 0.18);
+  --omp-green: #2fe09a;
+  --omp-green-dim: rgba(47, 224, 154, 0.18);
+  --omp-amber: #ffb020;
+  --omp-amber-dim: rgba(255, 176, 32, 0.18);
+  --omp-red: #ff5d5d;
+  --omp-red-dim: rgba(255, 93, 93, 0.19);
+  /* category accents — never a status */
+  --omp-violet: #b18cff;
+  --omp-violet-dim: rgba(177, 140, 255, 0.18);
+  --omp-pink: #f871b8;
+  --omp-pink-dim: rgba(248, 113, 184, 0.18);
+  --omp-teal: #2ee6c8;
+  --omp-teal-dim: rgba(46, 230, 200, 0.18);
+  --omp-blue: #4d9eff;
+  --omp-blue-dim: rgba(77, 158, 255, 0.18);
+  --omp-focus: var(--omp-signal);
+  --omp-row-hover: rgba(148, 163, 184, 0.07);
+  --omp-row-active: rgba(139, 124, 255, 0.07);
+  --omp-radius: 12px;
+  --omp-radius-sm: 7px;
   --omp-font: "Plus Jakarta Sans", system-ui, -apple-system, "Segoe UI", sans-serif;
   --omp-display: "Space Grotesk", "Plus Jakarta Sans", system-ui, sans-serif;
-  --omp-mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  --omp-mono: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
   --omp-shell-max: 1720px;
 }
 
@@ -74,18 +103,24 @@ body {
 }
 
 ::selection {
-  background: rgba(76, 201, 240, 0.3);
+  background: var(--omp-signal-dim);
 }
 
 /* ---------- application shell: viewport workspace, no page scroll ---------- */
-
+/* Ambient wash: three low-opacity radial glows (violet/cyan/pink) over the
+ * near-black anchor. Atmosphere only — opacities stay low enough to read
+ * as depth, never as a colored panel. */
 .omp-shell {
   height: 100vh;
   height: 100dvh;
   display: flex;
   flex-direction: column;
   overflow: hidden;
-  background: var(--omp-bg);
+  background:
+    radial-gradient(560px 320px at 12% -4%, rgba(139, 124, 255, 0.1), transparent 70%),
+    radial-gradient(620px 340px at 88% 0%, rgba(34, 211, 238, 0.07), transparent 70%),
+    radial-gradient(520px 380px at 96% 46%, rgba(248, 113, 184, 0.045), transparent 70%),
+    var(--omp-bg);
   color: var(--omp-text);
 }
 
@@ -93,7 +128,7 @@ body {
   flex: 1;
   min-height: 0;
   display: grid;
-  grid-template-columns: 176px minmax(0, 1fr) 400px;
+  grid-template-columns: 184px minmax(0, 1fr) 372px;
   overflow: hidden;
   width: 100%;
   max-width: var(--omp-shell-max);
@@ -253,13 +288,18 @@ body {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 22px;
-  height: 22px;
-  border-radius: 6px;
-  background: var(--omp-cyan-dim);
-  color: var(--omp-cyan);
-  font-size: 13px;
-  font-weight: 700;
+  width: 26px;
+  height: 26px;
+  border-radius: 7px;
+  background: linear-gradient(150deg, var(--omp-violet), var(--omp-cyan));
+  color: #0a0d12;
+  flex: none;
+}
+
+.omp-brand-mark svg {
+  width: 13px;
+  height: 13px;
+  display: block;
 }
 
 .omp-live {
@@ -282,14 +322,16 @@ body {
 }
 
 .omp-live-dot {
-  width: 8px;
-  height: 8px;
+  width: 6px;
+  height: 6px;
   border-radius: 50%;
   background: currentColor;
   flex: none;
 }
 
 .omp-live[data-live="true"] .omp-live-dot {
+  background: var(--omp-cyan);
+  box-shadow: 0 0 0 3px var(--omp-cyan-dim);
   animation: omp-pulse 1.8s ease-in-out infinite;
 }
 
@@ -349,6 +391,35 @@ input:focus-visible,
   outline-offset: 1px;
 }
 
+/* Run picker pill: raised surface, strong border, mono id, cyan status
+ * dot at the left, chevron at the right. */
+.omp-run-picker {
+  background: var(--omp-raised);
+  border: 1px solid var(--omp-border-strong);
+  border-radius: 8px;
+  font-family: var(--omp-mono);
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.omp-run-picker-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--omp-muted);
+  flex: none;
+}
+
+.omp-run-picker-dot[data-live="true"] {
+  background: var(--omp-cyan);
+}
+
+.omp-run-picker-chevron {
+  color: var(--omp-muted);
+  margin-left: auto;
+}
+
 /* ---------- sidebar: light rail, run first ---------- */
 
 .omp-sidebar {
@@ -380,6 +451,7 @@ input:focus-visible,
 }
 
 .omp-nav-btn {
+  position: relative;
   display: flex;
   align-items: center;
   gap: 8px;
@@ -393,7 +465,6 @@ input:focus-visible,
   font: inherit;
   font-size: 13px;
   text-align: left;
-  border-left: 2px solid transparent;
 }
 
 .omp-nav-btn:hover {
@@ -401,35 +472,48 @@ input:focus-visible,
   color: var(--omp-text);
 }
 
+.omp-nav-btn:hover .omp-nav-icon {
+  color: var(--item-c);
+}
+
+.omp-nav-icon {
+  color: currentColor;
+  flex: none;
+}
+
 .omp-nav-btn[aria-current="page"] {
-  background: var(--omp-row-active);
+  background: var(--item-c-dim);
   color: var(--omp-text);
-  border-left-color: var(--omp-cyan);
+}
+
+.omp-nav-btn[aria-current="page"]::before {
+  content: "";
+  position: absolute;
+  left: -10px;
+  top: 6px;
+  bottom: 6px;
+  width: 2px;
+  border-radius: 2px;
+  background: var(--item-c);
+}
+
+.omp-nav-btn[aria-current="page"] .omp-nav-icon {
+  color: var(--item-c);
 }
 
 .omp-nav-count {
   margin-left: auto;
-  font-size: 11px;
+  font-size: 10.5px;
   font-family: var(--omp-mono);
   color: var(--omp-muted);
 }
 
 .omp-nav-btn[aria-current="page"] .omp-nav-count {
-  color: var(--omp-cyan);
+  color: var(--item-c);
 }
 
 .omp-shell[data-sidebar="collapsed"] .omp-body {
-  grid-template-columns: 56px minmax(0, 1fr) 400px;
-}
-
-.omp-shell[data-sidebar="collapsed"] .omp-nav-label,
-.omp-shell[data-sidebar="collapsed"] .omp-nav-count,
-.omp-shell[data-sidebar="collapsed"] .omp-sidebar-run {
-  display: none;
-}
-
-.omp-shell[data-sidebar="collapsed"] .omp-nav-btn {
-  justify-content: center;
+  grid-template-columns: 56px minmax(0, 1fr) 372px;
 }
 
 /* ---------- overview workspace: strip / lanes / board ---------- */
@@ -451,17 +535,36 @@ input:focus-visible,
   color: var(--omp-muted);
 }
 
-/* Run hero: current run → what is happening → which worker → what it is
- * on → quiet telemetry. The hero slice dominates; counts sit muted below.
- */
-
+/* Hero run card: the focal device. Raised card with a 3px top border in the
+ * current stage's status color (ambient status read before any text), the
+ * slice header line with a solid status pill, the pipeline rail, and the
+ * run-level stat row behind a divider. */
 .omp-runline {
   flex: none;
   display: flex;
   flex-direction: column;
-  gap: 2px;
-  padding: 4px 0 8px;
-  border-bottom: 1px solid var(--omp-hairline);
+  gap: 8px;
+  padding: 12px 14px 10px;
+  background: var(--omp-raised);
+  border: 1px solid var(--omp-border);
+  border-top: 3px solid var(--omp-muted);
+  border-radius: var(--omp-radius);
+}
+
+.omp-runline[data-tone="cyan"] {
+  border-top-color: var(--omp-cyan);
+}
+
+.omp-runline[data-tone="green"] {
+  border-top-color: var(--omp-green);
+}
+
+.omp-runline[data-tone="amber"] {
+  border-top-color: var(--omp-amber);
+}
+
+.omp-runline[data-tone="red"] {
+  border-top-color: var(--omp-red);
 }
 
 .omp-runline-eyebrow {
@@ -476,7 +579,7 @@ input:focus-visible,
 .omp-runline-id {
   font-family: var(--omp-mono);
   font-size: 12px;
-  color: var(--omp-secondary);
+  color: var(--omp-muted);
 }
 
 .omp-hero {
@@ -485,11 +588,11 @@ input:focus-visible,
 
 .omp-hero-title {
   font-family: var(--omp-display);
-  font-size: 18px;
-  font-weight: 700;
+  font-size: 21px;
+  font-weight: 600;
   margin: 0;
   display: flex;
-  align-items: baseline;
+  align-items: center;
   gap: 8px;
   min-width: 0;
   flex-wrap: wrap;
@@ -499,6 +602,7 @@ input:focus-visible,
   font-family: var(--omp-mono);
   font-size: 14px;
   font-style: normal;
+  font-weight: 500;
   color: var(--omp-cyan);
 }
 
@@ -511,35 +615,63 @@ input:focus-visible,
   flex-basis: 160px;
 }
 
+/* Solid status pill: the one most important status read on the screen.
+ * Solid status fill + near-black text — bolder than a tint by design. */
 .omp-hero-status {
   font-family: var(--omp-font);
-  font-size: 12px;
+  font-size: 11px;
   font-weight: 700;
   letter-spacing: 0.06em;
   text-transform: uppercase;
   flex: none;
+  padding: 3px 10px;
+  border-radius: 999px;
+  margin-left: auto;
 }
 
-.omp-hero-status[data-tone="cyan"],
+.omp-hero-status[data-tone="cyan"] {
+  background: var(--omp-cyan);
+  color: #042227;
+}
+
+.omp-hero-status[data-tone="green"] {
+  background: var(--omp-green);
+  color: #052015;
+}
+
+.omp-hero-status[data-tone="red"] {
+  background: var(--omp-red);
+  color: #2b0d0d;
+}
+
+.omp-hero-status[data-tone="amber"] {
+  background: var(--omp-amber);
+  color: #2e1a00;
+}
+.omp-hero-status[data-tone="muted"] {
+  background: var(--omp-panel-2);
+  color: var(--omp-secondary);
+  border: 1px solid var(--omp-border);
+}
+
+.omp-hero-status-glyph {
+  display: inline-flex;
+  align-items: center;
+  margin-right: 6px;
+  vertical-align: 1px;
+}
+
+.omp-hero-status-glyph svg {
+  width: 10px;
+  height: 10px;
+  display: block;
+}
 .omp-runline-telemetry .omp-stat[data-tone="cyan"] strong {
   color: var(--omp-cyan);
 }
 
-.omp-hero-status[data-tone="green"] {
-  color: var(--omp-green);
-}
-
-.omp-hero-status[data-tone="red"],
 .omp-runline-telemetry .omp-stat[data-tone="red"] strong {
   color: var(--omp-red);
-}
-
-.omp-hero-status[data-tone="amber"] {
-  color: var(--omp-amber);
-}
-
-.omp-hero-status[data-tone="muted"] {
-  color: var(--omp-muted);
 }
 
 .omp-hero-sub {
@@ -555,25 +687,162 @@ input:focus-visible,
 .omp-runline-telemetry {
   display: flex;
   align-items: baseline;
-  gap: 10px;
+  gap: 10px 14px;
   flex-wrap: wrap;
   font-size: 12px;
   color: var(--omp-muted);
-  margin: 3px 0 0;
+  margin: 0;
+  padding-top: 8px;
+  border-top: 1px solid var(--omp-border);
 }
 
 .omp-stat {
   white-space: nowrap;
+  display: inline-flex;
+  align-items: baseline;
+  gap: 4px;
 }
 
 .omp-stat strong {
-  color: var(--omp-secondary);
-  font-family: var(--omp-mono);
+  color: var(--omp-text);
+  font-family: var(--omp-display);
+  font-size: 16px;
   font-weight: 600;
+}
+
+.omp-stat[data-tone="cyan"] strong {
+  color: var(--omp-cyan);
+}
+
+.omp-stat[data-tone="green"] strong {
+  color: var(--omp-green);
 }
 
 .omp-stat[data-tone="amber"] strong {
   color: var(--omp-amber);
+}
+
+.omp-stat[data-tone="red"] strong {
+  color: var(--omp-red);
+}
+
+/* Pipeline stepper — horizontal rail (hero). 22px circular nodes joined by
+ * a 1.5px line; the completed rail reads left to right in green. Only the
+ * running node gets a halo so "where we are" is instant. */
+.omp-stepper--horizontal {
+  list-style: none;
+  margin: 2px 0 0;
+  padding: 0;
+  display: flex;
+  align-items: flex-start;
+  gap: 0;
+  overflow-x: auto;
+}
+
+.omp-stepper--horizontal .omp-stepper-step {
+  flex: 1 1 0;
+  min-width: 92px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.omp-stepper-top {
+  display: flex;
+  align-items: center;
+  gap: 0;
+}
+
+.omp-stepper-node {
+  flex: none;
+  width: 22px;
+  height: 22px;
+  border-radius: 50%;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 1.5px solid var(--omp-muted);
+  background: var(--omp-panel-2);
+  color: var(--omp-muted);
+}
+
+.omp-stepper-node svg {
+  width: 11px;
+  height: 11px;
+  display: block;
+}
+
+.omp-stepper-step[data-state="done"] .omp-stepper-node {
+  background: var(--omp-green);
+  border-color: var(--omp-green);
+  color: #052015;
+}
+
+.omp-stepper-step[data-state="running"] .omp-stepper-node {
+  background: var(--omp-cyan);
+  border-color: var(--omp-cyan);
+  color: #042227;
+  box-shadow: 0 0 0 4px var(--omp-cyan-dim);
+}
+
+.omp-stepper-step[data-state="fail"] .omp-stepper-node {
+  background: var(--omp-red);
+  border-color: var(--omp-red);
+  color: #2b0d0d;
+}
+
+.omp-stepper-step[data-state="pending"] .omp-stepper-node {
+  background: var(--omp-panel-2);
+  border-color: var(--omp-muted);
+  color: var(--omp-muted);
+}
+
+.omp-stepper-connector {
+  flex: 1;
+  height: 1.5px;
+  min-width: 8px;
+  background: var(--omp-border-strong);
+  margin: 0 6px 0 4px;
+  border-radius: 1px;
+  transform-origin: left center;
+}
+
+.omp-stepper-connector[data-filled="true"] {
+  background: var(--omp-green);
+  animation: omp-stepper-fill 300ms var(--omp-ease-out) both;
+}
+
+@keyframes omp-stepper-fill {
+  from {
+    transform: scaleX(0);
+  }
+  to {
+    transform: scaleX(1);
+  }
+}
+
+.omp-stepper-label {
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--omp-text);
+  margin-top: 4px;
+}
+
+.omp-stepper-step[data-state="pending"] .omp-stepper-label {
+  color: var(--omp-secondary);
+}
+
+.omp-stepper-sub {
+  font-family: var(--omp-mono);
+  font-size: 10.5px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 100%;
+}
+
+.omp-stepper-sub[data-state="fail"] {
+  color: var(--omp-red);
 }
 
 /* Worker lanes: concurrency at a glance. */
@@ -660,19 +929,23 @@ input:focus-visible,
   max-width: 140px;
   min-width: 0;
 }
- /* Live worker feed: the TUI-equivalent stream, front and center under the
-  * hero. Fixed chrome (flex:none) with a capped internal log scroll so the
-  * board below keeps the remaining viewport instead of being pushed away. */
+ /* Live worker feed: the raw tool-call stream, front and center under the
+  * hero. Blue top border marks "this panel is the tool stream" (category,
+  * not status). Fixed chrome (flex:none) with a capped internal log scroll
+  * so the board below keeps the remaining viewport. */
  .omp-livefeed {
+   position: relative;
    flex: none;
    min-width: 0;
    background: var(--omp-panel);
    border: 1px solid var(--omp-hairline);
+   border-top: 2px solid var(--omp-blue);
    border-radius: var(--omp-radius);
    padding: 10px 12px;
    display: flex;
    flex-direction: column;
    gap: 6px;
+   overflow: hidden;
  }
 
  .omp-livefeed-head {
@@ -715,13 +988,91 @@ input:focus-visible,
    margin: 0;
  }
 
+ .omp-livefeed-latest[data-fresh="true"] {
+   animation: omp-feed-fresh 1.2s ease-out both;
+ }
+
  .omp-livefeed-log {
+   position: relative;
    margin: 0;
    max-height: 220px;
    overflow-y: auto;
-   white-space: pre-wrap;
-   overflow-wrap: anywhere;
    scrollbar-gutter: stable;
+   font-size: 11.5px;
+ }
+
+ /* Soft clip where content scrolls under the header: 14px panel-color
+  * fade, sticky so it rides the scroll. */
+ .omp-livefeed-log::before {
+   content: "";
+   position: sticky;
+   top: 0;
+   display: block;
+   height: 14px;
+   margin-bottom: -14px;
+   background: linear-gradient(var(--omp-panel), transparent);
+   pointer-events: none;
+   z-index: 1;
+ }
+
+ .omp-feed-line {
+   display: flex;
+   align-items: baseline;
+   gap: 8px;
+   min-width: 0;
+   padding: 1px 2px;
+   border-radius: 4px;
+ }
+
+ .omp-feed-line[data-fresh="true"] {
+   background: linear-gradient(90deg, var(--omp-cyan-dim), transparent 40%);
+   animation: omp-feed-fresh 1.2s ease-out both;
+ }
+
+ @keyframes omp-feed-fresh {
+   from {
+     filter: brightness(1.35);
+   }
+   to {
+     filter: brightness(1);
+   }
+ }
+
+ .omp-feed-idx {
+   flex: none;
+   min-width: 2ch;
+   text-align: right;
+   font-size: 10.5px;
+   color: var(--omp-muted);
+ }
+
+ .omp-feed-tag {
+   flex: none;
+   font-size: 10.5px;
+   font-weight: 700;
+   letter-spacing: 0.04em;
+ }
+
+ .omp-feed-tag[data-kind="read"] {
+   color: var(--omp-blue);
+ }
+
+ .omp-feed-tag[data-kind="shell"] {
+   color: var(--omp-amber);
+ }
+
+ .omp-feed-tag[data-kind="turn"] {
+   color: var(--omp-muted);
+   font-weight: 500;
+ }
+
+ .omp-feed-text {
+   min-width: 0;
+   flex: 1;
+   overflow: hidden;
+   text-overflow: ellipsis;
+   white-space: nowrap;
+   color: var(--omp-secondary);
  }
  /* Operator sessions: unblock rounds + debug sessions with the same
   * live-tail treatment as slice workers. Fixed chrome (flex:none); each
@@ -823,6 +1174,7 @@ input:focus-visible,
   min-height: 0;
   overflow-y: auto;
   border: 1px solid var(--omp-hairline);
+  border-top: 2px solid var(--omp-violet);
   border-radius: var(--omp-radius);
   background: var(--omp-panel);
 }
@@ -854,6 +1206,9 @@ input:focus-visible,
   padding: 0;
 }
 
+/* Flat rows: no cards, no shadows. The 3px left border carries status;
+ * the selected row uses the selection signal instead of cyan so
+ * "selected" and "running" stay distinct facts. */
 .omp-board-row {
   display: flex;
   align-items: flex-start;
@@ -863,13 +1218,14 @@ input:focus-visible,
   text-align: left;
   padding: 7px 10px;
   border: none;
-  border-left: 2px solid transparent;
+  border-left: 3px solid transparent;
   border-bottom: 1px solid var(--omp-hairline);
   background: transparent;
   color: var(--omp-text);
   cursor: pointer;
   font: inherit;
 }
+
 
 .omp-board-list li:last-child .omp-board-row {
   border-bottom: none;
@@ -880,7 +1236,15 @@ input:focus-visible,
 }
 
 .omp-board-row[data-selected="true"] {
-  background: var(--omp-row-active);
+  background: rgba(124, 158, 255, 0.06);
+  border-left-color: var(--omp-signal);
+}
+
+.omp-board-row[data-tone="green"] {
+  border-left-color: var(--omp-green);
+}
+
+.omp-board-row[data-tone="cyan"] {
   border-left-color: var(--omp-cyan);
 }
 
@@ -892,8 +1256,57 @@ input:focus-visible,
   border-left-color: var(--omp-amber);
 }
 
-.omp-board-row[data-selected="true"][data-tone="red"] {
-  border-left-color: var(--omp-red);
+.omp-board-row[data-selected="true"][data-tone="red"],
+.omp-board-row[data-selected="true"][data-tone="green"],
+.omp-board-row[data-selected="true"][data-tone="cyan"],
+.omp-board-row[data-selected="true"][data-tone="amber"] {
+  border-left-color: var(--omp-signal);
+}
+
+/* 20×20 status glyph: tinted rounded square for done/running, plain
+ * outline circle for pending. */
+.omp-board-glyph {
+  flex: none;
+  width: 20px;
+  height: 20px;
+  border-radius: 6px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  margin-top: 1px;
+}
+
+.omp-board-glyph svg {
+  width: 10px;
+  height: 10px;
+  display: block;
+}
+
+.omp-board-glyph[data-tone="green"] {
+  background: var(--omp-green-dim);
+  color: var(--omp-green);
+}
+
+.omp-board-glyph[data-tone="cyan"] {
+  background: var(--omp-cyan-dim);
+  color: var(--omp-cyan);
+}
+
+.omp-board-glyph[data-tone="red"] {
+  background: var(--omp-red-dim);
+  color: var(--omp-red);
+}
+
+.omp-board-glyph[data-tone="amber"] {
+  background: var(--omp-amber-dim);
+  color: var(--omp-amber);
+}
+
+.omp-board-glyph[data-tone="muted"] {
+  background: transparent;
+  border: 1.5px solid var(--omp-muted);
+  color: var(--omp-muted);
+  border-radius: 50%;
 }
 
 .omp-board-main {
@@ -904,29 +1317,41 @@ input:focus-visible,
   flex: 1;
 }
 
-.omp-board-top {
-  display: flex;
-  align-items: baseline;
-  gap: 8px;
-  min-width: 0;
-}
-
 .omp-board-id {
   font-family: var(--omp-mono);
-  font-size: 12px;
-  font-weight: 700;
-  color: var(--omp-text);
-  flex: none;
+  font-size: 11px;
+  font-weight: 500;
+  color: var(--omp-muted);
 }
 
 .omp-board-title-text {
-  flex: 1;
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
   font-weight: 600;
   font-size: 13px;
+  color: var(--omp-text);
+}
+
+.omp-board-side {
+  flex: none;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 2px;
+  margin-left: auto;
+}
+
+.omp-board-dur {
+  font-family: var(--omp-mono);
+  font-size: 11px;
+  color: var(--omp-muted);
+  white-space: nowrap;
+}
+
+.omp-board-row[data-live="true"] .omp-board-dur {
+  color: var(--omp-secondary);
 }
 
 .omp-board-state {
@@ -1151,7 +1576,7 @@ input:focus-visible,
   color: var(--omp-muted);
 }
 
-.omp-board-row[data-live="true"] > .omp-status-sym {
+.omp-board-row[data-live="true"] > .omp-board-glyph {
   animation: omp-pulse 1.8s ease-in-out infinite;
 }
 
@@ -1182,10 +1607,21 @@ input:focus-visible,
   padding-bottom: 8px;
 }
 
+/* The one earned uppercase label per screen: real section label, not
+ * decoration. Signal-blue carries brand/selection meaning. */
+.omp-inspector-eyebrow {
+  font-family: var(--omp-font);
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.09em;
+  text-transform: uppercase;
+  color: var(--omp-signal);
+}
+
 .omp-inspector-title {
   font-family: var(--omp-display);
   font-size: 16px;
-  font-weight: 700;
+  font-weight: 600;
   margin: 2px 0 4px;
   overflow-wrap: anywhere;
 }
@@ -1193,6 +1629,7 @@ input:focus-visible,
 .omp-inspector-title code {
   font-family: var(--omp-mono);
   font-size: 13px;
+  font-weight: 500;
   color: var(--omp-cyan);
 }
 
@@ -1202,7 +1639,34 @@ input:focus-visible,
   gap: 8px;
   flex-wrap: wrap;
   margin: 0;
-  font-size: 13px;
+  font-family: var(--omp-mono);
+  font-size: 12px;
+  color: var(--omp-muted);
+}
+
+.omp-inspector-status {
+  font-family: var(--omp-font);
+  font-weight: 700;
+}
+
+.omp-inspector-status[data-tone="cyan"] {
+  color: var(--omp-cyan);
+}
+
+.omp-inspector-status[data-tone="green"] {
+  color: var(--omp-green);
+}
+
+.omp-inspector-status[data-tone="amber"] {
+  color: var(--omp-amber);
+}
+
+.omp-inspector-status[data-tone="red"] {
+  color: var(--omp-red);
+}
+
+.omp-inspector-status[data-tone="muted"] {
+  color: var(--omp-muted);
 }
 
 .omp-inspector-reason {
@@ -1214,65 +1678,139 @@ input:focus-visible,
   overflow-wrap: anywhere;
 }
 
+/* Last-run kv tiles: 2-column grid of small tiles instead of stacked
+ * label:value rows. Label 10px muted above, value 15px/600 display below,
+ * trailing muted unit fragment for compound values. */
 .omp-kv {
   display: grid;
-  grid-template-columns: auto minmax(0, 1fr);
-  gap: 2px 12px;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
   margin: 0;
-  font-size: 13px;
+}
+
+.omp-kv > div {
+  background: var(--omp-panel-2);
+  border-radius: var(--omp-radius-sm);
+  padding: 9px 12px;
+  min-width: 0;
 }
 
 .omp-kv dt {
+  font-size: 10px;
   color: var(--omp-muted);
 }
 
 .omp-kv dd {
-  margin: 0;
+  margin: 2px 0 0;
   min-width: 0;
   overflow-wrap: anywhere;
+  font-family: var(--omp-display);
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--omp-text);
 }
 
-/* Execution lifecycle trace. */
+.omp-kv dd .omp-hint {
+  font-family: var(--omp-font);
+  font-size: 11px;
+  font-weight: 400;
+}
 
+/* Summary prose: plain 12.5px/1.65 secondary; <b> only for the one thing
+ * worth re-finding at a glance. */
+.omp-summary {
+  font-size: 12.5px;
+  line-height: 1.65;
+  color: var(--omp-secondary);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  margin: 4px 0;
+  max-width: 60ch;
+}
+
+/* Execution lifecycle trace / inspector checklist: vertical mirror of the
+ * hero stepper. One continuous pipeline read via a thin rail behind the
+ * circles (::before, 1px, border-strong). Circle fills follow the same
+ * state colors as the horizontal rail. */
 .omp-trace {
   list-style: none;
   margin: 0;
-  padding: 8px 10px;
+  padding: 8px 10px 8px 12px;
   border: 1px solid var(--omp-hairline);
   border-radius: var(--omp-radius);
   background: var(--omp-panel);
   display: flex;
   flex-direction: column;
-  gap: 3px;
+  gap: 8px;
+  position: relative;
+}
+
+.omp-stepper--vertical::before {
+  content: "";
+  position: absolute;
+  left: 21px;
+  top: 14px;
+  bottom: 14px;
+  width: 1px;
+  background: var(--omp-border-strong);
+  pointer-events: none;
 }
 
 .omp-trace-step {
+  position: relative;
   display: flex;
-  align-items: baseline;
+  align-items: center;
   gap: 8px;
   font-size: 12px;
   min-width: 0;
 }
 
 .omp-trace-sym {
+  position: relative;
+  z-index: 1;
   flex: none;
-  width: 14px;
-  text-align: center;
+  width: 20px;
+  height: 20px;
+  border-radius: 50%;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 1.5px solid var(--omp-muted);
+  background: var(--omp-panel-2);
+  color: var(--omp-muted);
+}
+
+.omp-trace-sym svg {
+  width: 10px;
+  height: 10px;
+  display: block;
 }
 
 .omp-trace-step[data-state="done"] .omp-trace-sym {
-  color: var(--omp-green);
+  background: var(--omp-green);
+  border-color: var(--omp-green);
+  color: #052015;
 }
 
+.omp-trace-step[data-state="running"] .omp-trace-sym,
 .omp-trace-step[data-state="active"] .omp-trace-sym {
-  color: var(--omp-cyan);
+  background: var(--omp-cyan);
+  border-color: var(--omp-cyan);
+  color: #042227;
+  box-shadow: 0 0 0 4px var(--omp-cyan-dim);
 }
 
+.omp-trace-step[data-state="fail"] .omp-trace-sym,
 .omp-trace-step[data-state="failed"] .omp-trace-sym {
-  color: var(--omp-red);
+  background: var(--omp-red);
+  border-color: var(--omp-red);
+  color: #2b0d0d;
 }
 
+.omp-trace-step[data-state="pending"] .omp-trace-sym,
 .omp-trace-step[data-state="waiting"] .omp-trace-sym {
+  background: var(--omp-panel-2);
+  border-color: var(--omp-muted);
   color: var(--omp-muted);
 }
 
@@ -1292,6 +1830,12 @@ input:focus-visible,
   white-space: nowrap;
 }
 
+.omp-trace-step[data-state="fail"] .omp-stepper-sub,
+.omp-trace-step[data-state="failed"] .omp-stepper-sub {
+  color: var(--omp-red);
+  font-weight: 600;
+}
+
 /* Underline tabs: board mode + inspector views. */
 
 .omp-tabs {
@@ -1300,6 +1844,9 @@ input:focus-visible,
   border-bottom: 1px solid var(--omp-border);
   overflow-x: auto;
   flex: none;
+  background: transparent;
+  border-radius: 0;
+  padding: 0;
 }
 
 .omp-tab {
@@ -1312,18 +1859,32 @@ input:focus-visible,
   font-weight: 600;
   padding: 6px 10px;
   border-bottom: 2px solid transparent;
+  border-radius: 0;
   margin-bottom: -1px;
   white-space: nowrap;
+  box-shadow: none;
 }
 
 .omp-tab:hover {
   color: var(--omp-text);
+  background: transparent;
 }
 
+/* Underline style: 2px signal underline on the active tab, no background
+ * pill. Radix exposes data-state="active"; legacy aliases kept. */
+.omp-tab[data-state="active"],
 .omp-tab[data-active="true"],
 .omp-tab[aria-selected="true"] {
-  color: var(--omp-cyan);
-  border-bottom-color: var(--omp-cyan);
+  color: var(--omp-text);
+  background: transparent;
+  border-bottom-color: var(--omp-signal);
+  box-shadow: none;
+}
+
+.omp-tab[data-state="active"] svg,
+.omp-tab[data-active="true"] svg,
+.omp-tab[aria-selected="true"] svg {
+  color: var(--omp-signal);
 }
 
 .omp-inspector details {
@@ -1417,6 +1978,8 @@ input:focus-visible,
 .omp-activity-time {
   color: var(--omp-muted);
   flex: none;
+  width: 58px;
+  font-family: var(--omp-mono);
 }
 
 .omp-activity-lane {
@@ -1430,11 +1993,11 @@ input:focus-visible,
 }
 
 .omp-activity-lane[data-lane="verify"] {
-  color: var(--omp-green);
+  color: var(--omp-red);
 }
 
 .omp-activity-lane[data-lane="review"] {
-  color: var(--omp-focus);
+  color: var(--omp-green);
 }
 
 .omp-activity-lane[data-lane="control"] {
@@ -1538,7 +2101,9 @@ input:focus-visible,
 }
 
 .omp-panel h2 {
-  font-size: 15px;
+  font-size: 12.5px;
+  font-weight: 600;
+  letter-spacing: 0;
   margin: 2px 0 8px;
   font-family: var(--omp-display);
 }
@@ -1911,9 +2476,36 @@ input:focus-visible,
   color: var(--omp-text);
 }
 
+/* Filter chips: text-only, background fill on the active chip (raised),
+ * no border ring on inactive chips. */
 .omp-chip[aria-pressed="true"] {
-  background: var(--omp-row-active);
-  color: var(--omp-cyan);
+  background: var(--omp-raised);
+  color: var(--omp-text);
+}
+
+.omp-activity-search {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  flex: none;
+}
+
+.omp-activity-search-icon {
+  position: absolute;
+  left: 8px;
+  color: var(--omp-muted);
+  pointer-events: none;
+  display: inline-flex;
+}
+
+.omp-activity-search-icon svg {
+  width: 13px;
+  height: 13px;
+  display: block;
+}
+
+.omp-activity-search .omp-input {
+  padding-left: 28px;
 }
 
 /* ---------- dependency graph ---------- */
@@ -2424,11 +3016,11 @@ button[data-slot="select-trigger"] {
 
 @media (max-width: 1180px) {
   .omp-body {
-    grid-template-columns: 60px minmax(0, 1fr) 340px;
+    grid-template-columns: 64px minmax(0, 1fr) 340px;
   }
 
   .omp-shell[data-sidebar="collapsed"] .omp-body {
-    grid-template-columns: 60px minmax(0, 1fr) 340px;
+    grid-template-columns: 64px minmax(0, 1fr) 340px;
   }
 
   .omp-nav-label,
@@ -2439,6 +3031,10 @@ button[data-slot="select-trigger"] {
 
   .omp-nav-btn {
     justify-content: center;
+  }
+
+  .omp-nav-btn[aria-current="page"]::before {
+    display: none;
   }
 }
 
@@ -2471,8 +3067,7 @@ button[data-slot="select-trigger"] {
   }
 
   .omp-nav-btn[aria-current="page"] {
-    border-left-color: transparent;
-    border-bottom-color: var(--omp-cyan);
+    border-bottom-color: var(--item-c);
   }
 
   .omp-nav-label {
@@ -2573,7 +3168,10 @@ button[data-slot="select-trigger"] {
   }
 
   .omp-live[data-live="true"] .omp-live-dot,
-  .omp-board-row[data-live="true"] > .omp-status-sym,
+  .omp-board-row[data-live="true"] > .omp-board-glyph,
+  .omp-stepper-connector[data-filled="true"],
+  .omp-feed-line[data-fresh="true"],
+  .omp-livefeed-latest[data-fresh="true"],
   .omp-workspace > *,
   .omp-attention,
   .omp-activity-list li:first-child,

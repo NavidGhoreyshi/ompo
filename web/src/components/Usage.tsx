@@ -102,28 +102,42 @@ export function UsageBreakdown({ usage }: { usage: TokenUsage | undefined }) {
   if (!usage) return <p className="omp-hint">no usage reported — the worker stream carried no usage envelope</p>;
   return (
     <dl className="omp-kv">
-      <dt title="fresh (non-cached) input tokens — message.usage.input">Input</dt>
-      <dd title={usageTitle(usage)}>{fmtCount(usage.input)}</dd>
-      <dt title="generated tokens, reasoning included — message.usage.output">Output</dt>
-      <dd title={usageTitle(usage)}>{fmtCount(usage.output)}</dd>
-      <dt title="prompt-cache hit tokens — message.usage.cacheRead">Cache read</dt>
-      <dd title={usageTitle(usage)}>{fmtCount(usage.cacheRead)}</dd>
-      <dt title="cache-creation tokens — message.usage.cacheWrite">Cache write</dt>
-      <dd title={usageTitle(usage)}>{fmtCount(usage.cacheWrite)}</dd>
-      <dt title="sub-count of Output spent on reasoning, not additive — message.usage.reasoningTokens">Reasoning</dt>
-      <dd title={usageTitle(usage)}>{fmtCount(usage.reasoningTokens)}</dd>
-      <dt title="authoritative total — message.usage.totalTokens">Total</dt>
-      <dd title={usageTitle(usage)}>{fmtCount(usage.total)}</dd>
-      <dt title="authoritative USD — message.usage.cost.total">Cost</dt>
-      <dd
-        title={
-          usage.cost
-            ? `in $${usage.cost.input} / out $${usage.cost.output} / cache-read $${usage.cost.cacheRead} / cache-write $${usage.cost.cacheWrite} / total $${usage.cost.total}`
-            : "the envelope omitted cost"
-        }
-      >
-        {formatCostUsd(usage.cost?.total)}
-      </dd>
+      <div>
+        <dt title="fresh (non-cached) input tokens — message.usage.input">Input</dt>
+        <dd title={usageTitle(usage)}>{fmtCount(usage.input)}</dd>
+      </div>
+      <div>
+        <dt title="generated tokens, reasoning included — message.usage.output">Output</dt>
+        <dd title={usageTitle(usage)}>{fmtCount(usage.output)}</dd>
+      </div>
+      <div>
+        <dt title="prompt-cache hit tokens — message.usage.cacheRead">Cache read</dt>
+        <dd title={usageTitle(usage)}>{fmtCount(usage.cacheRead)}</dd>
+      </div>
+      <div>
+        <dt title="cache-creation tokens — message.usage.cacheWrite">Cache write</dt>
+        <dd title={usageTitle(usage)}>{fmtCount(usage.cacheWrite)}</dd>
+      </div>
+      <div>
+        <dt title="sub-count of Output spent on reasoning, not additive — message.usage.reasoningTokens">Reasoning</dt>
+        <dd title={usageTitle(usage)}>{fmtCount(usage.reasoningTokens)}</dd>
+      </div>
+      <div>
+        <dt title="authoritative total — message.usage.totalTokens">Total</dt>
+        <dd title={usageTitle(usage)}>{fmtCount(usage.total)}</dd>
+      </div>
+      <div>
+        <dt title="authoritative USD — message.usage.cost.total">Cost</dt>
+        <dd
+          title={
+            usage.cost
+              ? `in $${usage.cost.input} / out $${usage.cost.output} / cache-read $${usage.cost.cacheRead} / cache-write $${usage.cost.cacheWrite} / total $${usage.cost.total}`
+              : "the envelope omitted cost"
+          }
+        >
+          {formatCostUsd(usage.cost?.total)}
+        </dd>
+      </div>
     </dl>
   );
 }

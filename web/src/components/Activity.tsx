@@ -1,4 +1,5 @@
 import { useMemo, useState } from "react";
+import { LuSearch } from "react-icons/lu";
 import type { RunEvent } from "../api.ts";
 import {
   ACTIVITY_FILTERS,
@@ -91,14 +92,19 @@ export default function Activity({ events }: { events: RunEvent[] }) {
                   </button>
                 ))}
               </div>
-              <input
-                className="omp-input"
-                type="search"
-                placeholder="Search events..."
-                aria-label="Search events"
-                value={query}
-                onChange={(e) => setQuery(e.target.value)}
-              />
+              <span className="omp-activity-search">
+                <span aria-hidden="true" className="omp-activity-search-icon">
+                  <LuSearch />
+                </span>
+                <input
+                  className="omp-input"
+                  type="search"
+                  placeholder="Search events..."
+                  aria-label="Search events"
+                  value={query}
+                  onChange={(e) => setQuery(e.target.value)}
+                />
+              </span>
             </div>
             <ul className="omp-activity-list">
               {filtered.map((e) => {

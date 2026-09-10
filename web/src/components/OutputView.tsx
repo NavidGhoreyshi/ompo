@@ -23,41 +23,51 @@ export default function OutputView({
     <div aria-label="Output">
       <h3>Last run</h3>
       <dl className="omp-kv">
-        <dt>status</dt>
-        <dd><StatusBadge status={selected.status} /></dd>
-        <dt>attempt</dt>
-        <dd>{selected.attempts}</dd>
-        <dt>generation</dt>
-        <dd>{selected.generation}{selected.generation > 0 ? " (context-cap handoff chain)" : ""}</dd>
-        <dt>duration</dt>
-        <dd>{formatDurationMs(metrics?.durationMs)}</dd>
-        <dt>tokens</dt>
-        <dd>
-          {tokens ? (
-            <span title={`in ${tokens.input} / out ${tokens.output}`}>
-              {formatTokens(tokens.total)} <span className="omp-hint">(in {formatTokens(tokens.input)} · out {formatTokens(tokens.output)})</span>
-            </span>
-          ) : (
-            "—"
-          )}
-        </dd>
+        <div>
+          <dt>status</dt>
+          <dd><StatusBadge status={selected.status} /></dd>
+        </div>
+        <div>
+          <dt>attempt</dt>
+          <dd>{selected.attempts}</dd>
+        </div>
+        <div>
+          <dt>generation</dt>
+          <dd>{selected.generation}{selected.generation > 0 ? <span className="omp-hint"> · handoff chain</span> : ""}</dd>
+        </div>
+        <div>
+          <dt>duration</dt>
+          <dd>{formatDurationMs(metrics?.durationMs)}</dd>
+        </div>
+        <div>
+          <dt>tokens</dt>
+          <dd>
+            {tokens ? (
+              <span title={`in ${tokens.input} / out ${tokens.output}`}>
+                {formatTokens(tokens.total)} <span className="omp-hint">· in {formatTokens(tokens.input)} / out {formatTokens(tokens.output)}</span>
+              </span>
+            ) : (
+              "—"
+            )}
+          </dd>
+        </div>
         {metrics && (
-          <>
+          <div>
             <dt>activity</dt>
-            <dd>{metrics.turns} turns · {metrics.tools} tools</dd>
-          </>
+            <dd>{metrics.turns} turns <span className="omp-hint">· {metrics.tools} tools</span></dd>
+          </div>
         )}
         {selected.agent && (
-          <>
+          <div>
             <dt>agent</dt>
             <dd>{selected.agent}</dd>
-          </>
+          </div>
         )}
       </dl>
 
       <h3>Summary</h3>
       {d?.reportSummary ? (
-        <p style={{ whiteSpace: "pre-wrap", overflowWrap: "anywhere", margin: "4px 0" }}>{d.reportSummary}</p>
+        <p className="omp-summary">{d.reportSummary}</p>
       ) : (
         <p className="omp-hint">
           {selected.status === "running" || selected.status === "verifying"

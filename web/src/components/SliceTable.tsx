@@ -15,11 +15,11 @@ function durationBySlice(events: RunEvent[]): Map<string, number> {
 }
 
 /**
- * Execution board: dense rows that read as workflow, not a database table.
- * Each row carries state (symbol + word, never color alone), slice id and
- * title, and one meta line — effort, attempt, generation, agent lane,
- * dependency needs, duration or failure reason. Rows stay compact; the full
- * story lives in the Inspector. Board order is preserved; selecting a row
+ * Execution board: flat rows that read as workflow, not a database table.
+ * A 3px left border carries status color; the selected row uses the
+ * brand/selection signal instead (selected and running are different facts
+ * and a row can be both). Each row: status glyph → id above title + meta
+ * stacked → trailing status word + duration, right-aligned. Selecting a row
  * drives the Inspector.
  */
 export default function SliceTable({
@@ -36,8 +36,7 @@ export default function SliceTable({
   if (slices.length === 0) {
     return (
       <section className="omp-board" aria-label="Slice board">
-        <h2 className="omp-board-title">Execution board</h2>
-        <p className="omp-hint">No slices yet.</p>
+        <p className="omp-hint">no slices yet</p>
       </section>
     );
   }
@@ -52,6 +51,7 @@ export default function SliceTable({
           const dur = durations.get(s.id);
           const tone = toneForStatus(s.status);
           const live = s.status === "running" || s.status === "verifying";
+          const durText = typeof dur === "number" ? formatDurationMs(dur) : live ? "working…" : "";
           return (
             <li key={s.id}>
               <button
@@ -64,30 +64,30 @@ export default function SliceTable({
                 data-live={live ? "true" : "false"}
                 onClick={() => onSelect(s.id)}
               >
-                <span aria-hidden="true" className="omp-status-sym" data-tone={tone}>
+                <span aria-hidden="true" className="omp-board-glyph" data-tone={tone}>
                   <StatusSymbol status={s.status} />
                 </span>
                 <span className="omp-board-main">
-                  <span className="omp-board-top">
-                    <code className="omp-board-id">{s.id}</code>
-                    <span className="omp-board-title-text" title={s.title}>
-                      {s.title}
-                    </span>
-                    <span className="omp-board-state" data-tone={tone}>
-                      {s.status}
-                    </span>
+                  <code className="omp-board-id">{s.id}</code>
+                  <span className="omp-board-title-text" title={s.title}>
+                    {s.title}
                   </span>
                   <span className="omp-board-meta">
                     {s.effort ? `${s.effort} · ` : ""}attempt {s.attempts} · gen {s.generation}
                     {s.agent ? ` · ${s.agent}` : ""}
                     {s.deps.length > 0 ? ` · needs ${s.deps.join(", ")}` : ""}
-                    {typeof dur === "number" ? ` · ${formatDurationMs(dur)}` : live ? " · working…" : ""}
                   </span>
                   {s.reason && (s.status === "failed" || s.status === "blocked-env") && (
                     <span className="omp-board-reason" title={s.reason}>
                       {s.reason}
                     </span>
                   )}
+                </span>
+                <span className="omp-board-side">
+                  <span className="omp-board-state" data-tone={tone}>
+                    {s.status}
+                  </span>
+                  {durText && <span className="omp-board-dur">{durText}</span>}
                 </span>
               </button>
             </li>

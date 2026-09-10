@@ -145,13 +145,13 @@ describe("run strip replaces KPI cards", () => {
 
   test("telemetry sits muted below the hero", () => {
     expect(css).toMatch(/\.omp-runline-telemetry\s*\{[^}]*color:\s*var\(--omp-muted\)/s);
-    expect(css).toMatch(/\.omp-hero-title\s*\{[^}]*font-size:\s*18px/s);
+    expect(css).toMatch(/\.omp-hero-title\s*\{[^}]*font-size:\s*21px/s);
   });
 
   test("palette is dark but inviting: navy-charcoal surfaces, bright text", () => {
-    expect(css).toContain("--omp-bg: #0e131a");
-    expect(css).toContain("--omp-panel: #151d29");
-    expect(css).toContain("--omp-text: #e8eef5");
+    expect(css).toContain("--omp-bg: #0a0d12");
+    expect(css).toContain("--omp-panel: #0f141b");
+    expect(css).toContain("--omp-text: #eef2f7");
   });
 
   test("status never relies on color alone in the stylesheet", () => {

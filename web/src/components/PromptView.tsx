@@ -24,14 +24,22 @@ export default function PromptView({
     <div aria-label="Prompt">
       <h3>Metadata</h3>
       <dl className="omp-kv">
-        <dt>generation</dt>
-        <dd>{selected.generation}</dd>
-        <dt>attempt</dt>
-        <dd>{selected.attempts}</dd>
-        <dt>model</dt>
-        <dd>{selected.agent ?? "—"}</dd>
-        <dt>prompt</dt>
-        <dd>{detail?.promptName ?? "—"}</dd>
+        <div>
+          <dt>generation</dt>
+          <dd>{selected.generation}</dd>
+        </div>
+        <div>
+          <dt>attempt</dt>
+          <dd>{selected.attempts}</dd>
+        </div>
+        <div>
+          <dt>model</dt>
+          <dd>{selected.agent ?? "—"}</dd>
+        </div>
+        <div>
+          <dt>prompt</dt>
+          <dd>{detail?.promptName ?? "—"}</dd>
+        </div>
       </dl>
 
       {selected.generation > 0 ? (

@@ -1,8 +1,10 @@
 import type { AgentRow, RunDetail, RunEvent } from "../api.ts";
 import { formatElapsed, formatTokens } from "../lib/format.ts";
 import { describeEvent } from "../lib/events.ts";
+import { buildPipelineStages } from "../lib/pipeline.ts";
 import { heroAction, preferredSliceId } from "../lib/selection.ts";
 import { StatusSymbol } from "./icons.tsx";
+import PipelineStepper from "./PipelineStepper.tsx";
 import { toneForStatus } from "./StatusBadge.tsx";
 import { Separator } from "./ui/separator.tsx";
 
@@ -63,8 +65,11 @@ export default function RunHeader({
     }
   }
 
+  const heroTone = hero ? toneForStatus(hero.status) : "muted";
+  const stages = hero ? buildPipelineStages(hero, null) : [];
+
   return (
-    <section className="omp-runline" aria-label="Run status">
+    <section className="omp-runline" data-tone={heroTone} aria-label="Run status">
       <p className="omp-runline-eyebrow">
         <span className="omp-section-label">Run</span>
         <span className="omp-runline-id">{detail.runId}</span>
@@ -75,14 +80,14 @@ export default function RunHeader({
       {hero ? (
         <div className="omp-hero">
           <h1 className="omp-hero-title">
-            <span aria-hidden="true" className="omp-status-sym" data-tone={toneForStatus(hero.status)}>
-              <StatusSymbol status={hero.status} />
-            </span>
             <code className="omp-hero-id">{hero.id}</code>
             <span className="omp-hero-name" title={hero.title}>
               {hero.title}
             </span>
-            <span className="omp-hero-status" data-tone={toneForStatus(hero.status)}>
+            <span className="omp-hero-status" data-tone={heroTone}>
+              <span aria-hidden="true" className="omp-hero-status-glyph">
+                <StatusSymbol status={hero.status} />
+              </span>
               {hero.status}
             </span>
           </h1>
@@ -91,19 +96,20 @@ export default function RunHeader({
             {agent ? ` · L${agent.lane}` : hero.agent ? ` · ${hero.agent}` : ""}
             {action ? ` · ${action}` : ""}
           </p>
+          <PipelineStepper stages={stages} variant="horizontal" />
         </div>
       ) : (
         <p className="omp-hint">No slices yet.</p>
       )}
-      {hero && <Separator className="my-0.5 opacity-70" />}
+      <Separator className="my-0.5 opacity-70" aria-hidden="true" />
       <p className="omp-runline-telemetry" aria-label="Run counts">
-        <span className="omp-stat">
+        <span className="omp-stat" data-tone="green">
           <strong>{counts.done}</strong> done
         </span>
         <span className="omp-stat" data-tone="cyan">
           <strong>{counts.active}</strong> active
         </span>
-        <span className="omp-stat">
+        <span className="omp-stat" data-tone="amber">
           <strong>{counts.pending}</strong> pending
         </span>
         <span className="omp-stat" data-tone={counts.failed > 0 ? "red" : undefined}>
