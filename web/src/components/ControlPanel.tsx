@@ -72,6 +72,8 @@ export default function ControlPanel({
   onDone,
   events = [],
   live,
+  verdictStalled,
+  wedged,
 }: {
   runId: string;
   slices: SliceSummary[];
@@ -81,11 +83,16 @@ export default function ControlPanel({
   events?: RunEvent[];
   /** Live flag for the queued-vs-direct hint; omitted renders neither claim. */
   live?: boolean;
+  /** Slice verdict is idle (server signal) — retry/resume limits apply. */
+  verdictStalled?: boolean;
+  /** Selected slice reads as wedged (stale transcript under a live lock). */
+  wedged?: boolean;
 }) {
   const [sliceId, setSliceId] = useState(initialSliceId ?? "");
   const [jobs, setJobs] = useState("4");
   const [reason, setReason] = useState("");
   const [busy, setBusy] = useState(false);
+  const [confirmRestart, setConfirmRestart] = useState(false);
   const [requestError, setRequestError] = useState<string | null>(null);
   const [pending, setPending] = useState<PendingIntent | null>(null);
   const [direct, setDirect] = useState<DirectOutcome | null>(null);
@@ -104,6 +111,7 @@ export default function ControlPanel({
     setDirect(null);
     setRequestError(null);
     setConfirmKind(null);
+    setConfirmRestart(false);
   }, [runId]);
 
   // A new selection disarms any armed confirm; the pending intent (if any)
@@ -162,6 +170,28 @@ export default function ControlPanel({
     const body: ControlIntent = { kind };
     if (reason.trim()) body.reason = reason.trim();
     void sendIntent(body);
+  }
+  async function sendRestart() {
+    if (!reason.trim()) {
+      setRequestError("restart-loop needs a reason (what wedged the loop)");
+      return;
+    }
+    setBusy(true);
+    setRequestError(null);
+    setDirect(null);
+    try {
+      const res = await api.restartLoop(runId, reason.trim());
+      if ("message" in res) {
+        setDirect({ ok: res.ok, message: res.message });
+      } else {
+        setDirect({ ok: true, message: `loop restarted (pid ${res.pid}, log ${res.log}) — liveness follows on Activity` });
+      }
+      onDone();
+    } catch (err) {
+      setRequestError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setBusy(false);
+    }
   }
 
   async function sendResume() {
@@ -287,6 +317,12 @@ export default function ControlPanel({
           className="flex-1"
         />
       </div>
+      {verdictStalled && (
+        <p className="omp-hint" role="note">
+          Verdict idle — retry applies only to failed or blocked-env slices, and resume only unpauses claiming. Neither advances a
+          wedged verdict; interrupt the loop (Ctrl-C) and run <code>ompo resume --run {runId}</code>.
+        </p>
+      )}
 
       <div className="omp-control-group" role="group" aria-label="Run actions">
         {live === false ? (
@@ -314,6 +350,27 @@ export default function ControlPanel({
             <Button size="sm" variant="outline" disabled={busy} title="resume claiming" onClick={() => sendRun("resume")}>
               <LuPlay aria-hidden="true" />
               Resume
+            </Button>
+            <Button
+              size="sm"
+              variant={wedged ? "destructive" : "outline"}
+              disabled={busy}
+              title={
+                wedged
+                  ? "loop looks wedged (stale transcript) — kill it and spawn a fresh resume (needs a reason)"
+                  : "kill the live loop and spawn a fresh resume (needs a reason)"
+              }
+              onClick={() => {
+                if (!confirmRestart) {
+                  setConfirmRestart(true);
+                  return;
+                }
+                setConfirmRestart(false);
+                void sendRestart();
+              }}
+            >
+              <LuRotateCcw aria-hidden="true" />
+              {confirmRestart ? "Confirm restart" : wedged ? "Restart wedged loop" : "Restart loop"}
             </Button>
             <span className="omp-control-label">Jobs</span>
             <Button

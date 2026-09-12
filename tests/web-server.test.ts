@@ -1,10 +1,19 @@
 import { describe, expect, test } from "bun:test";
- import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { parseRoadmap } from "../src/parse.ts";
-import { acquireLock, createRun, releaseLock } from "../src/store.ts";
-import { HEARTBEAT_MS, IDLE_TIMEOUT_S, startDashboardServer } from "../src/server.ts";
+import { acquireLock, createRun, readEvents, releaseLock, runDir, storeApi } from "../src/store.ts";
+import {
+  findRunLoops,
+  HEARTBEAT_MS,
+  IDLE_TIMEOUT_S,
+  killProcessTree,
+  matchLoopCmdline,
+  startDashboardServer,
+  VERDICT_STALL_MS,
+  WORKER_WEDGE_STALE_MS,
+} from "../src/server.ts";
 // The sandbox sets HTTP(S)_PROXY without NO_PROXY; loopback test traffic
 // must not go through the proxy.
 process.env.NO_PROXY = [process.env.NO_PROXY, "127.0.0.1,localhost"].filter(Boolean).join(",");
@@ -344,4 +353,214 @@ describe("dashboard server", () => {
      }
    });
  });
+});
+
+describe("recovery signals", () => {
+  test("matchLoopCmdline spots loop processes for the run only", () => {
+    expect(matchLoopCmdline(["/home/navid/ompo/ompo", "resume", "--run", "r1"], "r1")).toBe(true);
+    expect(matchLoopCmdline(["bun", "src/cli.ts", "run", "--run", "r1"], "r1")).toBe(true);
+    expect(matchLoopCmdline(["/home/navid/ompo/ompo", "resume", "--run", "r1"], "r2")).toBe(false);
+    expect(matchLoopCmdline(["bun", "test", "tests/foo.test.ts"], "r1")).toBe(false);
+    expect(matchLoopCmdline([], "r1")).toBe(false);
+  });
+
+  test("findRunLoops reports the lock owner, empty when quiescent", () => {
+    const dir = mkdtempSync(join(tmpdir(), "ompo-loops-"));
+    createRun(dir, parseRoadmap(MD), "rloops");
+    expect(findRunLoops(dir, "rloops")).toEqual([]);
+    acquireLock(dir, "rloops");
+    try {
+      expect(findRunLoops(dir, "rloops")).toEqual([{ pid: process.pid, lockOwner: true }]);
+    } finally {
+      releaseLock(dir, "rloops");
+    }
+    expect(findRunLoops(dir, "rloops")).toEqual([]);
+  });
+
+  test("verifying long after worker finish flags verdictStall; fresh does not", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "ompo-stall-"));
+    createRun(dir, parseRoadmap(MD), "r1");
+    const server = startDashboardServer({ projectDir: dir });
+    try {
+      for (const id of ["a", "b"]) {
+        storeApi.claimSlice(dir, "r1", id);
+        storeApi.workerFinished(dir, "r1", id, `slices/${id}/report.json`);
+        const sdir = join(dir, ".omp", "roadmap", "runs", "r1", "slices", id);
+        mkdirSync(sdir, { recursive: true });
+        writeFileSync(join(sdir, "report.json"), JSON.stringify({ summary: `${id} done`, done: true }), "utf8");
+      }
+      // Slice a went quiet before the threshold; slice b just finished.
+      // Age both channels a real stall goes quiet on: artifact mtimes and
+      // a's event-log timestamps (rewritten in place, lengths preserved).
+      const shift = VERDICT_STALL_MS + 60_000;
+      const ago = new Date(Date.now() - shift);
+      utimesSync(join(dir, ".omp", "roadmap", "runs", "r1", "slices", "a", "report.json"), ago, ago);
+      const eventsPath = join(dir, ".omp", "roadmap", "runs", "r1", "events.jsonl");
+      const aged = readFileSync(eventsPath, "utf8")
+        .split("\n")
+        .map((line) => {
+          if (!line.trim()) return line;
+          const e = JSON.parse(line) as { sliceId?: string; at?: string };
+          if (e.sliceId === "a" && typeof e.at === "string") {
+            e.at = new Date(Date.parse(e.at) - shift).toISOString();
+          }
+          return JSON.stringify(e);
+        })
+        .join("\n");
+      writeFileSync(eventsPath, aged, "utf8");
+
+      const stale = (await getJSON(`${server.url}/api/runs/r1/slices/a`)).body as {
+        status: string;
+        verdictStall?: { idleMs: number; gatesDone: number; lastGate?: string };
+      };
+      expect(stale.status).toBe("verifying");
+      expect(stale.verdictStall?.gatesDone).toBe(0);
+      expect(stale.verdictStall?.lastGate).toBeUndefined();
+      expect(stale.verdictStall?.idleMs ?? 0).toBeGreaterThan(VERDICT_STALL_MS);
+
+      const fresh = (await getJSON(`${server.url}/api/runs/r1/slices/b`)).body as {
+        verdictStall?: unknown;
+      };
+      expect(fresh.verdictStall).toBeUndefined();
+
+      const run = (await getJSON(`${server.url}/api/runs/r1`)).body as { loops: unknown[] };
+      expect(Array.isArray(run.loops)).toBe(true);
+    } finally {
+      server.stop();
+    }
+  });
+  test("verifying slice with a live review is not wedged by a stale worker log", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "ompo-verify-live-"));
+    createRun(dir, parseRoadmap(MD), "r1");
+    const server = startDashboardServer({ projectDir: dir });
+    try {
+      storeApi.claimSlice(dir, "r1", "a");
+      storeApi.workerFinished(dir, "r1", "a", "slices/a/report.json");
+      const sdir = join(dir, ".omp", "roadmap", "runs", "r1", "slices", "a");
+      mkdirSync(sdir, { recursive: true });
+      writeFileSync(join(sdir, "worker-1-g0.log"), "[a] turn 1…\n", "utf8");
+      writeFileSync(join(sdir, "review-2.log"), "  [a review] turn 1…\n", "utf8");
+      const ago = new Date(Date.now() - (WORKER_WEDGE_STALE_MS + 60_000));
+      utimesSync(join(sdir, "worker-1-g0.log"), ago, ago);
+      acquireLock(dir, "r1");
+      try {
+        const agents = (
+          await getJSON(`${server.url}/api/runs/r1/agents`)
+        ).body as { id: string; status: string; wedged: boolean; staleForMs: number | null }[];
+        const a = agents.find((r) => r.id === "a")!;
+        expect(a.status).toBe("verifying");
+        // Fresh review transcript dominates the stale worker log.
+        expect(a.wedged).toBe(false);
+        expect(a.staleForMs ?? WORKER_WEDGE_STALE_MS).toBeLessThan(WORKER_WEDGE_STALE_MS);
+      } finally {
+        releaseLock(dir, "r1");
+      }
+    } finally {
+      server.stop();
+    }
+  });
+  test("running slice with a stale transcript flags wedged; fresh does not", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "ompo-wedge-"));
+    createRun(dir, parseRoadmap(MD), "r1");
+    const server = startDashboardServer({ projectDir: dir });
+    try {
+      for (const id of ["a", "b"]) {
+        storeApi.claimSlice(dir, "r1", id);
+        const sdir = join(dir, ".omp", "roadmap", "runs", "r1", "slices", id);
+        mkdirSync(sdir, { recursive: true });
+        writeFileSync(join(sdir, "worker-1-g0.log"), `[${id}] turn 1…\n`, "utf8");
+      }
+      const ago = new Date(Date.now() - (WORKER_WEDGE_STALE_MS + 60_000));
+      utimesSync(join(dir, ".omp", "roadmap", "runs", "r1", "slices", "a", "worker-1-g0.log"), ago, ago);
+      acquireLock(dir, "r1");
+      try {
+        const agents = (
+          await getJSON(`${server.url}/api/runs/r1/agents`)
+        ).body as { id: string; wedged: boolean; staleForMs: number | null }[];
+        const a = agents.find((r) => r.id === "a")!;
+        const b = agents.find((r) => r.id === "b")!;
+        expect(a.wedged).toBe(true);
+        expect(a.staleForMs ?? 0).toBeGreaterThan(WORKER_WEDGE_STALE_MS);
+        expect(b.wedged).toBe(false);
+      } finally {
+        releaseLock(dir, "r1");
+      }
+      // Same stale transcript with no live loop: quiet, never wedged.
+      const parked = (await getJSON(`${server.url}/api/runs/r1/agents`)).body as { id: string; wedged: boolean }[];
+      expect(parked.find((r) => r.id === "a")!.wedged).toBe(false);
+    } finally {
+      server.stop();
+    }
+  });
+
+  test("restart-loop refuses without reason and on quiescent runs", async () => {
+    const { stop, url } = fixture();
+    const post = (body: unknown) =>
+      getJSON(`${url}/api/runs/r1/restart-loop`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(body),
+      });
+    try {
+      expect((await post({})).status).toBe(400);
+      const quiet = await post({ reason: "test" });
+      expect(quiet.status).toBe(200);
+      expect((quiet.body as { ok: boolean }).ok).toBe(false);
+    } finally {
+      stop();
+    }
+  });
+
+  test("restart-loop kills the loop and respawns through the injected spawner", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "ompo-restart-"));
+    createRun(dir, parseRoadmap(MD), "r1");
+    const sleeper = Bun.spawn(["sleep", "30"], { stdout: "ignore", stderr: "ignore" });
+    const spawned: string[][] = [];
+    const server = startDashboardServer({
+      projectDir: dir,
+      spawnResume: (cmd) => {
+        spawned.push(cmd);
+        return { pid: 424242 };
+      },
+    });
+    try {
+      writeFileSync(`${runDir(dir, "r1")}.lock`, JSON.stringify({ pid: sleeper.pid, startedAt: new Date().toISOString() }) + "\n", "utf8");
+      const res = await getJSON(`${server.url}/api/runs/r1/restart-loop`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ reason: "wedged in test" }),
+      });
+      expect(res.status).toBe(202);
+      expect((res.body as { applied: string }).applied).toBe("spawned");
+      expect(spawned.length).toBe(1);
+      expect(spawned[0]).toContain("resume");
+      // Killed, not orphaned — and the kill is on the audit log.
+      expect(() => process.kill(sleeper.pid, 0)).toThrow();
+      const audit = readEvents(dir, "r1").at(-1)!;
+      expect(audit.type).toBe("control_applied");
+      expect(audit.detail).toContain("restart-loop");
+    } finally {
+      try {
+        sleeper.kill();
+      } catch {
+        /* already reaped by the restart */
+      }
+      server.stop();
+    }
+  });
+
+  test("killProcessTree resolves fast on the living and instantly on the dead", async () => {
+    const sleeper = Bun.spawn(["sleep", "30"], { stdout: "ignore", stderr: "ignore" });
+    try {
+      await killProcessTree(sleeper.pid, 5000);
+      expect(() => process.kill(sleeper.pid, 0)).toThrow();
+    } finally {
+      try {
+        sleeper.kill();
+      } catch {
+        /* killed by the assertion path */
+      }
+    }
+    await killProcessTree(2_147_483_647, 500);
+  });
 });

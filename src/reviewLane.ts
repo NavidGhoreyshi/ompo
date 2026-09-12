@@ -9,10 +9,11 @@
  * spawning, verify/merge, and recovery.
  */
 
-import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { appendFileSync, existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import {
   failAttempt,
+  formatProgressLine,
   formatTimeout,
   log,
   maxRetriesFor,
@@ -82,7 +83,24 @@ export async function runReview(
 
   const prompt = buildReviewPrompt(claimed, report, verifyCommands);
   writeFileSync(join(dir, `review-prompt-${attempt}.md`), prompt, "utf8");
-  const onProgress = progressFn(ctx, sliceId, "review");
+  // Live transcript (worker parity): progress lines land in
+  // review-{attempt}.log as they render so tails and the wedge watchdog stay
+  // live mid-review. The completion footer below appends to this file.
+  const progress = progressFn(ctx, sliceId, "review");
+  const reviewLogPath = join(dir, `review-${attempt}.log`);
+  try {
+    writeFileSync(reviewLogPath, "", "utf8");
+  } catch {
+    /* transcript is observational */
+  }
+  const onProgress = (line: string) => {
+    progress(line);
+    try {
+      appendFileSync(reviewLogPath, formatProgressLine(sliceId, "review", line) + "\n");
+    } catch {
+      /* transcript is observational */
+    }
+  };
   let reviewOut = "";
   let reviewStdout = "";
   try {
@@ -107,6 +125,7 @@ export async function runReview(
     }
     reviewStdout = res.stdout;
     reviewOut = `exit=${res.exit} timedOut=${res.timedOut} durationMs=${res.durationMs}\n--- stdout ---\n${res.stdout}\n--- stderr ---\n${res.stderr}\n`;
+    appendFileSync(reviewLogPath, reviewOut, "utf8");
     if (res.eventsJsonl) {
       try {
         writeFileSync(join(dir, `review-${attempt}.events.jsonl`), res.eventsJsonl, "utf8");
@@ -121,7 +140,7 @@ export async function runReview(
     }
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
-    writeFileSync(join(dir, `review-${attempt}.log`), reviewOut + `\nREVIEW ERROR: ${msg}\n`, "utf8");
+    appendFileSync(join(dir, `review-${attempt}.log`), reviewOut + `\nREVIEW ERROR: ${msg}\n`, "utf8");
     if (ctx.signal?.aborted) {
       storeApi.abortSlice(projectDir, runId, sliceId);
       log(ctx, summarize5(claimed, `aborted during review (no retry consumed)`));
@@ -220,7 +239,23 @@ export async function runReviewFix(
 
   const prompt = buildReviewFixPrompt(claimed, verdict.findings, attempt);
   writeFileSync(join(dir, `review-fix-prompt-${attempt}.md`), prompt, "utf8");
-  const onProgress = progressFn(ctx, sliceId, "review-fix");
+  // Live transcript (review parity): same worker-parity streaming so the
+  // wedge watchdog stays live through bounded fix sessions.
+  const fixProgress = progressFn(ctx, sliceId, "review-fix");
+  const fixLogPath = join(dir, `review-fix-${attempt}.log`);
+  try {
+    writeFileSync(fixLogPath, "", "utf8");
+  } catch {
+    /* transcript is observational */
+  }
+  const onProgress = (line: string) => {
+    fixProgress(line);
+    try {
+      appendFileSync(fixLogPath, formatProgressLine(sliceId, "review-fix", line) + "\n");
+    } catch {
+      /* transcript is observational */
+    }
+  };
   let fixStdout = "";
   try {
     const res = await runWithModelFallbacks(
@@ -243,7 +278,7 @@ export async function runReviewFix(
       writeFileSync(join(dir, `review-fix-${attempt}.models.json`), JSON.stringify({ tried: res.tried, accepted: displayModel(res.model) }, null, 2) + "\n", "utf8");
     }
     fixStdout = res.stdout;
-    writeFileSync(join(dir, `review-fix-${attempt}.log`), `exit=${res.exit} timedOut=${res.timedOut} durationMs=${res.durationMs}\n--- stdout ---\n${res.stdout}\n--- stderr ---\n${res.stderr}\n`, "utf8");
+    appendFileSync(fixLogPath, `exit=${res.exit} timedOut=${res.timedOut} durationMs=${res.durationMs}\n--- stdout ---\n${res.stdout}\n--- stderr ---\n${res.stderr}\n`, "utf8");
     if (res.eventsJsonl) {
       try {
         writeFileSync(join(dir, `review-fix-${attempt}.events.jsonl`), res.eventsJsonl, "utf8");

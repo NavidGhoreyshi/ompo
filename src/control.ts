@@ -1,21 +1,22 @@
 /**
  * Operator control plane: in-run intents (retry-now, skip, park, kill,
- * set-jobs, pause, resume) travel as `control_requested` events in the same
- * append-only events.jsonl the loop already replays, so they work
- * cross-process (TUI keys, `ompo ctl` from another shell, headless runs)
- * through one uniform path: request → drain at scheduler safe points →
+ * set-jobs, pause, resume, restart-loop) travel as `control_requested`
+ * events in the same append-only events.jsonl the loop already replays, so
+ * they work cross-process (TUI keys, `ompo ctl` from another shell, headless
+ * runs) through one uniform path: request → drain at scheduler safe points →
  * store mutation + `control_applied` (or `control_rejected` with a reason).
  *
- * No new files, no sockets: the event log is the queue, the loop's seq
- * cursor is the consumer offset. Idempotency comes free — a twice-applied
- * intent fails its status guard the second time and records a rejection.
+ * restart-loop is the exception: it targets a loop too wedged to drain (dead
+ * worker, starved event loop), so the server/CLI kill the lock owner and
+ * spawn a fresh loop directly instead of queueing. No new files, no sockets:
+ * the event log stays the audit trail (`control_applied` records the kill).
  */
 
 import { appendEvent, loadRun, readEvents, storeApi } from "./store.ts";
 import type { RunEvent } from "./types.ts";
 
-/** Operator intent kinds. Slice-scoped except set-jobs/pause/resume. */
-export type ControlKind = "retry" | "skip" | "park" | "kill" | "set-jobs" | "pause" | "resume";
+/** Operator intent kinds. Slice-scoped except set-jobs/pause/resume/restart-loop. */
+export type ControlKind = "retry" | "skip" | "park" | "kill" | "set-jobs" | "pause" | "resume" | "restart-loop";
 
 export interface ControlIntent {
   kind: ControlKind;
@@ -40,11 +41,14 @@ const KINDS: Record<string, true> = {
   "set-jobs": true,
   pause: true,
   resume: true,
+  "restart-loop": true,
 };
 
 /** Validate a raw intent (pure — CLI and TUI share it). Returns an error string or null. */
 export function validateIntent(intent: ControlIntent): string | null {
-  if (!intent || !KINDS[intent.kind]) return `unknown control kind ${JSON.stringify(intent?.kind)} (want retry|skip|park|kill|set-jobs|pause|resume)`;
+  if (!intent || !KINDS[intent.kind]) {
+    return `unknown control kind ${JSON.stringify(intent?.kind)} (want retry|skip|park|kill|set-jobs|pause|resume|restart-loop)`;
+  }
   const needsSlice = intent.kind === "retry" || intent.kind === "skip" || intent.kind === "park" || intent.kind === "kill";
   if (needsSlice && !intent.sliceId?.trim()) return `${intent.kind} needs a slice id`;
   if (!needsSlice && intent.sliceId) return `${intent.kind} takes no slice id`;
@@ -54,6 +58,8 @@ export function validateIntent(intent: ControlIntent): string | null {
     }
   }
   if (intent.kind === "park" && !intent.reason?.trim()) return "park needs a reason (what to fix before resume)";
+  // restart-loop kills the live loop: the audit trail must say why.
+  if (intent.kind === "restart-loop" && !intent.reason?.trim()) return "restart-loop needs a reason (what wedged the loop)";
   return null;
 }
 /**
@@ -162,6 +168,8 @@ export function applyIntent(
       case "resume":
         loop.paused = false;
         return done(true, "claim loop resumed");
+      case "restart-loop":
+        return done(false, "restart-loop replaces the loop itself — run it from the dashboard or `ompo ctl restart-loop`, never through the loop");
     }
   } catch (err) {
     return done(false, err instanceof Error ? err.message : String(err));

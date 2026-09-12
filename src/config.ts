@@ -11,7 +11,7 @@
  *   maxRetries: <int default override>
  *   specBudget: <int chars>
  *   workerTimeoutSec: <int>
- *   debugTimeoutSec: <int worker-debug session budget, default 600>
+ *   debugTimeoutSec: <int worker-debug session budget, default 1800>
  *   agentModels:
  *     <agent-name>: <model pattern>
  *   modelFallbacks:
@@ -39,7 +39,7 @@ export interface RoadmapConfig {
   maxRetries?: number;
   specBudget?: number;
   workerTimeoutSec?: number;
-  /** Debugger session budget in seconds (default 600). */
+  /** Debugger session budget in seconds (default 1800). */
   debugTimeoutSec?: number;
   /** Auto-inject dev-only placeholders for missing env creds (default true). */
   placeholders?: boolean;

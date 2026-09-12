@@ -21,9 +21,21 @@ export interface VerifyOptions {
   onProgress?: (line: string) => void;
   /** Extra env for gate commands (placeholder injection — scoped to the gate). */
   env?: Record<string, string>;
+  /**
+   * Grace after process exit before forcing stdio closed (default 10s).
+   * A gate whose grandchildren outlive it and hold the pipes open would
+   * otherwise wedge `close` forever — the exact stall that pinned a slice
+   * in `verifying` with a zombie gate and no verdict. The recorded exit
+   * code is preserved, so fail-fast semantics survive the fallback.
+   */
+  closeGraceMs?: number;
+  /** Signs-of-life tick while a gate runs (default 60s; 0 disables). */
+  heartbeatMs?: number;
 }
 
 export const DEFAULT_VERIFY_TIMEOUT_MS = 5 * 60 * 1000;
+export const DEFAULT_CLOSE_GRACE_MS = 10 * 1000;
+export const DEFAULT_HEARTBEAT_MS = 60 * 1000;
 
 function tail(text: string, n: number): string {
   return text.length > n ? text.slice(-n) : text;
@@ -34,6 +46,7 @@ function runCommand(
   cwd: string,
   timeoutMs: number,
   env?: Record<string, string>,
+  closeGraceMs: number = DEFAULT_CLOSE_GRACE_MS,
 ): Promise<{ exit: number | null; timedOut: boolean; output: string }> {
   return new Promise((resolve) => {
     const child = spawn("bash", ["-lc", command], {
@@ -70,12 +83,39 @@ function runCommand(
     });
     child.on("error", (err) => {
       clearTimeout(timer);
+      clearTimeout(closeTimer);
       output += `\nspawn error: ${String(err)}`;
       if (output.length > 1_000_000) output = output.slice(-1_000_000);
       finish(null, false);
     });
+    // `close` waits for stdio EOF, not just process exit: orphaned
+    // grandchildren holding the pipes open delay it indefinitely. Once the
+    // exit code is known, force the streams closed after a short grace so a
+    // lost `close` can never wedge the verdict — resolve with the real code.
+    let exitCode: number | null = null;
+    let closeTimer: NodeJS.Timeout | undefined;
+    child.on("exit", (code) => {
+      exitCode = code;
+      closeTimer = setTimeout(() => {
+        output += `\n(close ${(closeGraceMs / 1000).toFixed(0)}s grace elapsed with pipes held open — forcing stdio closed)`;
+        try {
+          child.stdout.destroy();
+        } catch {
+          /* dead */
+        }
+        try {
+          child.stderr.destroy();
+        } catch {
+          /* dead */
+        }
+        clearTimeout(timer);
+        finish(exitCode, false);
+      }, closeGraceMs);
+      closeTimer.unref?.();
+    });
     child.on("close", (code) => {
       clearTimeout(timer);
+      clearTimeout(closeTimer);
       finish(code, false);
     });
   });
@@ -91,6 +131,8 @@ export async function runVerifiers(
 ): Promise<Verdict> {
   const timeoutMs = opts.timeoutMs ?? DEFAULT_VERIFY_TIMEOUT_MS;
   const tailChars = opts.tailChars ?? 4000;
+  const closeGraceMs = opts.closeGraceMs ?? DEFAULT_CLOSE_GRACE_MS;
+  const heartbeatMs = opts.heartbeatMs ?? DEFAULT_HEARTBEAT_MS;
   mkdirSync(logDir, { recursive: true });
   const steps: VerdictStep[] = [];
   const fullLog: string[] = [];
@@ -110,7 +152,22 @@ export async function runVerifiers(
     const logRef = join(logDir, `verify-${steps.length}.log`);
     const t0 = Date.now();
     opts.onProgress?.(`verify: $ ${command}`);
-    const r = await runCommand(command, opts.projectDir, timeoutMs, opts.env);
+    // Signs of life for long gates: the verdict phase otherwise goes silent
+    // for minutes, and silence is indistinguishable from a wedge on both
+    // the TUI and the dashboard. Heartbeat only — no store writes.
+    const heartbeat: NodeJS.Timeout | undefined =
+      heartbeatMs > 0
+        ? setInterval(() => {
+            opts.onProgress?.(`verify: still running ${name} (${((Date.now() - t0) / 1000).toFixed(0)}s elapsed)`);
+          }, heartbeatMs)
+        : undefined;
+    heartbeat?.unref?.();
+    let r: { exit: number | null; timedOut: boolean; output: string };
+    try {
+      r = await runCommand(command, opts.projectDir, timeoutMs, opts.env, closeGraceMs);
+    } finally {
+      clearInterval(heartbeat);
+    }
     const secs = ((Date.now() - t0) / 1000).toFixed(1);
     if (r.exit === 0 && !r.timedOut) opts.onProgress?.(`verify ok: ${name} (${secs}s)`);
     else opts.onProgress?.(`verify FAIL: ${name} exit=${r.exit} timedOut=${r.timedOut} (${secs}s)`);

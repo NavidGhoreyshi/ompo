@@ -12,7 +12,7 @@
  * intents) and POST …/resume (spawn a detached `resume` loop for a
  * quiescent run — refused while a live loop holds the run).
  */
-import { existsSync, readFileSync, readdirSync } from "node:fs";
+import { existsSync, readFileSync, readdirSync, statSync } from "node:fs";
 import { join, normalize } from "node:path";
 import {
   applyIntent,
@@ -22,10 +22,10 @@ import {
   validateIntent,
   type ControlIntent,
 } from "./control.ts";
- import { diffSliceBranch, listSessions, tailSessionLog, tailSliceLog } from "./forensics.ts";
+import { diffSliceBranch, listSessions, sliceActivity, tailSessionLog, tailSliceLog } from "./forensics.ts";
 import { collectDocCandidates } from "./import.ts";
 import { resolveRunId } from "./log.ts";
-import { listRuns, loadRun, lockHeld, readEvents, runDir } from "./store.ts";
+import { appendEvent, listRuns, loadRun, lockHeld, readEvents, runDir } from "./store.ts";
 import { computeStats, queryEvents, replayRun } from "./stats.ts";
 import type { Effort, RunEvent, SliceStatus } from "./types.ts";
 import { loadRoadmapConfig } from "./config.ts";
@@ -108,7 +108,7 @@ export interface SliceSummary {
   verify: string[];
 }
 
-export type RunDetail = RunSummary & { slices: SliceSummary[] };
+export type RunDetail = RunSummary & { slices: SliceSummary[]; loops: LoopProc[] };
 
 /**
  * One fresh-context generation's authoritative spend. `usage` is the full
@@ -147,6 +147,12 @@ export interface SliceDetail {
   verdictStep?: { name: string; exit: number | null; timedOut: boolean; tail: string };
   verdictSteps?: { name: string; exit: number | null; timedOut: boolean; tail: string }[];
   verdictPass?: boolean;
+  /**
+   * No-verdict-output signal: slice is `verifying` long after the worker
+   * finished with no gate completion since. Advisory — healthy long gates
+   * trip it honestly, so the UI words it as idle time, never "stuck".
+   */
+  verdictStall?: VerdictStall;
   review?: { approved: boolean; findings: string[]; notes?: string };
   reviewNotes?: string;
   promptTail?: string;
@@ -163,6 +169,88 @@ export interface SliceDetail {
     verificationNotes?: string;
     followUps: string[];
   };
+}
+
+/** Advisory no-verdict-output signal (see SliceDetail.verdictStall). */
+export interface VerdictStall {
+  /** ms since last verdict progress (worker finish, gate completion, slice event). */
+  idleMs: number;
+  /** Last completed gate name, current attempt only. */
+  lastGate?: string;
+  /** Completed gate count, current attempt only. */
+  gatesDone: number;
+}
+
+/** A loop process observed for a run: lock owner plus extras (double-loop guard). */
+export interface LoopProc {
+  pid: number;
+  lockOwner: boolean;
+}
+
+/** No-verdict-output warning threshold (verifying long after worker finish). */
+export const VERDICT_STALL_MS = 10 * 60 * 1000;
+
+/**
+ * Transcript silence before a live slice reads as wedged (the dead-worker /
+ * starved-loop signature: no worker-log growth for this long while the run
+ * still holds its lock). Mirrors VERDICT_STALL_MS so both stall surfaces
+ * agree on what "too quiet" means.
+ */
+export const WORKER_WEDGE_STALE_MS = 10 * 60 * 1000;
+
+/** True when argv looks like an ompo loop/run process for this run. Pure — unit-tested. */
+export function matchLoopCmdline(parts: string[], runId: string): boolean {
+  if (!parts.includes(runId)) return false;
+  return parts.some((p) => /(^|\/)(ompo|bun|node)$/.test(p) || /(^|\/)cli\.(ts|js)$/.test(p));
+}
+
+function pidAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Loop processes for a run: lock owner first, then any extra same-run loop
+ * processes (the double-loop guard — two writers corrupt a run). Same-machine
+ * /proc scan, Linux-only; never throws, degrades to lock-only elsewhere.
+ */
+export function findRunLoops(projectDir: string, runId: string): LoopProc[] {
+  const out: LoopProc[] = [];
+  const seen = new Set<number>();
+  try {
+    const lock = readJson<{ pid?: unknown }>(`${runDir(projectDir, runId)}.lock`);
+    if (lock && typeof lock.pid === "number" && pidAlive(lock.pid)) {
+      out.push({ pid: lock.pid, lockOwner: true });
+      seen.add(lock.pid);
+    }
+  } catch {
+    /* no live lock owner */
+  }
+  try {
+    for (const name of readdirSync("/proc")) {
+      if (!/^\d+$/.test(name)) continue;
+      const pid = Number(name);
+      if (pid === process.pid || seen.has(pid)) continue;
+      let cmd: string;
+      try {
+        cmd = readFileSync(`/proc/${pid}/cmdline`, "utf8");
+      } catch {
+        continue;
+      }
+      if (!cmd) continue;
+      if (matchLoopCmdline(cmd.split("\0").filter(Boolean), runId)) {
+        out.push({ pid, lockOwner: false });
+        seen.add(pid);
+      }
+    }
+  } catch {
+    /* non-Linux: lock-only */
+  }
+  return out;
 }
 
 /**
@@ -185,6 +273,10 @@ export interface AgentRow {
   lastLine: string;
   /** Last finished worker counters where available (turns/tools/durationMs/tokens). */
   metrics?: { turns: number; tools: number; durationMs?: number; tokens?: TokenUsage };
+  /** True when live but the worker transcript is older than WORKER_WEDGE_STALE_MS. */
+  wedged: boolean;
+  /** Transcript staleness in ms (null when the slice never spawned). */
+  staleForMs: number | null;
 }
 
 // ---- small pure projections (ported from watch.tsx — no ink import here) ----
@@ -406,10 +498,17 @@ function agentsForRun(projectDir: string, runId: string): AgentRow[] | null {
     events = [];
   }
   const active = cursor.doc.slices.filter((s) => s.status === "running" || s.status === "verifying");
+  const loopLive = lockHeld(projectDir, runId);
   return active.map((s, lane) => {
     const sliceEvents = events.filter((e) => e.sliceId === s.id);
     const last = sliceEvents.at(-1);
     const metrics = sliceMetrics(events, s.id);
+    // Wedge check stats each live slice's newest stage artifact: a live
+    // slice gone quiet long ago is the dead-worker signature. Stage-wide on
+    // purpose — verifying advances through verdict/review files, and review
+    // streams a live transcript, so worker-only freshness would cry wolf on
+    // every audit. No artifact yet (claimed, not spawned) never reads wedged.
+    const staleForMs = sliceActivity(projectDir, runId, s.id).staleForMs;
     const row: AgentRow = {
       id: s.id,
       lane,
@@ -417,6 +516,8 @@ function agentsForRun(projectDir: string, runId: string): AgentRow[] | null {
       attempt: s.attempts,
       generation: sliceGeneration(projectDir, runId, s.id, s.attempts),
       lastLine: last ? formatEventLine(last) : "",
+      wedged: loopLive && staleForMs !== null && staleForMs > WORKER_WEDGE_STALE_MS,
+      staleForMs,
     };
     if (s.workerAgent) row.agent = s.workerAgent;
     if (s.effort) row.effort = s.effort;
@@ -432,7 +533,6 @@ function readJson<T>(path: string): T | null {
     return null;
   }
 }
-
 function tailOf(path: string, lines: number): string {
   try {
     const s = readFileSync(path, "utf8").split("\n");
@@ -513,6 +613,7 @@ function detailForRun(projectDir: string, runId: string): RunDetail | null {
   const reasons = reasonsBySlice(events);
   return {
     ...summary,
+    loops: findRunLoops(projectDir, runId),
     slices: cursor.doc.slices.map((s) => {
       const row: SliceSummary = {
         id: s.id,
@@ -598,6 +699,7 @@ function sliceDetailFor(projectDir: string, runId: string, sliceId: string): Sli
 
   const verdict = readJson<{
     pass?: boolean;
+    attempt?: number;
     steps?: { name: string; exit: number | null; timedOut: boolean; outputTail?: string }[];
   }>(join(dir, "verdict.json"));
   if (verdict) {
@@ -618,6 +720,37 @@ function sliceDetailFor(projectDir: string, runId: string, sliceId: string): Sli
           tail: clip((failedStep.outputTail ?? "").trim().slice(-400), 400),
         };
       }
+    }
+  }
+
+  // No-verdict-output signal (see VerdictStall): `verifying` long after the
+  // worker finished, with no gate completion since. Only the current
+  // attempt's verdict counts — a stale verdict.json from an earlier attempt
+  // must not mask a wedged gate.
+  if (slice.status === "verifying" && files.includes("report.json")) {
+    const mtimeMs = (f: string): number => {
+      try {
+        return statSync(join(dir, f)).mtimeMs;
+      } catch {
+        return 0;
+      }
+    };
+    const currentSteps =
+      verdict && verdict.attempt === slice.attempts && Array.isArray(verdict.steps) ? verdict.steps : [];
+    let baseline = mtimeMs("report.json");
+    if (currentSteps.length > 0) baseline = Math.max(baseline, mtimeMs("verdict.json"));
+    for (const e of sliceEvents) {
+      if (e.type.startsWith("control")) continue;
+      const t = Date.parse(e.at);
+      if (Number.isFinite(t)) baseline = Math.max(baseline, t);
+    }
+    const idleMs = Date.now() - baseline;
+    if (baseline > 0 && idleMs > VERDICT_STALL_MS) {
+      detail.verdictStall = {
+        idleMs: Math.round(idleMs),
+        gatesDone: currentSteps.length,
+        ...(currentSteps.length > 0 ? { lastGate: currentSteps[currentSteps.length - 1]!.name } : {}),
+      };
     }
   }
 
@@ -895,7 +1028,8 @@ async function handleControl(projectDir: string, runId: string, req: Request): P
 /** Detached loop spawner; injectable so tests never launch real workers. */
 export type ResumeSpawner = (cmd: string[], opts: { cwd: string; logPath: string }) => { pid: number };
 
-function defaultSpawnResume(cmd: string[], opts: { cwd: string; logPath: string }): { pid: number } {
+/** Detached `resume --run` spawner shared by the dashboard and `ompo ctl restart-loop`. */
+export function spawnDetachedResume(cmd: string[], opts: { cwd: string; logPath: string }): { pid: number } {
   const proc = Bun.spawn(cmd, {
     cwd: opts.cwd,
     stdin: "ignore",
@@ -907,7 +1041,7 @@ function defaultSpawnResume(cmd: string[], opts: { cwd: string; logPath: string 
 }
 
 /** Self relaunch: compiled binary re-executes itself, `bun src/cli.ts` re-invokes bun. */
-function resumeCommand(): string[] {
+export function resumeCommand(): string[] {
   const exe = process.execPath;
   const base = exe.split("/").pop() ?? "";
   if (base === "bun" || base.startsWith("bun-")) {
@@ -920,7 +1054,7 @@ async function handleResume(
   projectDir: string,
   runId: string,
   req: Request,
-  spawnResume: ResumeSpawner = defaultSpawnResume,
+  spawnResume: ResumeSpawner = spawnDetachedResume,
 ): Promise<Response> {
   if (!originAllowed(req)) return json({ error: "cross-origin resume is forbidden" }, 403);
   if (lockHeld(projectDir, runId)) {
@@ -934,6 +1068,92 @@ async function handleResume(
     return json({ error: err instanceof Error ? err.message : String(err) }, 500);
   }
   return json({ ok: true, applied: "spawned", pid, log: logPath.split("/").pop() }, 202);
+}
+async function sleepMs(ms: number): Promise<void> {
+  const { promise, resolve } = Promise.withResolvers<void>();
+  setTimeout(resolve, ms);
+  await promise;
+}
+
+/**
+ * TERM, wait, KILL a pid; resolves when it is gone, throws when it will not
+ * die. Exported so `ompo ctl restart-loop` shares the exact kill semantics.
+ */
+export async function killProcessTree(pid: number, waitMs = 15_000): Promise<void> {
+  const alive = (): boolean => {
+    try {
+      process.kill(pid, 0);
+      return true;
+    } catch {
+      return false;
+    }
+  };
+  if (!alive()) return;
+  try {
+    process.kill(pid, "SIGTERM");
+  } catch {
+    /* raced exit */
+  }
+  const t0 = Date.now();
+  const termBudget = Math.min(waitMs, 5000);
+  while (Date.now() - t0 < termBudget) {
+    if (!alive()) return;
+    await sleepMs(100);
+  }
+  try {
+    process.kill(pid, "SIGKILL");
+  } catch {
+    /* raced exit */
+  }
+  while (Date.now() - t0 < waitMs) {
+    if (!alive()) return;
+    await sleepMs(100);
+  }
+  throw new Error(`pid ${pid} would not die`);
+}
+
+// ---- run restart-loop (wedged-loop recovery: kill the lock owner, respawn) ----
+//
+// The event-log queue cannot help a wedged loop (dead worker, starved event
+// loop — nothing drains). restart-loop kills every same-run loop process the
+// server can see (lock owner plus double-loop extras from findRunLoops) and
+// spawns a fresh detached resume through the same spawner as POST …/resume.
+// It refuses to spawn while any loop survives the kill — two writers corrupt
+// a run. Every restart lands on the event log as control_applied, so
+// `ompo log` keeps the full operator audit.
+export async function handleRestartLoop(
+  projectDir: string,
+  runId: string,
+  req: Request,
+  spawnResume: ResumeSpawner = spawnDetachedResume,
+): Promise<Response> {
+  if (!originAllowed(req)) return json({ error: "cross-origin restart-loop is forbidden" }, 403);
+  let reason = "";
+  try {
+    const body = (await req.json()) as { reason?: unknown };
+    if (typeof body?.reason === "string") reason = body.reason;
+  } catch {
+    /* empty body — reason check below reports it */
+  }
+  if (!reason.trim()) return bad("restart-loop needs a reason (what wedged the loop)");
+  const loops = findRunLoops(projectDir, runId);
+  if (loops.length === 0) {
+    return json({ ok: false, message: `run "${runId}" has no live loop — start one with POST …/resume`, applied: "direct" }, 200);
+  }
+  const killed: number[] = [];
+  try {
+    for (const l of loops) {
+      await killProcessTree(l.pid);
+      killed.push(l.pid);
+    }
+  } catch (err) {
+    return json({ error: err instanceof Error ? err.message : String(err) }, 500);
+  }
+  if (findRunLoops(projectDir, runId).length > 0) {
+    return json({ error: `loop pid(s) survived the kill — refusing to spawn a second loop` }, 500);
+  }
+  appendEvent(projectDir, runId, "control_applied", undefined, `restart-loop: killed loop pid(s) ${killed.join(",")} (${reason.trim()})`);
+  return handleResume(projectDir, runId, req, spawnResume);
 }
 // ---- plan preview (roadmap inspection boundary; arch §3) ----
 //
@@ -1191,6 +1411,11 @@ async function route(projectDir: string, req: Request, routeSpawner?: ResumeSpaw
       const missing = requireRun(projectDir, runId);
       if (missing) return missing;
       return handleControl(projectDir, runId, req);
+    }
+    if (req.method === "POST" && rest === "restart-loop") {
+      const missing = requireRun(projectDir, runId);
+      if (missing) return missing;
+      return handleRestartLoop(projectDir, runId, req, routeSpawner);
     }
     if (req.method === "POST" && rest === "resume") {
       const missing = requireRun(projectDir, runId);

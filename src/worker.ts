@@ -66,6 +66,12 @@ export interface WorkerContext {
   /** Model pattern for `omp --model` (resolves orchestrator↔worker split, plan §10). */
   workerModel?: string;
   timeoutMs?: number;
+  /**
+   * Silence before a `(no worker output …)` advisory line lands in the
+   * transcript (default WORKER_STALL_WARN_MS). Advisory only — a quiet but
+   * live child is never killed for being quiet; the timeout still owns that.
+   */
+  stallWarnMs?: number;
   /** Extra argv appended after `omp` (e.g. ["--thinking","low"]). */
   extraArgs?: string[];
   /** Slice dir for session persistence (tmux-TUI completion source). */
@@ -103,6 +109,41 @@ export interface WorkerResult {
 }
 
 export const DEFAULT_WORKER_TIMEOUT_MS = 15 * 60 * 1000;
+
+/**
+ * Grace for stdio to flush after the worker exits before the run resolves
+ * anyway (an inherited pipe held by a tool grandchild must never wedge the
+ * loop — late output is truncated and noted, never waited on forever).
+ */
+export const WORKER_CLOSE_GRACE_MS = 5000;
+
+/** Silence before the stall advisory fires (transcript + TUI stay honest). */
+export const WORKER_STALL_WARN_MS = 5 * 60 * 1000;
+
+/**
+ * Kill the worker AND the tool grandchildren it spawned (`omp` runs bash,
+ * edits, servers — all in its process group, since we spawn detached).
+ * Group kill first so no orphan holds the stdio pipes open; direct kill as
+ * the fallback (non-POSIX, or a child that is somehow not group leader).
+ * Never throws. Callers must skip this once the child was reaped (pid reuse
+ * could otherwise signal an unrelated process group).
+ */
+export function killWorkerTree(child: { pid?: number; kill: (sig: NodeJS.Signals) => boolean }, sig: NodeJS.Signals): void {
+  const pid = child.pid;
+  if (pid !== undefined) {
+    try {
+      process.kill(-pid, sig);
+      return;
+    } catch {
+      /* not a group leader (or already gone) — fall through to direct kill */
+    }
+  }
+  try {
+    child.kill(sig);
+  } catch {
+    /* already dead */
+  }
+}
 
 export type WorkerRunner = (call: WorkerCall, ctx: WorkerContext) => Promise<WorkerResult>;
 
@@ -324,12 +365,28 @@ export const runOmpWorker: WorkerRunner = (call, ctx) =>
       stdio: ["ignore", "pipe", "pipe"],
       detached: true,
     });
-    const onAbort = () => {
+    let sawExit = false;
+    const destroyStdio = (): void => {
       try {
-        child.kill("SIGTERM");
+        child.stdout.destroy();
       } catch {
-        /* already dead */
+        /* already closed */
       }
+      try {
+        child.stderr.destroy();
+      } catch {
+        /* already closed */
+      }
+    };
+    const onAbort = () => {
+      if (!sawExit) killWorkerTree(child, "SIGTERM");
+      destroyStdio();
+      // Liveness, not promise state: the result may already be resolved while
+      // a TERM-ignoring worker still runs. sawExit skips reaped children so
+      // a recycled pid is never signaled.
+      setTimeout(() => {
+        if (!sawExit) killWorkerTree(child, "SIGKILL");
+      }, 5000).unref?.();
     };
     ctx.signal?.addEventListener("abort", onAbort, { once: true });
     // --mode json streams NDJSON events on stdout. stdout (the WorkerResult
@@ -345,14 +402,27 @@ export const runOmpWorker: WorkerRunner = (call, ctx) =>
     let done = false;
     let latestUsage: TokenUsage | undefined;
     const progressState: ProgressState = { turn: 0, cwd: ctx.projectDir };
+    let lastActivity = Date.now();
+    const stallWarnMs = ctx.stallWarnMs ?? WORKER_STALL_WARN_MS;
     const emit = (line: string) => {
       if (done) return;
+      lastActivity = Date.now();
       try {
         ctx.onProgress?.(line);
       } catch {
         /* progress is advisory; never fail the worker */
       }
     };
+    // Stall advisory: a quiet-but-live child is never killed for silence,
+    // but the transcript must show the silence is observed, not lost. Each
+    // line also proves the loop's own event loop is turning (timers firing),
+    // which is exactly what a wedged loop stops doing.
+    const stallTimer = setInterval(() => {
+      if (done) return;
+      const idleMs = Date.now() - lastActivity;
+      if (idleMs >= stallWarnMs) emit(`(no worker output for ${Math.floor(idleMs / 60000)}m — still waiting)`);
+    }, Math.min(stallWarnMs, 60_000));
+    stallTimer.unref?.();
     const handleLine = (line: string): void => {
       if (done) return;
       if (!line.trim()) return;
@@ -390,6 +460,7 @@ export const runOmpWorker: WorkerRunner = (call, ctx) =>
         const usage = usageForEvent(event);
         if (usage) {
           latestUsage = usage;
+          lastActivity = Date.now();
           if (!done) {
             try {
               ctx.onUsage?.(usage);
@@ -403,9 +474,15 @@ export const runOmpWorker: WorkerRunner = (call, ctx) =>
     const finish = (partial: Partial<WorkerResult>) => {
       if (done) return;
       done = true;
+      clearTimeout(timer);
+      clearInterval(stallTimer);
+      clearTimeout(closeGrace);
       ctx.signal?.removeEventListener("abort", onAbort);
       // Flush a trailing partial line (no trailing newline on kill).
       if (lineBuf.trim()) handleLine(lineBuf);
+      // No path may wait on stdio after this: inherited pipes held by
+      // orphaned grandchildren close (or not) on their own schedule.
+      destroyStdio();
       resolve({
         exit: null,
         timedOut: false,
@@ -419,13 +496,12 @@ export const runOmpWorker: WorkerRunner = (call, ctx) =>
     };
 
     const timer = setTimeout(() => {
-      child.kill("SIGTERM");
+      // Skip the group kill once reaped: the pid may already be recycled by
+      // an unrelated process. Stdio is still destroyed so `close` resolves.
+      if (!sawExit) killWorkerTree(child, "SIGTERM");
+      destroyStdio();
       setTimeout(() => {
-        try {
-          child.kill("SIGKILL");
-        } catch {
-          /* already dead */
-        }
+        if (!sawExit) killWorkerTree(child, "SIGKILL");
       }, 5000).unref?.();
       finish({ timedOut: true });
     }, ctx.timeoutMs ?? DEFAULT_WORKER_TIMEOUT_MS);
@@ -452,9 +528,26 @@ export const runOmpWorker: WorkerRunner = (call, ctx) =>
         if (t) emit(`stderr: ${oneLine(t, 140)}`);
       }
     });
+    let closeGrace: NodeJS.Timeout | undefined;
     child.on("error", (err) => {
       clearTimeout(timer);
       finish({ exit: null, stderr: stderr + `\nspawn error: ${String(err)}` });
+    });
+    // Exit-before-close backstop: `close` waits for stdio EOF, which a tool
+    // grandchild holding an inherited pipe delays forever. The worker is
+    // dead at `exit` — resolve on a grace instead of hanging the loop.
+    child.on("exit", (code) => {
+      sawExit = true;
+      if (done) return;
+      closeGrace = setTimeout(() => {
+        if (done) return;
+        // A grandchild is proven live (it pins our pipe) — reap the group,
+        // then resolve. Late output is truncated, and the note says so.
+        killWorkerTree(child, "SIGKILL");
+        destroyStdio();
+        finish({ exit: code, stderr: stderr + "\n(worker exited but its stdio stayed open — output truncated)" });
+      }, WORKER_CLOSE_GRACE_MS);
+      closeGrace.unref?.();
     });
     child.on("close", (code) => {
       clearTimeout(timer);

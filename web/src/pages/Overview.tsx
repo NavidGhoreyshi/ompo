@@ -51,7 +51,8 @@
   const active = detail.slices.find((s) => s.id === activeId) ?? null;
   const agent = active ? agents.find((a) => a.id === active.id) : undefined;
   const attention = detail.slices.filter((s) => s.status === "failed" || s.status === "blocked-env");
-
+  const extraLoops = (detail.loops ?? []).filter((l) => !l.lockOwner);
+  const loopOwner = detail.loops?.find((l) => l.lockOwner)?.pid;
   return (
     <div className="omp-workspace" aria-label="Overview workspace">
       <RunHeader detail={detail} events={events} agents={agents} activeId={selected} />
@@ -73,6 +74,15 @@
             );
           })}
           {attention.length > 4 && <span className="omp-hint">+{attention.length - 4} more</span>}
+        </p>
+      )}
+      {extraLoops.length > 0 && (
+        <p className="omp-attention" role="alert">
+          <strong>{extraLoops.length + 1} loops own this run</strong>
+          <span className="omp-hint">
+            lock: {loopOwner !== undefined ? `pid ${loopOwner}` : "none"} · extra: {extraLoops.map((l) => `pid ${l.pid}`).join(", ")} —
+            two writers corrupt a run. Kill the extra loop process, then resume if quiescent.
+          </span>
         </p>
       )}
       <section className="omp-board-panel" aria-label={`Slice board — ${detail.slices.length} slices`}>

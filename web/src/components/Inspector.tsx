@@ -8,6 +8,7 @@ import {
   LuMessageSquareText,
   LuScrollText,
   LuShieldCheck,
+  LuTriangleAlert,
 } from "react-icons/lu";
 import type { IconType } from "react-icons";
 import type { RunEvent, SliceDetail, SliceSummary } from "../api.ts";
@@ -25,6 +26,7 @@ import { Separator } from "./ui/separator.tsx";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "./ui/tabs.tsx";
 import Usage from "./Usage.tsx";
 import VerifyView from "./VerifyView.tsx";
+import { formatDurationMs } from "../lib/format.ts";
 
 type InspectorTab = "Output" | "Diff" | "Verify" | "Review" | "Prompt" | "Events" | "Usage" | "Log";
 
@@ -55,6 +57,7 @@ export default function Inspector({
   slices,
   events = [],
   live,
+  wedged,
 }: {
   runId: string;
   selected: SliceSummary | undefined;
@@ -63,6 +66,8 @@ export default function Inspector({
   slices: SliceSummary[];
   events?: RunEvent[];
   live?: boolean;
+  /** Selected slice reads as wedged (stale transcript under a live lock). */
+  wedged?: boolean;
 }) {
   const [tab, setTab] = useState<InspectorTab>("Output");
 
@@ -104,6 +109,18 @@ export default function Inspector({
             {sel.deps.length > 0 ? ` · needs ${sel.deps.join(", ")}` : ""}
           </span>
         </p>
+        {d?.verdictStall && (
+          <div className="omp-stall" role="status">
+            <LuTriangleAlert aria-hidden="true" className="size-3.5 shrink-0" strokeWidth={2} />
+            <span>
+              <strong>No verdict output for {formatDurationMs(d.verdictStall.idleMs)}</strong>
+              {d.verdictStall.lastGate ? ` — last gate: ${d.verdictStall.lastGate}` : ""}
+              {d.verdictStall.gatesDone > 0 ? ` (${d.verdictStall.gatesDone} done)` : " (no gate finished)"}. Healthy long
+              gates go quiet too — but if the loop is unresponsive, retry and resume cannot advance it; interrupt the loop
+              (Ctrl-C) and run <code>ompo resume --run {runId}</code>.
+            </span>
+          </div>
+        )}
         {sel.reason && <p className="omp-inspector-reason">{sel.reason}</p>}
       </div>
 
@@ -151,7 +168,7 @@ export default function Inspector({
       </Tabs>
 
       <h3 className="omp-section-label">Control</h3>
-      <ControlPanel runId={runId} slices={slices} initialSliceId={sel.id} onDone={onControlDone} events={events} live={live} />
+      <ControlPanel runId={runId} slices={slices} initialSliceId={sel.id} onDone={onControlDone} events={events} live={live} verdictStalled={!!d?.verdictStall} wedged={wedged} />
 
       {d && (
         <details>

@@ -236,6 +236,7 @@ export default function App() {
               slices={detail?.slices ?? []}
               events={events}
               live={detail?.live}
+              wedged={selected ? agents.find((a) => a.id === selected.id)?.wedged : undefined}
             />
           )}
         </aside>

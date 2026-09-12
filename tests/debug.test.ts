@@ -3,9 +3,11 @@ import { parseRoadmap } from "../src/parse.ts";
 import {
   buildDebugPrompt,
   classifyEnvFailure,
+  DEFAULT_DEBUG_TIMEOUT_MS,
   MAX_HARNESS_DIFF_LINES,
   validateHarnessFix,
 } from "../src/debug.ts";
+import { DEFAULT_WORKER_TIMEOUT_MS } from "../src/worker.ts";
 import { extractHarnessFix, HARNESS_CLOSE, HARNESS_OPEN, REPORT_CLOSE, REPORT_OPEN, type HarnessFix } from "../src/report.ts";
 
 describe("classifyEnvFailure", () => {
@@ -170,5 +172,15 @@ describe("harness fix", () => {
     expect(v).toContain("summary required");
     const noSummary = { sliceId: "a", filesPatched: ["src/a.ts"], diff: "d" } as HarnessFix;
     expect(validateHarnessFix(noSummary, [], head)).toContain("summary required");
+  });
+});
+
+describe("debug budget", () => {
+  test("default covers a worker generation with headroom", () => {
+    // A debug/unblock/review-fix session diagnoses AND fixes AND re-verifies
+    // (often a full build plus suites) — strictly more than the worker turn
+    // it follows. A default below the worker budget murders productive
+    // sessions mid-diagnosis (observed: 29-turn unblock killed at 10m).
+    expect(DEFAULT_DEBUG_TIMEOUT_MS).toBeGreaterThan(DEFAULT_WORKER_TIMEOUT_MS);
   });
 });

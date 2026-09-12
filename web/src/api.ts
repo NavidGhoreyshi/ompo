@@ -29,7 +29,7 @@ export interface SliceSummary {
   verify: string[];
 }
 
-export type RunDetail = RunSummary & { slices: SliceSummary[] };
+export type RunDetail = RunSummary & { slices: SliceSummary[]; loops?: { pid: number; lockOwner: boolean }[] };
 
 export interface TokenCost {
   input: number;
@@ -90,6 +90,8 @@ export interface SliceDetail {
   verdictStep?: { name: string; exit: number | null; timedOut: boolean; tail: string };
   verdictSteps?: { name: string; exit: number | null; timedOut: boolean; tail: string }[];
   verdictPass?: boolean;
+  /** No-verdict-output signal: verifying long after worker finish (see server VerdictStall). */
+  verdictStall?: { idleMs: number; lastGate?: string; gatesDone: number };
   review?: { approved: boolean; findings: string[]; notes?: string };
   reviewNotes?: string;
   promptTail?: string;
@@ -116,8 +118,12 @@ export interface SliceDetail {
    agent?: string;
    effort?: string;
    lastLine: string;
-   metrics?: { turns: number; tools: number; durationMs?: number; tokens?: TokenUsage };
- }
+  metrics?: { turns: number; tools: number; durationMs?: number; tokens?: TokenUsage };
+  /** True when live but the worker transcript is older than the wedge threshold. */
+  wedged?: boolean;
+  /** Transcript staleness in ms (null when the slice never spawned). */
+  staleForMs?: number | null;
+}
 
  export interface OperatorSession {
    name: string;
@@ -171,7 +177,7 @@ export interface RunEvent {
   stats?: { turns: number; tools: number; tokens?: TokenUsage };
 }
 
-export type ControlKind = "retry" | "skip" | "park" | "kill" | "set-jobs" | "pause" | "resume";
+export type ControlKind = "retry" | "skip" | "park" | "kill" | "set-jobs" | "pause" | "resume" | "restart-loop";
 
 /** POST …/control body: ControlIntent verbatim (arch §5). */
 export interface ControlIntent {
@@ -313,6 +319,16 @@ export const api = {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: "{}",
+    }),
+  /**
+   * Kill a wedged live loop and spawn a fresh resume (refuses while quiescent,
+   * refuses to double-spawn). Reason required — it lands on the audit log.
+   */
+  restartLoop: (runId: string, reason: string) =>
+    req<ResumeResult | { ok: false; message: string; applied: "direct" }>(`/api/runs/${runId}/restart-loop`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ reason }),
     }),
   planPreview: () => req<PlanPreviewEnvelope>("/api/plan/preview"),
   planRoadmap: () => req<{ path: string; markdown: string }>("/api/plan/roadmap"),

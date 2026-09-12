@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { chmodSync, mkdtempSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { parseRoadmap } from "../src/parse.ts";
@@ -11,6 +11,7 @@ import {
   formatTokenCount,
   formatTokens,
   isModelUnavailable,
+  killWorkerTree,
   progressLineForEvent,
   relativize,
   resolveWorkerModel,
@@ -118,6 +119,24 @@ describe("config", () => {
 });
 
 describe("worker json progress", () => {
+  // Real child processes under test: fake timers cannot drive process exit,
+  // signal delivery, or pipe EOF, so these integration tests use the platform
+  // clock with generous margins.
+  async function processGone(pid: number): Promise<boolean> {
+    const deadline = Date.now() + 5000;
+    for (;;) {
+      try {
+        process.kill(pid, 0);
+      } catch {
+        return true;
+      }
+      if (Date.now() > deadline) return false;
+      const { promise, resolve } = Promise.withResolvers<void>();
+      setTimeout(resolve, 50);
+      await promise;
+    }
+  }
+
   test("summarizeToolArgs picks meaningful keys", () => {
     expect(summarizeToolArgs({ command: "bun test foo.ts" })).toBe("bun test foo.ts");
     expect(summarizeToolArgs({ path: "src/a.ts" })).toBe("src/a.ts");
@@ -263,6 +282,82 @@ describe("worker json progress", () => {
       process.env.PATH = prevPath;
     }
   });
+
+  test("killWorkerTree falls back to direct kill when the group is gone", () => {
+    let got: string | undefined;
+    killWorkerTree(
+      {
+        pid: 2_147_483_647,
+        kill: (sig) => {
+          got = String(sig);
+          return true;
+        },
+      },
+      "SIGTERM",
+    );
+    expect(got).toBe("SIGTERM");
+  });
+
+  test("runOmpWorker resolves when an exited worker's stdio is pinned by a grandchild", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "ompo-pinned-"));
+    const fake = join(dir, "omp");
+    const pidFile = join(dir, "holder.pid");
+    // Exits at once but leaves a grandchild holding the stdout pipe: `close`
+    // never arrives on its own. The loop must resolve on the close grace.
+    writeFileSync(fake, `#!/bin/bash\nsleep 30 & echo $! > ${pidFile}\nexit 0\n`, "utf8");
+    chmodSync(fake, 0o755);
+    const prevPath = process.env.PATH ?? "";
+    process.env.PATH = `${dir}:${prevPath}`;
+    try {
+      const started = Date.now();
+      const res = await runOmpWorker({ prompt: "hi", sliceId: "x", attempt: 1 }, { projectDir: dir, timeoutMs: 60_000 });
+      expect(Date.now() - started).toBeLessThan(20_000);
+      expect(res.exit).toBe(0);
+      expect(res.stderr).toContain("stdio stayed open");
+      // The orphaned pipe holder is reaped with the group, not left behind.
+      const holder = Number(readFileSync(pidFile, "utf8").trim());
+      expect(await processGone(holder)).toBe(true);
+    } finally {
+      process.env.PATH = prevPath;
+    }
+  }, 25_000);
+
+  test("runOmpWorker timeout kills tool grandchildren, not just omp", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "ompo-treekill-"));
+    const fake = join(dir, "omp");
+    const pidFile = join(dir, "child.pid");
+    writeFileSync(fake, `#!/bin/bash\nsleep 30 & echo $! > ${pidFile}\ntrap '' TERM\nwait\n`, "utf8");
+    chmodSync(fake, 0o755);
+    const prevPath = process.env.PATH ?? "";
+    process.env.PATH = `${dir}:${prevPath}`;
+    try {
+      const res = await runOmpWorker({ prompt: "hi", sliceId: "x", attempt: 1 }, { projectDir: dir, timeoutMs: 800 });
+      expect(res.timedOut).toBe(true);
+      const holder = Number(readFileSync(pidFile, "utf8").trim());
+      expect(await processGone(holder)).toBe(true);
+    } finally {
+      process.env.PATH = prevPath;
+    }
+  }, 25_000);
+
+  test("runOmpWorker notes a silent worker instead of going quiet", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "ompo-stall-"));
+    const fake = join(dir, "omp");
+    writeFileSync(fake, "#!/bin/bash\nsleep 1\n", "utf8");
+    chmodSync(fake, 0o755);
+    const prevPath = process.env.PATH ?? "";
+    process.env.PATH = `${dir}:${prevPath}`;
+    try {
+      const seen: string[] = [];
+      await runOmpWorker(
+        { prompt: "hi", sliceId: "x", attempt: 1 },
+        { projectDir: dir, timeoutMs: 10_000, stallWarnMs: 300, onProgress: (l) => seen.push(l) },
+      );
+      expect(seen.some((l) => /no worker output/.test(l))).toBe(true);
+    } finally {
+      process.env.PATH = prevPath;
+    }
+  }, 15_000);
 });
 
 describe("model fallback chain", () => {

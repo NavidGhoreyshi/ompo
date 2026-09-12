@@ -1179,6 +1179,38 @@ input:focus-visible,
   padding: 2px 8px;
 }
 
+/* Verdict stall: advisory, not failure — amber rail (never red). Icon +
+ * words, never color alone; the copy names the idle time, last gate, and
+ * the one effective recovery. */
+.omp-stall {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  margin: 6px 0 0;
+  padding: 6px 10px;
+  border-left: 3px solid var(--omp-amber);
+  background: var(--omp-amber-dim);
+  border-radius: 0 var(--omp-radius-sm) var(--omp-radius-sm) 0;
+  font-size: 12px;
+  color: var(--omp-secondary);
+}
+
+.omp-stall > svg {
+  flex: none;
+  color: var(--omp-amber);
+  margin-top: 1px;
+}
+
+.omp-stall strong {
+  color: var(--omp-text);
+}
+
+.omp-stall code {
+  font-family: var(--omp-mono);
+  font-size: 11px;
+  color: var(--omp-text);
+}
+
 .omp-attention-link:hover {
   border-color: var(--omp-red);
 }

@@ -119,7 +119,7 @@ export function generateRunId(now = new Date()): string {
 
 // ---- lock ----
 
-interface LockData {
+export interface LockData {
   pid: number;
   startedAt: string;
 }
@@ -183,6 +183,14 @@ export function lockHeld(projectDir: string, runId: string): boolean {
     return pidAlive(prev.pid);
   } catch {
     return true;
+  }
+}
+/** Lock owner when the lock file parses, else null (absent or corrupt). */
+export function lockOwner(projectDir: string, runId: string): LockData | null {
+  try {
+    return readJson<LockData>(lockPath(projectDir, runId));
+  } catch {
+    return null;
   }
 }
 

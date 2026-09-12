@@ -9,6 +9,7 @@ import {
   pruneWorktrees,
   renderShowText,
   showSlice,
+  sliceActivity,
   sliceWorktreePath,
   tailSliceLog,
 } from "../src/forensics.ts";
@@ -215,5 +216,41 @@ describe("forensics", () => {
     expect(tail[0]).toBe("line 91");
     expect(tail[9]).toBe("line 100");
     expect(tailSliceLog(dir, runId, "b")).toEqual([]);
+  });
+
+  test("sliceActivity reports newest stage artifact staleness", () => {
+    const { dir, runId } = fixture();
+    const live = sliceActivity(dir, runId, "a", 1_800_000_000_000);
+    expect(live.name).toMatch(/\.(log|json|md)$/);
+    expect(live.logMtimeMs).toBeGreaterThan(0);
+    expect(live.staleForMs).toBeGreaterThanOrEqual(0);
+    expect(sliceActivity(dir, runId, "b")).toEqual({ name: null, logMtimeMs: null, staleForMs: null });
+  });
+
+  test("sliceActivity math is exact with injected io", () => {
+    const { dir, runId } = fixture();
+    const mtimes: Record<string, number | null> = {
+      "worker-1-g0.log": 1000,
+      "review-2.log": 5000,
+      "notes.txt": 9000,
+    };
+    const io = {
+      listDir: () => Object.keys(mtimes),
+      statMtimeMs: (p: string) => mtimes[p.split("/").pop()!] ?? null,
+    };
+    // Newest stage artifact wins; non-artifacts never count, however new.
+    expect(sliceActivity(dir, runId, "a", 65_000, io)).toEqual({
+      name: "review-2.log",
+      logMtimeMs: 5000,
+      staleForMs: 60_000,
+    });
+    // Clamped, never negative when the clock runs behind the mtime.
+    expect(sliceActivity(dir, runId, "a", 500, io).staleForMs).toBe(0);
+    const noStat = { listDir: () => ["worker-1-g0.log"], statMtimeMs: () => null };
+    expect(sliceActivity(dir, runId, "a", 65_000, noStat)).toEqual({
+      name: null,
+      logMtimeMs: null,
+      staleForMs: null,
+    });
   });
 });

@@ -86,6 +86,11 @@ export default function LiveFeed({
         <span className="omp-board-state" data-tone={tone}>
           {slice.status}
         </span>
+        {agent?.wedged === true && (
+          <strong className="omp-attention" role="alert" title="The worker transcript stopped growing while the run still holds its lock — the loop is wedged, not working">
+            STALLED · no worker output {agent.staleForMs == null ? "" : `${Math.max(1, Math.round(agent.staleForMs / 60000))}m`}
+          </strong>
+        )}
         <span className="omp-hint">
           {agent !== undefined ? `L${agent.lane} · ` : ""}
           {progress}

@@ -311,8 +311,11 @@ describe("loop", () => {
     });
     await runRoadmapLoop({ projectDir: dir, runId: "r", runner });
     expect(streamed).toBe(true);
-    // Completion still lands the forensic footer (unchanged contract).
-    expect(readFileSync(logPath, "utf8").startsWith("exit=")).toBe(true);
+    // Completion appends the forensic footer after the live lines — the live
+    // transcript must survive the footer, never be overwritten by it.
+    const final = readFileSync(logPath, "utf8");
+    expect(final).toContain("mid-run diagnosis line");
+    expect(final).toContain("exit=");
   });
 
   test("inconclusive debug falls back to the retry budget, never recurses", async () => {
@@ -540,6 +543,40 @@ describe("loop parallel", () => {
     });
     expect(res.exitCode).toBe(0);
     expect(events.filter((m) => m.includes("… a still running")).length).toBeGreaterThanOrEqual(2);
+  });
+
+  test("memory guard aborts loudly with work preserved instead of wedging", async () => {
+    const dir = tmpProject();
+    createRun(dir, parseRoadmap("## [a] A\nDo A.\n"), "r");
+    const events: string[] = [];
+    // Worker never settles: without the guard this loop would hang forever.
+    const hanging = reviewAware(async () => {
+      await Promise.withResolvers<void>().promise;
+      throw new Error("unreachable: guard cuts the loop free first");
+    });
+    const res = await runRoadmapLoop({
+      projectDir: dir,
+      runId: "r",
+      runner: hanging,
+      heartbeatMs: 5,
+      memoryAbortMB: 0,
+      onEvent: (m) => events.push(m),
+    });
+    expect(res.exitCode).toBe(1);
+    expect(events.some((m) => m.includes("… a still running") && m.includes("rss"))).toBe(true);
+    expect(events.some((m) => m.includes("MEMORY GUARD"))).toBe(true);
+    expect(loadRun(dir, "r").doc.slices.find((s) => s.id === "a")!.status).toBe("aborted");
+  });
+
+  test("review streams a live transcript and lands a footer", async () => {
+    const dir = tmpProject();
+    createRun(dir, parseRoadmap("## [a] A\nDo A.\n"), "r");
+    const res = await runRoadmapLoop({ projectDir: dir, runId: "r", runner: okRunner, onEvent: () => {} });
+    expect(res.exitCode).toBe(0);
+    // Previously a successful review left no transcript at all — the wedge
+    // watchdog needs this file to stay honest through long audits.
+    const log = readFileSync(join(sliceDir(dir, "r", "a"), "review-1.log"), "utf8");
+    expect(log).toContain("exit=0");
   });
   test("unexpected pipeline throw fails the run, never strands the loop", async () => {
     const dir = tmpProject();

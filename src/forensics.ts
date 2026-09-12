@@ -13,7 +13,7 @@
  */
 
 import { spawnSync } from "node:child_process";
-import { existsSync, readFileSync, readdirSync, rmSync } from "node:fs";
+import { existsSync, readFileSync, readdirSync, rmSync, statSync } from "node:fs";
 import { join } from "node:path";
  import { listRuns, loadRun, readEvents, runDir, sliceDir } from "./store.ts";
 
@@ -36,6 +36,8 @@ export interface ForensicsIo {
   readFile?: (p: string) => string;
   exists?: (p: string) => boolean;
   listDir?: (p: string) => string[];
+  /** Override for transcript mtime (tests); default reads the real fs. */
+  statMtimeMs?: (p: string) => number | null;
 }
 
 function ioRead(io: ForensicsIo | undefined, p: string): string {
@@ -417,6 +419,64 @@ export function tailSliceLog(
     return lines.slice(-n);
   } catch {
     return [];
+  }
+}
+/**
+ * Liveness of a slice's stage artifacts: the newest loop/worker write in the
+ * slice dir (worker/review/debug transcripts, verdict/report/review JSON,
+ * prompts, sidecars) and how long ago it landed. A live slice gone quiet for
+ * many minutes is the wedged-loop signature (dead worker, starved loop) —
+ * the dashboard watchdog reads this, never the process table. Stage-wide by
+ * construction: a verifying slice advances through verdict/review files, not
+ * the worker log, so worker-only freshness false-positives on every review.
+ * Never throws.
+ */
+export interface SliceActivity {
+  /** Newest stage-artifact name, or null when the slice never spawned. */
+  name: string | null;
+  /** Its mtime epoch ms, or null when unknown. */
+  logMtimeMs: number | null;
+  /** nowMs - logMtimeMs, or null when the mtime is unknown. */
+  staleForMs: number | null;
+}
+
+function ioStatMtimeMs(io: ForensicsIo | undefined, p: string): number | null {
+  if (io?.statMtimeMs) return io.statMtimeMs(p);
+  try {
+    return statSync(p).mtimeMs;
+  } catch {
+    return null;
+  }
+}
+
+/** Stage artifacts: everything the loop/worker/verifier writes mid-stage. */
+function isStageArtifact(f: string): boolean {
+  return /\.(log|json|md)$/.test(f);
+}
+
+export function sliceActivity(
+  projectDir: string,
+  runId: string,
+  sliceId: string,
+  nowMs: number = Date.now(),
+  io?: ForensicsIo,
+): SliceActivity {
+  try {
+    const dir = sliceDir(projectDir, runId, sliceId);
+    let newest = "";
+    let mtimeMs = -1;
+    for (const f of ioList(io, dir)) {
+      if (!isStageArtifact(f)) continue;
+      const m = ioStatMtimeMs(io, join(dir, f));
+      if (m !== null && m > mtimeMs) {
+        newest = f;
+        mtimeMs = m;
+      }
+    }
+    if (mtimeMs < 0) return { name: null, logMtimeMs: null, staleForMs: null };
+    return { name: newest, logMtimeMs: mtimeMs, staleForMs: Math.max(0, nowMs - mtimeMs) };
+  } catch {
+    return { name: null, logMtimeMs: null, staleForMs: null };
   }
 }
 

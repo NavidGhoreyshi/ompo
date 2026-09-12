@@ -2,7 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { preflightEnv } from "../src/verify.ts";
+import { preflightEnv, runVerifiers } from "../src/verify.ts";
 
 function tmpProject(): string {
   return mkdtempSync(join(tmpdir(), "ompo-preflight-"));
@@ -31,4 +31,33 @@ describe("preflightEnv", () => {
     expect(probes[0]!.reason).toMatch(/3999|in use/);
     expect(probes[0]!.fix).toBeTruthy();
   });
+});
+
+describe("runVerifiers resilience", () => {
+  test("exit without close still resolves with the real code", async () => {
+    // Grandchild holds the pipes open after the gate exits: `close` would
+    // wait out the full sleep. The grace fallback must resolve with exit 0
+    // instead of wedging the verdict.
+    const t0 = Date.now();
+    const verdict = await runVerifiers("s", 1, ["(sleep 30 &)"], join(tmpProject(), "logs"), {
+      projectDir: tmpProject(),
+      closeGraceMs: 300,
+      heartbeatMs: 0,
+    });
+    expect(Date.now() - t0).toBeLessThan(15_000);
+    expect(verdict.pass).toBe(true);
+    expect(verdict.steps[0]!.exit).toBe(0);
+    expect(verdict.steps[0]!.outputTail).toContain("forcing stdio closed");
+  }, 30_000);
+
+  test("long gates emit heartbeat signs of life", async () => {
+    const lines: string[] = [];
+    const verdict = await runVerifiers("s", 1, ["sleep 2"], join(tmpProject(), "logs"), {
+      projectDir: tmpProject(),
+      heartbeatMs: 400,
+      onProgress: (l) => lines.push(l),
+    });
+    expect(verdict.pass).toBe(true);
+    expect(lines.some((l) => l.includes("still running sleep 2"))).toBe(true);
+  }, 15_000);
 });

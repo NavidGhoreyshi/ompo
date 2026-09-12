@@ -23,6 +23,7 @@ import {
   lockHeld,
   readEvents,
   releaseLock,
+  runDir,
   saveRunDoc,
   storeApi,
   StoreLockedError,
@@ -60,7 +61,8 @@ USAGE
                                             line logs when piped (--format pretty|json|tap|github)
   ompo resume [FLAGS]                       resume latest run (alias: run --resume)
   ompo ctl ACTION [--run ID] [--slice ID]   live control: retry|skip|park|kill [--slice ID] [--reason R] (queued live, applied now when quiescent),
-                                            jobs --jobs N, pause, resume (live runs only; quiescent runs: \`ompo resume --run ID\`)
+                                            jobs --jobs N, pause, resume (live runs only; quiescent runs: \`ompo resume --run ID\`),
+                                            restart-loop --reason R (wedged loop: kill + fresh resume, never queued)
   ompo replan [--run ID] [--project DIR]    adopt an edited ROADMAP.md into a quiescent run (keeps done,
                                             resets changed slices, refuses live runs and changed in-flight slices)
   ompo revalidate [--run ID] [--project DIR] [--roadmap PATH] [--model M]
@@ -627,8 +629,10 @@ async function cmdCtl(a: Args): Promise<number> {
     case "resume":
       intent = { kind: "resume" };
       break;
+    case "restart-loop":
+      return cmdCtlRestartLoop(a, runId);
     default:
-      console.error(`unknown ctl action ${JSON.stringify(action)} (want retry|skip|park|kill|jobs|pause|resume)`);
+      console.error(`unknown ctl action ${JSON.stringify(action)} (want retry|skip|park|kill|jobs|pause|resume|restart-loop)`);
       return 1;
   }
   const bad = validateIntent(intent);
@@ -660,6 +664,48 @@ async function cmdCtl(a: Args): Promise<number> {
     return 0;
   } catch (err) {
     console.error(`control failed: ${String((err as Error).message)}`);
+    return 1;
+  }
+}
+/**
+ * restart-loop never queues: its target is a loop too wedged to drain.
+ * Kill every same-run loop process the server can see, refuse to spawn while
+ * any survives (two writers corrupt a run), then spawn a fresh detached
+ * resume with the dashboard's exact spawner. Lazy server import: cli.ts keeps
+ * Bun.serve out of the fast control path (same reason as the dashboard path).
+ */
+async function cmdCtlRestartLoop(a: Args, runId: string): Promise<number> {
+  const bad = validateIntent({ kind: "restart-loop", reason: a.reason });
+  if (bad) {
+    console.error(bad);
+    return 1;
+  }
+  const { findRunLoops, killProcessTree, resumeCommand, spawnDetachedResume } = await import("./server.ts");
+  const loops = findRunLoops(a.project, runId);
+  if (loops.length === 0) {
+    console.error(`run "${runId}" has no live loop — start one with \`ompo resume --run ${runId}\``);
+    return 1;
+  }
+  for (const l of loops) {
+    try {
+      await killProcessTree(l.pid);
+    } catch (err) {
+      console.error(`could not kill loop pid ${l.pid}: ${err instanceof Error ? err.message : String(err)}`);
+      return 1;
+    }
+  }
+  if (findRunLoops(a.project, runId).length > 0) {
+    console.error(`loop pid(s) survived the kill — refusing to spawn a second loop`);
+    return 1;
+  }
+  appendEvent(a.project, runId, "control_applied", undefined, `restart-loop: killed loop pid(s) ${loops.map((l) => l.pid).join(",")} (${a.reason!.trim()})`);
+  const logPath = join(runDir(a.project, runId), `resume-${Date.now()}.log`);
+  try {
+    const { pid } = spawnDetachedResume([...resumeCommand(), "resume", "--run", runId], { cwd: a.project, logPath });
+    console.log(`restarted run ${runId} (fresh loop pid ${pid}, log ${logPath.split("/").pop()})`);
+    return 0;
+  } catch (err) {
+    console.error(`restart kill succeeded but respawn failed: ${err instanceof Error ? err.message : String(err)} — resume with \`ompo resume --run ${runId}\``);
     return 1;
   }
 }

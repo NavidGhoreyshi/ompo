@@ -40,6 +40,7 @@ describe("validateIntent", () => {
     expect(validateIntent({ kind: "set-jobs", jobs: 4 })).toBeNull();
     expect(validateIntent({ kind: "pause" })).toBeNull();
     expect(validateIntent({ kind: "resume" })).toBeNull();
+    expect(validateIntent({ kind: "restart-loop", reason: "wedged: no output 20m" })).toBeNull();
   });
 
   test("rejects missing fields and out-of-range jobs", () => {
@@ -48,7 +49,8 @@ describe("validateIntent", () => {
     expect(validateIntent({ kind: "set-jobs", jobs: 0 })).not.toBeNull();
     expect(validateIntent({ kind: "set-jobs", jobs: 33 })).not.toBeNull();
     expect(validateIntent({ kind: "pause", sliceId: "a" })).not.toBeNull();
-    expect(validateIntent({ kind: "nope" as never })).not.toBeNull();
+    expect(validateIntent({ kind: "restart-loop" })).not.toBeNull();
+    expect(validateIntent({ kind: "restart-loop", sliceId: "a", reason: "x" })).not.toBeNull();
   });
 });
 describe("quiescentLoopLocalRejection", () => {
@@ -135,6 +137,14 @@ describe("applyIntent", () => {
     expect(back.status).toBe("pending");
     expect(back.maxRetries).toBe(0);
   });
+  test("restart-loop never applies through the loop itself", () => {
+    const dir = tmpProject();
+    const { runId } = createRun(dir, parseRoadmap(MD), "r");
+    const res = applyIntent(dir, runId, { kind: "restart-loop", reason: "wedged", seq: 1, at: "" }, holder());
+    expect(res.ok).toBe(false);
+    expect(res.message).toMatch(/replaces the loop itself/);
+  });
+
 
   test("loop-local intents install on the holder", () => {
     const dir = tmpProject();

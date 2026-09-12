@@ -82,7 +82,7 @@ export interface LoopOptions {
   reviewTimeoutMs?: number;
   /** Disable the debugger session on failure (`--no-debug`). */
   noDebug?: boolean;
-  /** Debugger budget override (default 10m). */
+  /** Debugger budget override (default 30m). */
   debugTimeoutMs?: number;
   /** Disable dev-only placeholder injection for missing env creds (`--no-placeholders`). */
   noPlaceholders?: boolean;
@@ -99,6 +99,13 @@ export interface LoopOptions {
   faults?: FaultSpec;
   /** Control-intent poll interval for cross-process `ompo ctl` (default 2000ms). */
   controlPollMs?: number;
+  /**
+   * Resident-memory ceiling in MB (default RSS_ABORT_MB). Past it the loop
+   * preserves every in-flight worktree, aborts the run loudly, and exits 1
+   * instead of GC-thrashing into a wedged loop whose timers never fire.
+   * `ompo resume` re-queues from the preserved branches.
+   */
+  memoryAbortMB?: number;
   /** Re-run done slices' gates on current HEAD at loop start (`--reverify`). */
   reverify?: boolean;
 }
@@ -111,6 +118,12 @@ export interface LoopResult {
   pending: number;
   blockedEnv: number;
 }
+/**
+ * Last-resort ceiling for loop-process RSS. A loop past this cannot be
+ * trusted to run timers or reap children (observed: 8GB, zombie worker,
+ * 15min timeout never firing) — aborting loudly beats wedging silently.
+ */
+export const RSS_ABORT_MB = 4096;
 
 
 /** Base HEAD SHA, best-effort (null outside git or on spawn failure). */
@@ -165,8 +178,8 @@ async function runDebugger(
   const progress = progressFn(ctx, sliceId, "debug");
   // Live transcript (worker parity): the same progress lines the TUI streams
   // land in debug-{attempt}.log as they render, so tails and the dashboard
-  // stay live mid-session. The completion footer below overwrites this file
-  // with the exit/stdout/stderr dump — same forensic contract as before.
+  // stay live mid-session. The completion footer below appends to this file,
+  // preserving the live lines above it — same forensic contract as workers.
   let transcriptPath = join(dir, `debug-${attempt}.log`);
   try {
     writeFileSync(transcriptPath, "", "utf8");
@@ -207,7 +220,7 @@ async function runDebugger(
     }
     debugStdout = res.stdout;
     debugOut = `exit=${res.exit} timedOut=${res.timedOut} durationMs=${res.durationMs}\n--- stdout ---\n${res.stdout}\n--- stderr ---\n${res.stderr}\n`;
-    writeFileSync(join(dir, `debug-${attempt}.log`), debugOut, "utf8");
+    appendFileSync(join(dir, `debug-${attempt}.log`), debugOut, "utf8");
     if (res.eventsJsonl) {
       try {
         writeFileSync(join(dir, `debug-${attempt}.events.jsonl`), res.eventsJsonl, "utf8");
@@ -313,9 +326,9 @@ async function runUnblocker(ctx: AttemptCtx, round: number): Promise<"continue" 
   const progress = progressFn(ctx, head.id, "unblock");
   // Live transcript (worker parity): progress lines land in
   // unblock-{round}.log as they render so tails and the dashboard stay live
-  // mid-session. The completion footer below overwrites this file with the
-  // exit/stdout/stderr dump — same forensic contract as before. The meta
-  // file names the blocked targets so readers never parse the prompt.
+  // mid-session. The completion footer below appends to this file, preserving
+  // the live lines above it. The meta file names the blocked targets so
+  // readers never parse the prompt.
   try {
     writeFileSync(
       join(runRoot, `unblock-${round}.meta.json`),
@@ -367,7 +380,7 @@ async function runUnblocker(ctx: AttemptCtx, round: number): Promise<"continue" 
         },
       },
     );
-    writeFileSync(join(runRoot, `unblock-${round}.log`), `exit=${res.exit} timedOut=${res.timedOut} durationMs=${res.durationMs}\n--- stdout ---\n${res.stdout}\n--- stderr ---\n${res.stderr}\n`, "utf8");
+    appendFileSync(join(runRoot, `unblock-${round}.log`), `exit=${res.exit} timedOut=${res.timedOut} durationMs=${res.durationMs}\n--- stdout ---\n${res.stdout}\n--- stderr ---\n${res.stderr}\n`, "utf8");
     if (res.eventsJsonl) {
       try {
         writeFileSync(join(runRoot, `unblock-${round}.events.jsonl`), res.eventsJsonl, "utf8");
@@ -1693,13 +1706,38 @@ export async function runRoadmapLoop(opts: LoopOptions): Promise<LoopResult> {
       aborted,
     ]);
     if (winner === "tick") {
+      const rssMB = Math.round(process.memoryUsage().rss / 1048576);
+      const memCap = opts.memoryAbortMB ?? RSS_ABORT_MB;
       for (const [id, t0] of startedAt) {
         const mins = Math.floor((Date.now() - t0) / 60000);
         const t = trackers.get(id);
         const detail = t && t.lines > 0
           ? ` ${t.turns} turns, ${t.tools} tools${t.tokens ? `, tok ${formatTokenCount(t.tokens.total)}` : ""}, last: ${t.lastLine.slice(0, 100)}`
           : " no agent output yet";
-        log(opts, `… ${id} still running (${mins}m elapsed,${detail})`);
+        log(opts, `… ${id} still running (${mins}m elapsed,${detail}, rss ${rssMB}MB)`);
+      }
+      if (rssMB > memCap && startedAt.size > 0) {
+        // Loud abort, not silent wedge: worktrees are committed to their
+        // slice branches (resume re-claims from them), slices go aborted so
+        // every surface shows the cut. In-flight workers are left to their
+        // own timeouts — orphaned output lands in transcripts, never merged.
+        const snap = loadRun(opts.projectDir, opts.runId).doc;
+        for (const [id] of startedAt) {
+          const s = snap.slices.find((x) => x.id === id);
+          try {
+            preserveIncompleteWork(ctx, id, s?.attempts ?? 1, `memory guard tripped at ${rssMB}MB rss`);
+          } catch {
+            /* preservation is best-effort */
+          }
+          try {
+            if (s && (s.status === "running" || s.status === "verifying")) storeApi.abortSlice(opts.projectDir, opts.runId, id);
+          } catch {
+            /* settled between the snapshot and the abort */
+          }
+        }
+        log(opts, `MEMORY GUARD: rss ${rssMB}MB over ${memCap}MB — in-flight work preserved, run aborted (resume re-queues from preserved branches)`);
+        const r = finish();
+        return { ...r, exitCode: 1 as const };
       }
     }
   }

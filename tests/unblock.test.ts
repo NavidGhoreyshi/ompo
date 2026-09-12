@@ -180,8 +180,11 @@ describe("end-of-run unblock lane", () => {
     expect(JSON.parse(readFileSync(join(runRoot, "unblock-1.meta.json"), "utf8"))).toEqual(
       expect.objectContaining({ targets: ["a"] }),
     );
-    // Completion still lands the forensic footer (unchanged contract).
-    expect(readFileSync(join(runRoot, "unblock-1.log"), "utf8").startsWith("exit=")).toBe(true);
+    // Completion appends the forensic footer after the live lines — the live
+    // transcript must survive the footer, never be overwritten by it.
+    const final = readFileSync(join(runRoot, "unblock-1.log"), "utf8");
+    expect(final).toContain("mid-run unblock line");
+    expect(final).toContain("exit=");
   });
 
   test("agent giving up ends the run blocked as before", async () => {

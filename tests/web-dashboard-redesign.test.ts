@@ -149,7 +149,16 @@ describe("viewport app shell (no page-level scroll)", () => {
   test("rail collapse glides instead of snapping", () => {
     expect(css).toMatch(/\.omp-body\s*\{[^}]*transition:\s*grid-template-columns/s);
   });
+  test("recovery banners are wired", () => {
+    // Stalled verdicts and duplicate loops must surface, not sit silent.
+    expect(css).toContain(".omp-stall");
+    expect(src("web/src/components/Inspector.tsx")).toContain("verdictStall");
+    expect(src("web/src/components/ControlPanel.tsx")).toContain("verdictStalled");
+    expect(src("web/src/pages/Overview.tsx")).toContain("extraLoops");
+  });
+
 });
+
 
 describe("run strip replaces KPI cards", () => {
   test("no KPI card language remains in the shell stylesheet", () => {

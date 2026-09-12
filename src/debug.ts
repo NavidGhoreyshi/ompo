@@ -21,8 +21,15 @@
 import { reportBlockSkeleton, type HarnessFix } from "./report.ts";
 import type { Slice } from "./types.ts";
 
-/** Default debugger session budget (10m) — override via debugTimeoutSec. */
-export const DEFAULT_DEBUG_TIMEOUT_MS = 10 * 60 * 1000;
+/**
+ * Default debugger session budget (30m) — override via debugTimeoutSec.
+ * Deliberately 2x the worker generation budget (15m): a debug, unblock, or
+ * review-fix session diagnoses AND fixes AND re-verifies (often a full build
+ * plus test suites), strictly more than the worker turn it follows. A budget
+ * below the worker's murders productive sessions mid-diagnosis (observed:
+ * 29-turn unblock killed at 10m); attempt/round counts still bound total burn.
+ */
+export const DEFAULT_DEBUG_TIMEOUT_MS = 30 * 60 * 1000;
 
 /** Max unified-diff lines a harness fix may carry (HARP-1 rail). */
 export const MAX_HARNESS_DIFF_LINES = 40;
