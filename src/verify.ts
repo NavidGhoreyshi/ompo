@@ -5,7 +5,7 @@
  */
 
 import { spawn } from "node:child_process";
-import { mkdirSync, writeFileSync } from "node:fs";
+import { appendFileSync, mkdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import type { Verdict, VerdictStep } from "./types.ts";
 import { classifyEnvFailure } from "./debug.ts";
@@ -41,12 +41,57 @@ function tail(text: string, n: number): string {
   return text.length > n ? text.slice(-n) : text;
 }
 
+/** Cap on streamed transcript bytes; mirrors the verdict's output cap. */
+const TRANSCRIPT_MAX = 1_000_000;
+
+/**
+ * Live per-gate transcript: header at spawn, stdout/stderr as they arrive,
+ * exit footer at the end. The dashboard tails this file while the gate runs,
+ * so a verifying slice shows the gate instead of the finished worker's log.
+ * Best-effort and byte-capped — a transcript that cannot be written must
+ * never fail the gate.
+ */
+function createTranscript(
+  path: string,
+  command: string,
+): {
+  append: (chunk: string) => void;
+  finish: (exit: number | null, timedOut: boolean, durationMs: number) => void;
+} {
+  let written = 0;
+  let truncated = false;
+  const append = (text: string): void => {
+    if (written >= TRANSCRIPT_MAX) return;
+    let chunk = text;
+    if (written + chunk.length > TRANSCRIPT_MAX) {
+      chunk = chunk.slice(0, TRANSCRIPT_MAX - written) + (truncated ? "" : "\n(transcript truncated — verdict holds the tail)\n");
+      truncated = true;
+    }
+    written += chunk.length;
+    try {
+      appendFileSync(path, chunk);
+    } catch {
+      /* transcript is observational */
+    }
+  };
+  try {
+    writeFileSync(path, `$ ${command}\n`);
+  } catch {
+    /* transcript is observational */
+  }
+  return {
+    append,
+    finish: (exit, timedOut, durationMs) => append(`\n(exit=${exit} timedOut=${timedOut} ${durationMs}ms)\n`),
+  };
+}
+
 function runCommand(
   command: string,
   cwd: string,
   timeoutMs: number,
   env?: Record<string, string>,
   closeGraceMs: number = DEFAULT_CLOSE_GRACE_MS,
+  onData?: (chunk: string) => void,
 ): Promise<{ exit: number | null; timedOut: boolean; output: string }> {
   return new Promise((resolve) => {
     const child = spawn("bash", ["-lc", command], {
@@ -73,14 +118,14 @@ function runCommand(
       finish(null, true);
     }, timeoutMs);
     timer.unref?.();
-    child.stdout.on("data", (d: Buffer) => {
-      output += d.toString();
+    const absorb = (d: Buffer): void => {
+      const chunk = d.toString();
+      onData?.(chunk);
+      output += chunk;
       if (output.length > 1_000_000) output = output.slice(-1_000_000);
-    });
-    child.stderr.on("data", (d: Buffer) => {
-      output += d.toString();
-      if (output.length > 1_000_000) output = output.slice(-1_000_000);
-    });
+    };
+    child.stdout.on("data", absorb);
+    child.stderr.on("data", absorb);
     child.on("error", (err) => {
       clearTimeout(timer);
       clearTimeout(closeTimer);
@@ -152,29 +197,38 @@ export async function runVerifiers(
     const logRef = join(logDir, `verify-${steps.length}.log`);
     const t0 = Date.now();
     opts.onProgress?.(`verify: $ ${command}`);
+    // Truncate before spawning: an earlier attempt's transcript must never
+    // read as this gate's live output.
+    const transcript = createTranscript(logRef, command);
     // Signs of life for long gates: the verdict phase otherwise goes silent
     // for minutes, and silence is indistinguishable from a wedge on both
     // the TUI and the dashboard. Heartbeat only — no store writes.
     const heartbeat: NodeJS.Timeout | undefined =
       heartbeatMs > 0
         ? setInterval(() => {
-            opts.onProgress?.(`verify: still running ${name} (${((Date.now() - t0) / 1000).toFixed(0)}s elapsed)`);
+            const line = `verify: still running ${name} (${((Date.now() - t0) / 1000).toFixed(0)}s elapsed)`;
+            opts.onProgress?.(line);
+            transcript.append(`\n${line}\n`);
           }, heartbeatMs)
         : undefined;
     heartbeat?.unref?.();
     let r: { exit: number | null; timedOut: boolean; output: string };
     try {
-      r = await runCommand(command, opts.projectDir, timeoutMs, opts.env, closeGraceMs);
+      r = await runCommand(command, opts.projectDir, timeoutMs, opts.env, closeGraceMs, transcript.append);
     } finally {
       clearInterval(heartbeat);
     }
     const secs = ((Date.now() - t0) / 1000).toFixed(1);
-    if (r.exit === 0 && !r.timedOut) opts.onProgress?.(`verify ok: ${name} (${secs}s)`);
-    else opts.onProgress?.(`verify FAIL: ${name} exit=${r.exit} timedOut=${r.timedOut} (${secs}s)`);
+    const summary =
+      r.exit === 0 && !r.timedOut
+        ? `verify ok: ${name} (${secs}s)`
+        : `verify FAIL: ${name} exit=${r.exit} timedOut=${r.timedOut} (${secs}s)`;
+    opts.onProgress?.(summary);
+    transcript.append(`\n${summary}\n`);
+    transcript.finish(r.exit, r.timedOut, Date.now() - t0);
     const entry =
       `$ ${command}\n(exit=${r.exit} timedOut=${r.timedOut} ${Date.now() - t0}ms)\n${r.output}\n`;
     fullLog.push(entry);
-    writeFileSync(logRef, entry, "utf8");
     steps.push({
       name,
       command,

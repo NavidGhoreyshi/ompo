@@ -1,4 +1,5 @@
 import type { SliceDetail } from "../api.ts";
+import { useSliceLog } from "../lib/useSliceLog.ts";
 import StatusBadge from "./StatusBadge.tsx";
 
 /** Fix-lane signal inside formatted event lines (review/debug/handoff flow). */
@@ -7,18 +8,41 @@ const FIX_LANE = /review|debug|handoff|retr|fix/i;
 /**
  * Review tab: reviewer verdict, severity-carrying findings, touched files,
  * review notes, and fix-lane history. Touched files come from the worker
- * report (same forensics source as the Diff tab).
+ * report (same forensics source as the Diff tab). While the audit is running
+ * the verdict does not exist yet, so the tab tails the reviewer's live
+ * transcript instead of claiming nothing is happening.
  */
-export default function ReviewView({ detail }: { detail: SliceDetail | null }) {
+export default function ReviewView({ detail, runId }: { detail: SliceDetail | null; runId: string }) {
   const review = detail?.review;
   const touched = detail?.reportFull?.filesChanged ?? [];
   const lane = [...(detail?.recentEvents ?? []), ...(detail?.history ?? [])].filter((e) => FIX_LANE.test(e));
+  // Post-merge audits run while the slice is still `verifying`; the log
+  // endpoint serves the newest lane, so this only shows a tail once the
+  // reviewer (not a gate) is the one writing.
+  const log = useSliceLog(runId, detail?.sliceId ?? null, detail?.status === "verifying", 80);
+  const auditing = review === undefined && (log.lane === "review" || log.lane === "review-fix");
 
   return (
     <div aria-label="Review">
       <h3>Reviewer verdict</h3>
       {!review ? (
-        <p className="omp-hint">no review yet — the reviewer audits after merge</p>
+        <>
+          <p className="omp-hint">no review yet — the reviewer audits after merge</p>
+          {auditing && (
+            <>
+              <h3>
+                Live audit <span className="omp-hint">· {log.name} · 2s poll</span>
+              </h3>
+              {log.lines.length === 0 ? (
+                <p className="omp-hint">reviewer starting…</p>
+              ) : (
+                <pre className="omp-code" style={{ maxHeight: 260, overflow: "auto" }}>
+                  {log.lines.join("\n")}
+                </pre>
+              )}
+            </>
+          )}
+        </>
       ) : (
         <>
           <p style={{ margin: "4px 0" }}>

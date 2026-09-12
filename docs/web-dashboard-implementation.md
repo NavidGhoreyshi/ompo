@@ -55,7 +55,7 @@ the server invents no domain model:
 | `/api/health` | `{ ok, version }` |
 | `/api/runs`, `/runs/latest`, `/runs/:runId` | `listRuns` / `loadRun` shaped into `RunSummary` / `RunDetail`; `live = lockHeld(...)` |
 | `…/slices`, `…/slices/:sliceId` | cursor `SliceLine` → `SliceSummary`; `showSlice` → `SliceDetail` (same caps as the TUI inspector) |
-| `…/slices/:id/log?tail=N` | `tailSliceLog` → `{ name, lines }` |
+| `…/slices/:id/log?tail=N` | `sliceTranscript` → `{ name, lane, lines }` — newest stage transcript (worker/debug/review/review-fix lane file, or a running gate's `logs/verify-<n>.log`) |
 | `…/slices/:id/diff` | `diffSliceBranch` (`DIFF_CAP` 20000) |
  | `…/agents` | `agentStates`-style derivation from published lines (point-in-time, never persisted) |
  | `…/sessions` | `listSessions` → run-level unblock rounds + per-slice debug sessions (`running` = prompt without completion footer) |
@@ -244,12 +244,16 @@ state only — no predicted progress), underline tabs, contextual
    rendered nothing; now wired to `EventsView`.)
 7. `Usage` — authoritative per-generation spend; unknown renders "—",
    never estimated or zero-filled.
-8. `Log` — live tail of the current generation's worker log via
+8. `Log` — live tail of the slice's active stage transcript via
    `api.sliceLog`, polled every 2s while running/verifying and
-   tail-pinned; settled otherwise. Added because the event stream only
-   advances at stage boundaries (claim/handoff/finish), so a running
-   slice otherwise looks dead for the whole attempt. The TUI needs no
-   equivalent — it streams the worker to the terminal.
+   tail-pinned; settled otherwise. The server serves the newest lane by
+   mtime, so the tab and the Overview's live window follow the worker's
+   generation into the verify gates (a running gate streams into
+   `logs/verify-<n>.log`) and into the post-merge reviewer's audit
+   (`review-<n>.log`) without a slice switch. Added because the event
+   stream only advances at stage boundaries (claim/handoff/finish), so a
+   running slice otherwise looks dead for the whole attempt. The TUI
+   needs no equivalent — it streams every lane to the terminal.
 
 Tab buttons are underline tabs with arrow-key navigation;
 `aria-selected` tracks the active tab.

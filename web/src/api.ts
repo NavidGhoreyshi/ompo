@@ -273,6 +273,15 @@ export interface EventsFilter {
   sliceId?: string;
 }
 
+/** Lane that wrote the slice transcript the log endpoint is serving. */
+export type SliceLane = "worker" | "debug" | "review" | "review-fix" | "verify";
+
+export interface SliceLog {
+  name: string | null;
+  lane: SliceLane | null;
+  lines: string[];
+}
+
 export const api = {
   health: () => req<{ ok: boolean; version: string }>("/api/health"),
   runs: () => req<RunSummary[]>("/api/runs"),
@@ -281,7 +290,7 @@ export const api = {
   slice: (runId: string, sliceId: string) =>
     req<SliceDetail>(`/api/runs/${runId}/slices/${sliceId}`),
   sliceLog: (runId: string, sliceId: string, tail = 50) =>
-    req<{ name: string | null; lines: string[] }>(`/api/runs/${runId}/slices/${sliceId}/log?tail=${tail}`),
+    req<SliceLog>(`/api/runs/${runId}/slices/${sliceId}/log?tail=${tail}`),
   sliceDiff: (runId: string, sliceId: string) =>
     req<Record<string, unknown>>(`/api/runs/${runId}/slices/${sliceId}/diff`),
   agents: (runId: string) => req<AgentRow[]>(`/api/runs/${runId}/agents`),

@@ -1125,6 +1125,32 @@ input:focus-visible,
   padding: 1px 9px;
 }
 
+/* Which stage's transcript the feed is tailing — worker vs running gate vs
+ * reviewer. Color is a secondary cue; the label always carries the fact. */
+.omp-livefeed-lane {
+  flex: none;
+  font-size: 11.5px;
+  font-weight: 600;
+  color: var(--omp-muted);
+  background: var(--omp-panel-2);
+  border: 1px solid var(--omp-hairline);
+  border-radius: 999px;
+  padding: 1px 9px;
+}
+
+.omp-livefeed-lane[data-lane="verify"] {
+  color: var(--omp-cyan);
+  background: var(--omp-cyan-dim);
+  border-color: transparent;
+}
+
+.omp-livefeed-lane[data-lane="review"],
+.omp-livefeed-lane[data-lane="review-fix"] {
+  color: var(--omp-violet);
+  background: var(--omp-violet-dim);
+  border-color: transparent;
+}
+
 .omp-livefeed-log-name {
   min-width: 0;
   max-width: 42ch;

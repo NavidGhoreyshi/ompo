@@ -22,7 +22,7 @@ import {
   validateIntent,
   type ControlIntent,
 } from "./control.ts";
-import { diffSliceBranch, listSessions, sliceActivity, tailSessionLog, tailSliceLog } from "./forensics.ts";
+import { diffSliceBranch, listSessions, sliceActivity, sliceTranscript, tailSessionLog } from "./forensics.ts";
 import { collectDocCandidates } from "./import.ts";
 import { resolveRunId } from "./log.ts";
 import { appendEvent, listRuns, loadRun, lockHeld, readEvents, runDir } from "./store.ts";
@@ -49,7 +49,7 @@ export const HEARTBEAT_MS = 15_000;
  * (`request timed out after 10 seconds`, dead live-updates on the dashboard).
  */
 export const IDLE_TIMEOUT_S = 60;
-/** `tailSliceLog` cap for the log endpoint (arch §7). */
+/** Stage-transcript cap for the slice log endpoint (arch §7). */
 const LOG_MAX = 500;
 const LOG_DEFAULT = 50;
 /** Events page cap (arch §3). */
@@ -788,16 +788,6 @@ function sliceDetailFor(projectDir: string, runId: string, sliceId: string): Sli
   return detail;
 }
 
-function newestWorkerLog(projectDir: string, runId: string, sliceId: string): string | null {
-  try {
-    const dir = join(projectDir, ".omp", "roadmap", "runs", runId, "slices", sliceId);
-    // Same generation-aware pattern as sliceDetailFor/workerLog (watch.tsx parity): worker/debug attempt logs with optional -gN.
-    return readdirSync(dir).sort().filter((f) => /^(worker|debug)-\d+(-g\d+)?\.log$/.test(f)).at(-1) ?? null;
-  } catch {
-    return null;
-  }
-}
-
 // ---- static assets: embedded-first, working-tree second (arch §8) ----
 
 const MIME: Record<string, string> = {
@@ -1317,7 +1307,7 @@ async function route(projectDir: string, req: Request, routeSpawner?: ResumeSpaw
       if (req.method === "GET" && tail === "log") {
         const n = url.searchParams.has("tail") ? Number(url.searchParams.get("tail")) : LOG_DEFAULT;
         if (!Number.isInteger(n) || n < 1 || n > LOG_MAX) return bad(`tail must be an integer 1..${LOG_MAX}`);
-        return json({ name: newestWorkerLog(projectDir, runId, sliceId), lines: tailSliceLog(projectDir, runId, sliceId, n) });
+        return json(sliceTranscript(projectDir, runId, sliceId, n));
       }
       if (req.method === "GET" && tail === "diff") {
         return json(diffSliceBranch(projectDir, runId, sliceId));

@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState, type CSSProperties } from "react";
 import type { AgentRow, RunEvent, SliceSummary } from "../api.ts";
-import { COMPACT_ROWS, followFromScroll, rawLine, type StreamEntry } from "../lib/stream.ts";
+import { COMPACT_ROWS, followFromScroll, LANE_LABEL, rawLine, type StreamEntry } from "../lib/stream.ts";
 import { LIVE_TAIL, useLiveStream } from "../lib/useLiveStream.ts";
 import { toneForStatus } from "./StatusBadge.tsx";
 
@@ -97,11 +97,12 @@ export default function LiveFeed({
 
   const tone = toneForStatus(slice.status);
   const streaming = slice.status === "running" || slice.status === "verifying";
+  const lane = stream.lane === null ? null : LANE_LABEL[stream.lane];
   // The compact window follows by construction; `follow` is the operator's
   // choice inside the expanded view and survives collapsing.
   const following = !expanded || follow;
   const rows = expanded
-    ? stream.lines.map((line, i) => rawLine(line, stream.ids[i] ?? i, stream.logName))
+    ? stream.lines.map((line, i) => rawLine(line, stream.ids[i] ?? i, stream.logName, stream.lane))
     : stream.compact;
   const capped = expanded && stream.lines.length >= LIVE_TAIL;
   const empty = !stream.loading && !stream.error && rows.length === 0;
@@ -111,18 +112,23 @@ export default function LiveFeed({
       className="omp-livefeed"
       data-live={streaming ? "true" : "false"}
       data-expanded={expanded ? "true" : "false"}
-      aria-label={`Live worker output — ${slice.id}`}
+      aria-label={`Live stage output — ${slice.id}`}
       style={{ "--omp-live-rows": COMPACT_ROWS } as CSSProperties}
     >
       <div className="omp-livefeed-head">
         <span className="omp-section-label">Live output</span>
         <span aria-hidden="true" className="omp-livefeed-dot" data-tone={tone} />
         {streaming && following ? (
-          <span className="omp-livefeed-follow" title="Following new worker output">
+          <span className="omp-livefeed-follow" title="Following new output">
             live
           </span>
         ) : (
           <span className="omp-hint">{streaming ? "paused" : "settled"}</span>
+        )}
+        {lane !== null && (
+          <span className="omp-livefeed-lane" data-lane={stream.lane}>
+            {lane}
+          </span>
         )}
         {agent !== undefined && (
           <span className="omp-hint">
@@ -130,7 +136,7 @@ export default function LiveFeed({
           </span>
         )}
         <span className="omp-livefeed-log-name omp-ellipsis" title={stream.logName ?? undefined}>
-          {stream.logName ?? "no worker log yet"}
+          {stream.logName ?? "no transcript yet"}
           {stream.lines.length > 0 ? ` · ${stream.lines.length} lines` : ""}
         </span>
         <button
@@ -162,10 +168,10 @@ export default function LiveFeed({
       {empty && (
         <p className="omp-hint">
           {streaming
-            ? "worker started — lines appear once it writes"
+            ? "no stage output yet — lines appear once the current stage writes"
             : slice.reason
-              ? `no worker output · ${slice.reason}`
-              : "no worker output recorded for this slice"}
+              ? `no output recorded · ${slice.reason}`
+              : "no output recorded for this slice"}
         </p>
       )}
 
@@ -174,7 +180,7 @@ export default function LiveFeed({
           ref={bodyRef}
           className="omp-code omp-livefeed-log"
           role="log"
-          aria-label={`Worker output — ${slice.id}${expanded ? "" : " (latest lines)"}`}
+          aria-label={`Stage output — ${slice.id}${expanded ? "" : " (latest lines)"}`}
           tabIndex={expanded ? 0 : -1}
           data-follow={following ? "true" : "false"}
           onScroll={
@@ -217,7 +223,7 @@ export default function LiveFeed({
             </button>
           )}
           <span className="omp-hint">
-            {capped ? `last ${stream.lines.length} lines` : `${stream.lines.length} lines`} · raw worker log · following{" "}
+            {capped ? `last ${stream.lines.length} lines` : `${stream.lines.length} lines`} · raw transcript · following{" "}
             {follow ? "on" : "off"}
             {slice.status === "running" || slice.status === "verifying" ? " · refreshing every 2s" : ""}
           </span>

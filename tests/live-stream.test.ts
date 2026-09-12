@@ -100,6 +100,33 @@ describe("worker log line semantics", () => {
     expect(raw?.kind).toBe("raw");
     expect(raw?.text.length).toBeGreaterThan(0);
   });
+
+  test("gate transcripts carry their command, liveness, and verdict", () => {
+    // Gate grammar is lane-scoped: `$ …` is a gate command only in verify logs.
+    expect(semanticLine("$ bun test", "verify")).toEqual({ kind: "run", tag: "run", text: "bun test" });
+    expect(semanticLine("$ bun test")).toEqual({ kind: "raw", tag: "out", text: "$ bun test" });
+    expect(semanticLine("verify: still running bun test (180s elapsed)", "verify")).toEqual({
+      kind: "warn",
+      tag: "wait",
+      text: "still running bun test",
+    });
+    expect(semanticLine("verify FAIL: bun test exit=1 timedOut=false (12.0s)", "verify")).toEqual({
+      kind: "fail",
+      tag: "verify",
+      text: "FAIL: bun test exit=1 timedOut=false (12.0s)",
+    });
+    expect(semanticLine("verify ok: bun test (4.2s)", "verify")).toEqual({
+      kind: "event",
+      tag: "verify",
+      text: "ok: bun test (4.2s)",
+    });
+    expect(semanticLine("(exit=0 timedOut=false 4196ms)", "verify")).toEqual({
+      kind: "event",
+      tag: "verify",
+      text: "gate exited 0",
+      meta: "4.2s",
+    });
+  });
 });
 
 describe("line identity across polls", () => {

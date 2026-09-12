@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { mkdtempSync, mkdirSync, rmSync, utimesSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { parseRoadmap } from "../src/parse.ts";
@@ -10,6 +10,7 @@ import {
   renderShowText,
   showSlice,
   sliceActivity,
+  sliceTranscript,
   sliceWorktreePath,
   tailSliceLog,
 } from "../src/forensics.ts";
@@ -216,6 +217,37 @@ describe("forensics", () => {
     expect(tail[0]).toBe("line 91");
     expect(tail[9]).toBe("line 100");
     expect(tailSliceLog(dir, runId, "b")).toEqual([]);
+  });
+
+  test("sliceTranscript follows the newest lane, gate logs included", () => {
+    const { dir, runId } = fixture();
+    const sdir = sliceDir(dir, runId, "a");
+    // Only the worker has written so far.
+    expect(sliceTranscript(dir, runId, "a", 3)).toEqual({
+      name: "worker-1.log",
+      lane: "worker",
+      lines: ["line 98", "line 99", "line 100"],
+    });
+    // A running gate writes logs/verify-<n>.log; newest write wins even
+    // though the file is not at the slice root.
+    mkdirSync(join(sdir, "logs"), { recursive: true });
+    writeFileSync(join(sdir, "logs", "verify-0.log"), "$ bun test\nearly output\n", "utf8");
+    utimesSync(join(sdir, "logs", "verify-0.log"), new Date(Date.now() + 10_000), new Date(Date.now() + 10_000));
+    expect(sliceTranscript(dir, runId, "a", 10)).toEqual({
+      name: "logs/verify-0.log",
+      lane: "verify",
+      lines: ["$ bun test", "early output"],
+    });
+    // The post-merge audit supersedes the gate's transcript once it runs.
+    writeFileSync(join(sdir, "review-2.log"), "reviewing\n", "utf8");
+    utimesSync(join(sdir, "review-2.log"), new Date(Date.now() + 20_000), new Date(Date.now() + 20_000));
+    expect(sliceTranscript(dir, runId, "a", 10)).toEqual({
+      name: "review-2.log",
+      lane: "review",
+      lines: ["reviewing"],
+    });
+    // A slice that never wrote a transcript serves nothing, not the wrong file.
+    expect(sliceTranscript(dir, runId, "b")).toEqual({ name: null, lane: null, lines: [] });
   });
 
   test("sliceActivity reports newest stage artifact staleness", () => {

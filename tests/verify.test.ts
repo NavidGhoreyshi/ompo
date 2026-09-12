@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { mkdtempSync } from "node:fs";
+import { mkdtempSync, readFileSync, watch, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { preflightEnv, runVerifiers } from "../src/verify.ts";
@@ -59,5 +59,46 @@ describe("runVerifiers resilience", () => {
     });
     expect(verdict.pass).toBe(true);
     expect(lines.some((l) => l.includes("still running sleep 2"))).toBe(true);
+  }, 15_000);
+
+  test("gate output streams to its transcript while the gate runs", async () => {
+    const dir = tmpProject();
+    const logs = join(dir, "logs");
+    const release = join(dir, "release");
+    // The gate blocks on a marker file the test creates: "late" provably
+    // cannot exist until the test has already read the mid-flight transcript.
+    const command = `printf 'early\\n'; while [ ! -f '${release}' ]; do sleep 0.02; done; printf 'late\\n'`;
+    const gate = runVerifiers("s", 1, [command], logs, { projectDir: dir, heartbeatMs: 0 });
+    const logPath = join(logs, "verify-0.log");
+    // The header quotes the command (so it contains the sentinels); the body
+    // is the gate's own output.
+    const body = (text: string): string => text.split("\n").slice(1).join("\n");
+    // Event-driven, not timed: resolve when the transcript first carries the
+    // gate's early output. A file written only at gate end never resolves.
+    const { promise: streamed, resolve } = Promise.withResolvers<void>();
+    const watcher = watch(logs, (_event, name) => {
+      if (name !== "verify-0.log") return;
+      try {
+        if (body(readFileSync(logPath, "utf8")).includes("early")) resolve();
+      } catch {
+        /* header not written yet */
+      }
+    });
+    try {
+      await streamed;
+      const midFlight = readFileSync(logPath, "utf8");
+      expect(midFlight.split("\n")[0]).toBe(`$ ${command}`);
+      expect(body(midFlight)).toContain("early");
+      expect(body(midFlight)).not.toContain("late");
+    } finally {
+      watcher.close();
+      writeFileSync(release, "");
+    }
+    const verdict = await gate;
+    expect(verdict.pass).toBe(true);
+    const final = body(readFileSync(logPath, "utf8"));
+    expect(final).toContain("late");
+    expect(final).toContain("verify ok:");
+    expect(final).toMatch(/\(exit=0 timedOut=false \d+ms\)/);
   }, 15_000);
 });

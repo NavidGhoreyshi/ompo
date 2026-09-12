@@ -160,7 +160,7 @@ export default function Inspector({
           <VerifyView detail={d} />
         </TabsContent>
         <TabsContent value="Review">
-          <ReviewView detail={d} />
+          <ReviewView detail={d} runId={runId} />
         </TabsContent>
         <TabsContent value="Prompt">
           <PromptView selected={sel} detail={d} />

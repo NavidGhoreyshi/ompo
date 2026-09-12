@@ -407,18 +407,88 @@ export function tailSliceLog(
 ): string[] {
   try {
     const dir = sliceDir(projectDir, runId, sliceId);
-    const files = ioList(io, dir);
-    const logFile = files
+    const logFile = ioList(io, dir)
       .filter((f) => /^worker-.*\.log$/.test(f))
       .sort()
       .at(-1);
     if (!logFile) return [];
-    const text = ioRead(io, join(dir, logFile));
-    const lines = text.split("\n");
-    if (lines.length > 0 && lines[lines.length - 1] === "") lines.pop();
-    return lines.slice(-n);
+    return lastLines(ioRead(io, join(dir, logFile)), n);
   } catch {
     return [];
+  }
+}
+
+/** Last `n` lines of a transcript text, ignoring one trailing newline. */
+function lastLines(text: string, n: number): string[] {
+  const lines = text.split("\n");
+  if (lines.length > 0 && lines[lines.length - 1] === "") lines.pop();
+  return lines.slice(-n);
+}
+
+/** The lane that wrote a slice transcript. */
+export type SliceLane = "worker" | "debug" | "review" | "review-fix" | "verify";
+
+export interface SliceTranscript {
+  /** Slice-relative transcript path (browser-facing label); null when none. */
+  name: string | null;
+  /** Lane that wrote it — the dashboard labels the tail with it. */
+  lane: SliceLane | null;
+  /** Last `n` lines of the newest transcript. Empty when there is none. */
+  lines: string[];
+}
+
+/** Root-level lane transcripts; gates live in subdirs and are handled below. */
+const TRANSCRIPT_LANES: readonly { re: RegExp; lane: SliceLane }[] = [
+  { re: /^worker-\d+(-g\d+)?\.log$/, lane: "worker" },
+  { re: /^debug-\d+\.log$/, lane: "debug" },
+  { re: /^review-\d+\.log$/, lane: "review" },
+  { re: /^review-fix-\d+\.log$/, lane: "review-fix" },
+];
+
+/** Gate chains, in the order they can run; each holds verify-<n>.log per step. */
+const GATE_LOG_DIRS = ["logs", "logs-reverify"] as const;
+
+/**
+ * Newest live transcript for a slice, whichever lane is writing right now:
+ * a worker generation, a debug session, the reviewer's audit, or a running
+ * verify gate (the gate streams its output into logs/verify-<n>.log as it
+ * runs). Selection is by mtime — lanes overwrite each other in real time, so
+ * the newest write *is* the active stage. Name breaks ties, so an idle slice
+ * never flips files between polls. Never throws.
+ */
+export function sliceTranscript(
+  projectDir: string,
+  runId: string,
+  sliceId: string,
+  n = 50,
+  io?: ForensicsIo,
+): SliceTranscript {
+  let dir: string;
+  try {
+    dir = sliceDir(projectDir, runId, sliceId);
+  } catch {
+    return { name: null, lane: null, lines: [] };
+  }
+  const candidates: { name: string; lane: SliceLane; mtimeMs: number }[] = [];
+  const add = (name: string, lane: SliceLane): void => {
+    const mtimeMs = ioStatMtimeMs(io, join(dir, name));
+    if (mtimeMs !== null) candidates.push({ name, lane, mtimeMs });
+  };
+  for (const f of ioList(io, dir)) {
+    const lane = TRANSCRIPT_LANES.find((l) => l.re.test(f));
+    if (lane) add(f, lane.lane);
+  }
+  for (const sub of GATE_LOG_DIRS) {
+    for (const f of ioList(io, join(dir, sub))) {
+      if (/^verify-\d+\.log$/.test(f)) add(`${sub}/${f}`, "verify");
+    }
+  }
+  const best = candidates.sort((a, b) => b.mtimeMs - a.mtimeMs || (a.name < b.name ? -1 : a.name > b.name ? 1 : 0))[0];
+  if (!best) return { name: null, lane: null, lines: [] };
+  try {
+    return { name: best.name, lane: best.lane, lines: lastLines(ioRead(io, join(dir, best.name)), n) };
+  } catch {
+    return { name: best.name, lane: best.lane, lines: [] };
   }
 }
 /**

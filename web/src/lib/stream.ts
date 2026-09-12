@@ -15,7 +15,7 @@
  * component only renders.
  */
 
-import type { RunEvent } from "../api.ts";
+import type { RunEvent, SliceLane } from "../api.ts";
 import { formatDurationMs } from "./format.ts";
 import { conciseControlIntent, formatEventTime, truncateDetail } from "./events.ts";
 
@@ -53,6 +53,15 @@ export interface StreamEntry {
 
 export type SemanticLine = Omit<StreamEntry, "key" | "line">;
 
+/** Human label per transcript lane — the Overview header and Log tab chips. */
+export const LANE_LABEL: Readonly<Record<SliceLane, string>> = {
+  worker: "worker",
+  debug: "debug",
+  review: "review",
+  "review-fix": "review fix",
+  verify: "verify",
+};
+
 /** `  [s2-meta] …` / `  [s4-orders verify] …` → the payload after the prefix. */
 const PROGRESS_PREFIX = /^\s*\[[^\]]*\]\s?/;
 
@@ -73,16 +82,41 @@ function toolEntry(name: string, summary: string): SemanticLine {
 }
 
 /**
- * One worker-log line → its semantic row. Recognizes the progress grammar
+ * One transcript line → its semantic row. Recognizes the progress grammar
  * `src/worker.ts` writes (`progressLineForEvent` → `formatProgressLine`);
  * anything else is opaque output and surfaces as `raw` so the compact window
  * can keep it out of the way without dropping the line from the log.
  * Returns null for structure markers that carry no content of their own.
+ *
+ * `lane` scopes gate-only grammar (`$ <command>`, the exit footer) to verify
+ * transcripts — a shell prompt inside arbitrary test output must not read as
+ * a gate row.
  */
-export function semanticLine(line: string): SemanticLine | null {
+export function semanticLine(line: string, lane: SliceLane | null = null): SemanticLine | null {
   const raw = line.replace(PROGRESS_PREFIX, "").trim();
   if (!raw) return null;
   if (/^---\s*(stdout|stderr)\s*---$/i.test(raw)) return null;
+
+  if (lane === "verify") {
+    const gate = raw.match(/^\$\s+(\S.*)$/);
+    if (gate) return { kind: "run", tag: "run", text: truncateDetail(gate[1]!, RAW_MAX) };
+    const gateExit = raw.match(/^\(exit=(\S+) timedOut=(\S+) (\d+)ms\)$/);
+    if (gateExit) {
+      return {
+        kind: "event",
+        tag: "verify",
+        text: `gate exited ${gateExit[1]}${gateExit[2] === "true" ? " · timed out" : ""}`,
+        meta: formatDurationMs(Number(gateExit[3])),
+      };
+    }
+    const gateRunning = raw.match(/^verify: still running (.+?) \((\d+)s elapsed\)$/);
+    if (gateRunning) return { kind: "warn", tag: "wait", text: `still running ${truncateDetail(gateRunning[1]!, TOOL_MAX)}` };
+    const gateVerdict = raw.match(/^verify (ok|FAIL): (.*)$/);
+    if (gateVerdict) {
+      const ok = gateVerdict[1] === "ok";
+      return { kind: ok ? "event" : "fail", tag: "verify", text: `${ok ? "ok" : "FAIL"}: ${truncateDetail(gateVerdict[2]!, TOOL_MAX)}` };
+    }
+  }
 
   const exit = raw.match(/^exit=(\S+)\s+timedOut=(\S+)\s+durationMs=(\d+)$/);
   if (exit) {
@@ -261,8 +295,9 @@ export function buildLiveStream(input: {
   lines: string[];
   ids: number[];
   logName?: string | null;
+  lane?: SliceLane | null;
 }): StreamEntry[] {
-  const { events, sliceId, lines, ids, logName } = input;
+  const { events, sliceId, lines, ids, logName, lane = null } = input;
   if (sliceId === null) return [];
 
   const before: StreamEntry[] = [];
@@ -289,7 +324,7 @@ export function buildLiveStream(input: {
 
   const log: StreamEntry[] = [];
   for (let i = 0; i < lines.length; i++) {
-    const parsed = semanticLine(lines[i]!);
+    const parsed = semanticLine(lines[i]!, lane);
     if (!parsed) continue;
     const id = ids[i] ?? i;
     log.push({ key: `l:${logName ?? "log"}:${id}`, line: id, ...parsed });
@@ -315,8 +350,8 @@ export function compactWindow(entries: StreamEntry[], size = COMPACT_ROWS): Stre
 }
 
 /** One expanded-view row: the log line as written, colored by its semantic kind. */
-export function rawLine(line: string, id: number, logName: string | null): StreamEntry {
-  const parsed = semanticLine(line);
+export function rawLine(line: string, id: number, logName: string | null, lane: SliceLane | null = null): StreamEntry {
+  const parsed = semanticLine(line, lane);
   const body = line.replace(PROGRESS_PREFIX, "").trim();
   return {
     key: `l:${logName ?? "log"}:${id}`,

@@ -3,7 +3,7 @@ import { mkdirSync, mkdtempSync, readFileSync, utimesSync, writeFileSync } from 
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { parseRoadmap } from "../src/parse.ts";
-import { acquireLock, createRun, readEvents, releaseLock, runDir, storeApi } from "../src/store.ts";
+import { acquireLock, createRun, readEvents, releaseLock, runDir, sliceDir, storeApi } from "../src/store.ts";
 import {
   findRunLoops,
   HEARTBEAT_MS,
@@ -120,6 +120,31 @@ describe("dashboard server", () => {
       // Cross-origin writes are denied.
       const evil = await post({ kind: "pause" }, { origin: "https://evil.test" });
       expect(evil.status).toBe(403);
+    } finally {
+      stop();
+    }
+  });
+
+  test("slice log serves the newest stage transcript, not just the worker", async () => {
+    const { dir, stop, url } = fixture();
+    try {
+      const sdir = sliceDir(dir, "r1", "a");
+      mkdirSync(sdir, { recursive: true });
+      writeFileSync(join(sdir, "worker-1-g0.log"), "worker line\n", "utf8");
+      utimesSync(join(sdir, "worker-1-g0.log"), new Date(Date.now() + 10_000), new Date(Date.now() + 10_000));
+
+      // A running gate's transcript wins while it is the newest write.
+      mkdirSync(join(sdir, "logs"), { recursive: true });
+      writeFileSync(join(sdir, "logs", "verify-0.log"), "$ bun test\nearly\n", "utf8");
+      utimesSync(join(sdir, "logs", "verify-0.log"), new Date(Date.now() + 20_000), new Date(Date.now() + 20_000));
+      const gate = await getJSON(`${url}/api/runs/r1/slices/a/log?tail=10`);
+      expect(gate.body).toEqual({ name: "logs/verify-0.log", lane: "verify", lines: ["$ bun test", "early"] });
+
+      // The reviewer's audit takes over once it starts writing.
+      writeFileSync(join(sdir, "review-1.log"), "REVIEW running\n", "utf8");
+      utimesSync(join(sdir, "review-1.log"), new Date(Date.now() + 30_000), new Date(Date.now() + 30_000));
+      const audit = await getJSON(`${url}/api/runs/r1/slices/a/log?tail=10`);
+      expect(audit.body).toEqual({ name: "review-1.log", lane: "review", lines: ["REVIEW running"] });
     } finally {
       stop();
     }
