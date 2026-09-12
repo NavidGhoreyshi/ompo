@@ -3,6 +3,27 @@
   "version": "0.2.0",
   "description": "OMP Roadmap Orchestrator — long-horizon sequential workflow driver for stock omp (no core fork). Implements OMP_ROADMAP_ORCHESTRATOR_PLAN.md §§5–6, 11–14 out-of-core via `omp -p` workers.",
   "type": "module",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/NavidGhoreyshi/ompo.git"
+  },
+  "homepage": "https://github.com/NavidGhoreyshi/ompo#readme",
+  "bugs": {
+    "url": "https://github.com/NavidGhoreyshi/ompo/issues"
+  },
+  "keywords": [
+    "omp",
+    "orchestrator",
+    "agents",
+    "roadmap",
+    "autonomous",
+    "bun",
+    "dashboard"
+  ],
+  "engines": {
+    "bun": ">=1.3.0"
+  },
   "bin": {
     "ompo": "./src/cli.ts"
   },

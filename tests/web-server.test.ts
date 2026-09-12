@@ -357,9 +357,9 @@ describe("dashboard server", () => {
 
 describe("recovery signals", () => {
   test("matchLoopCmdline spots loop processes for the run only", () => {
-    expect(matchLoopCmdline(["/home/navid/ompo/ompo", "resume", "--run", "r1"], "r1")).toBe(true);
+    expect(matchLoopCmdline(["/opt/ompo/ompo", "resume", "--run", "r1"], "r1")).toBe(true);
     expect(matchLoopCmdline(["bun", "src/cli.ts", "run", "--run", "r1"], "r1")).toBe(true);
-    expect(matchLoopCmdline(["/home/navid/ompo/ompo", "resume", "--run", "r1"], "r2")).toBe(false);
+    expect(matchLoopCmdline(["/opt/ompo/ompo", "resume", "--run", "r1"], "r2")).toBe(false);
     expect(matchLoopCmdline(["bun", "test", "tests/foo.test.ts"], "r1")).toBe(false);
     expect(matchLoopCmdline([], "r1")).toBe(false);
   });

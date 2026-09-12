@@ -7,6 +7,10 @@ test-results/
 playwright-report/
 # local pilot / scratch dirs live outside the repo; ignore any stray run state
 .omp/
+# local environment files (placeholders live in gitignored env files)
+.env
+.env.*
+!.env.example
 *.log
 *.tmp
 .DS_Store

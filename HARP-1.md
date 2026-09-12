@@ -248,7 +248,7 @@ placeholder):
 ## Command reference (for the implementing agent)
 
 ```bash
-cd /home/navid/ompo
+cd <ompo checkout>
 bun test          # tests/loop.test.ts tests/debug.test.ts
 bunx tsc --noEmit
 # After applying ompo changes locally to the general-wms worktree:

@@ -1,9 +1,39 @@
 # ompo — OMP Roadmap Orchestrator
 
+[![CI](https://github.com/NavidGhoreyshi/ompo/actions/workflows/ci.yml/badge.svg)](https://github.com/NavidGhoreyshi/ompo/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+
 Long-horizon sequential workflow driver for **stock `omp`** (no core fork).
 Implements `OMP_ROADMAP_ORCHESTRATOR_PLAN.md` §§5–6, 11–14 out-of-core:
 each slice runs as a fresh `omp -p` worker (clean context by construction),
 with a durable store, verifier gates, retries, and crash resume.
+
+## Requirements
+
+- **Bun** ≥ 1.3 — runtime, test runner, bundler, and `bun build --compile`.
+- **git** — every slice is a worktree on a slice branch; merges and diffs ride
+  git (no git, no run).
+- **`omp`** on `PATH` — the agent CLI ompo drives, not a fork of it:
+  `bun add -g @oh-my-pi/pi-coding-agent` (or the npm equivalent). `ompo doctor`
+  reports its version.
+- Linux or macOS (Windows via WSL). The duplicate-loop scan behind
+  `ompo ctl restart-loop` reads `/proc` and degrades to lock-owner-only
+  elsewhere.
+
+## Install
+
+```bash
+git clone https://github.com/NavidGhoreyshi/ompo.git
+cd ompo
+bun install
+bun run build        # web dashboard bundle + compiled ./ompo binary
+./ompo doctor        # pre-flight: omp, models, tmux, git, tree, gates, disk, config
+```
+
+`bun run build` compiles the gitignored `ompo` binary in the repo root — put it
+on your `PATH`, or run `bun src/cli.ts`. After editing `web/src`, run
+`bun run web:build` alone: the served dashboard is the embedded bundle
+committed in `src/webAssets.generated.ts`.
 
 ## Use in every new project
 
@@ -550,4 +580,16 @@ Skip: true             # optional
 bun install
 bun test              # unit/integration tests (mocked workers)
 bunx tsc --noEmit
+bun run test:e2e      # Playwright browser suite (real Chromium)
 ```
+
+## Contributing
+
+Issues and pull requests are welcome — see `CONTRIBUTING.md` for setup and the
+gates a change must pass. How this project is built (invariants, testing
+strategy, coding standards, accepted trade-offs) lives in
+`docs/development-prd.md`.
+
+## License
+
+MIT — see `LICENSE`.

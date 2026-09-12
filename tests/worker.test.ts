@@ -154,7 +154,7 @@ describe("worker json progress", () => {
   });
 
   test("summarizeToolArgs relativizes worktree paths and edit blobs", () => {
-    const cwd = "/home/navid/rata/general-wms/.omp/roadmap/worktrees/run-s1";
+    const cwd = "/work/api/.omp/roadmap/worktrees/run-s1";
     expect(summarizeToolArgs({ path: `${cwd}/lib/dates.ts` }, cwd)).toBe("lib/dates.ts");
     expect(summarizeToolArgs(`${cwd}/lib/a.ts`, cwd)).toBe("lib/a.ts");
     // Edit tools carry `[path#id]` at the head of `input`.

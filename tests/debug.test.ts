@@ -27,7 +27,7 @@ describe("classifyEnvFailure", () => {
 
   test("missing database / role", () => {
     expect(classifyEnvFailure(['database "general_wms" does not exist'])?.reason).toBe('database "general_wms" missing');
-    expect(classifyEnvFailure(['role "navid" does not exist'])?.reason).toBe('database role "navid" missing');
+    expect(classifyEnvFailure(['role "app" does not exist'])?.reason).toBe('database role "app" missing');
   });
 
   test("dns and disk", () => {

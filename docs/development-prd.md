@@ -1,7 +1,7 @@
 # ompo Development PRD — How This Project Is Developed
 
 Status: living spec. Source of truth is the tree; this doc describes the load-bearing conventions.
-Audience: any agent or human landing in `/home/navid/ompo` to change code.
+Audience: any agent or human landing in this repository to change code.
 
 ## 1. What this project is
 
