@@ -36,16 +36,29 @@ ompo --tui            # TUI fallback: plan (if needed) → run → done in the t
   pressing a TUI key). Cross-origin POSTs are rejected (`403`), the shell
   ships a restrictive CSP + `nosniff`, and `/api/*` is reserved (unknown API
   paths `404`; anything else serves the SPA shell).
-- **Views.** `Overview` (run header + slice board + timeline + needs-attention
-  + up-next), `Runs` (one row per run — status, slices, retries, handoffs,
-  tokens, cost; selecting a row switches the whole workspace to that run),
-  `Roadmap` (slice list), `Agents` (worker states derived from live log
-  lines), `Stats` (pass rate, mean turns/tools/duration, per-Effort, top
-  failing gates, fallbacks), plus the `Inspector` column (per-slice tabs
-  `Output`/`Diff`/`Verify`/`Review`/`Prompt`/`Events`/`Usage`) and the
-  `Activity` event tail. The header holds the run picker, the live badge
-  (run lock held), and the version; a stale-bundle banner tells you to
-  rebuild when the UI and the server disagree on versions.
+- **Views.** `Overview` is a focused operator workspace: the run hero (run
+  id, live state, the auto-selected slice with its generation/attempt/lane/
+  phase, one muted telemetry line), then the active execution — worker
+  switcher lanes when several are live, the Claim → … → Done execution
+  spine with the current phase dominant, and a compact live window showing
+  roughly the latest five *meaningful* worker rows (tool calls, turn
+  boundaries, lifecycle events), expandable to the full raw log with
+  live-follow and a `Jump to live` affordance — then the supporting
+  workspace as `Board | DAG | Agents` modes over the same selection. `Runs`
+  (one row per run — status, slices, retries, handoffs, tokens, cost;
+  selecting a row switches the whole workspace to that run), `Roadmap`
+  (dependency graph, slice list, plan preview), `Agents` (worker states
+  derived from live log lines), `Stats` (pass rate, mean turns/tools/
+  duration, per-Effort, top failing gates, fallbacks). Forensics and control
+  live in the `Inspector` drawer (per-slice tabs `Output`/`Diff`/`Verify`/
+  `Review`/`Prompt`/`Events`/`Usage`/`Log`), opened from the header toggle,
+  the "Inspect slice" button, or any slice selection — never permanently on
+  screen. `Activity` is a one-line strip (count, live state, newest events)
+  that expands into the searchable stream. The header holds the run picker,
+  the live badge (run lock held), the Inspector toggle, and the version; a
+  stale-bundle banner tells you to rebuild when the UI and the server
+  disagree on versions. The Overview fits the viewport — regions scroll, the
+  page does not.
 - **Live updates.** The UI opens an SSE event stream at the TUI cadence
   (~900ms) with same-cadence polling fallback — SSE is an optimization, not
   a second model. Board and slice state always re-derive from the read

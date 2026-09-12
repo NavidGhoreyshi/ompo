@@ -47,6 +47,9 @@ export default function App() {
   const [error, setError] = useState<string | null>(null);
   const [view, setView] = useState<View>("overview");
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
+  // The Inspector is a contextual drawer, closed by default: the active
+  // worker keeps the viewport until the operator asks for forensics.
+  const [inspectorOpen, setInspectorOpen] = useState(false);
   const seqRef = useRef(-1);
   const selRef = useRef<string | null>(null);
   selRef.current = sel;
@@ -166,9 +169,12 @@ export default function App() {
 
   const selected = detail?.slices.find((s) => s.id === sel);
 
+  // Picking a slice is an explicit "show me this one": the drawer opens on
+  // the same selection the board, lanes, and graph already share. The
+  // auto-selection effect above never opens it.
   const inspect = useCallback((sliceId: string) => {
     setSel(sliceId);
-    setView((v) => (v === "overview" || v === "roadmap" ? v : "roadmap"));
+    setInspectorOpen(true);
   }, []);
 
   const openRun = useCallback((id: string) => {
@@ -186,7 +192,11 @@ export default function App() {
   }, [reloadRuns, runId, loadRun]);
 
   return (
-    <div className="omp-shell" data-sidebar={sidebarCollapsed ? "collapsed" : "open"}>
+    <div
+      className="omp-shell"
+      data-sidebar={sidebarCollapsed ? "collapsed" : "open"}
+      data-inspector={inspectorOpen ? "open" : "closed"}
+    >
       <Header
         runs={runs}
         runId={runId}
@@ -195,25 +205,25 @@ export default function App() {
         version={version}
         sidebarCollapsed={sidebarCollapsed}
         onToggleSidebar={() => setSidebarCollapsed((c) => !c)}
+        inspectorOpen={inspectorOpen}
+        onToggleInspector={() => setInspectorOpen((o) => !o)}
+        selectedId={sel}
       />
       <div className="omp-body">
-        <Sidebar
-          view={view}
-          onNavigate={setView}
-          runId={runId}
-          counts={{
-            overview: undefined,
-            runs: runs.length || undefined,
-            roadmap: detail?.slices.length,
-            agents: agents.length || undefined,
-            stats: undefined,
-          }}
-        />
+        <Sidebar view={view} onNavigate={setView} runId={runId} />
         <main className="omp-main" aria-label={`${view} workspace`}>
           {stale && <p className="omp-warn">Bundle built against a different ompo version — rebuild the dashboard (`bun run web:build`).</p>}
           {(error ?? runsError) && <p className="omp-error" role="alert">{error ?? runsError}</p>}
           {view === "overview" && (
-            <Overview detail={detail} events={events} agents={agents} sessions={sessions} selected={sel} onInspect={inspect} onNavigate={setView} />
+            <Overview
+              detail={detail}
+              events={events}
+              agents={agents}
+              sessions={sessions}
+              selected={sel}
+              onInspect={inspect}
+              onOpenInspector={() => setInspectorOpen(true)}
+            />
           )}
           {view === "runs" && (
             <RunsPage runs={runs} activeRunId={runId} onOpen={openRun} onResumed={afterResume} />
@@ -226,13 +236,20 @@ export default function App() {
           )}
           {view === "stats" && <StatsPage stats={stats} runId={runId} />}
         </main>
-        <aside className="omp-inspector" aria-label="Inspector column">
+        <aside
+          className="omp-inspector"
+          id="omp-inspector"
+          aria-label="Inspector"
+          aria-hidden={inspectorOpen ? undefined : "true"}
+          inert={!inspectorOpen}
+        >
           {runId && (
             <Inspector
               runId={runId}
               selected={selected}
               detail={sliceDetail}
               onControlDone={() => { void loadRun(runId); void reloadRuns(); }}
+              onClose={() => setInspectorOpen(false)}
               slices={detail?.slices ?? []}
               events={events}
               live={detail?.live}
@@ -241,7 +258,7 @@ export default function App() {
           )}
         </aside>
       </div>
-      <Activity events={events} />
+      <Activity events={events} live={detail?.live} />
     </div>
   );
 }

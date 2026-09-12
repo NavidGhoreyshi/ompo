@@ -40,32 +40,35 @@
 }
 
 :root {
-  /* surfaces — near-black anchor, three elevation steps up */
-  --omp-bg: #0a0d12;
-  --omp-bg-2: #0d1219;
-  --omp-panel: #0f141b;
-  --omp-panel-2: #131a23;
-  --omp-raised: #161e29;
+  /* surfaces — one tonal ladder: app background → workspace surface →
+   * raised/active surface, plus a deeper log/code surface for worker output.
+   * Each step is a visible but calm difference; nothing is near-black. */
+  --omp-bg: #121820;
+  --omp-bg-2: #161d27;
+  --omp-panel: #1a222e;
+  --omp-panel-2: #1f2836;
+  --omp-raised: #242e3d;
+  --omp-log: #0e1319;
   /* borders */
-  --omp-border: #1c2530;
-  --omp-border-strong: #26313f;
-  --omp-hairline: rgba(148, 163, 184, 0.12);
-  /* text */
-  --omp-text: #eef2f7;
-  --omp-secondary: #96a3b5;
-  --omp-muted: #57687d;
+  --omp-border: #2b3746;
+  --omp-border-strong: #3b4a5e;
+  --omp-hairline: rgba(148, 163, 184, 0.14);
+  /* text — bright primary, readable secondary, genuinely-quiet muted */
+  --omp-text: #f2f6fa;
+  --omp-secondary: #b3c0d0;
+  --omp-muted: #8595a8;
   /* brand / selection accent */
-  --omp-signal: #8b7cff;
-  --omp-signal-dim: rgba(139, 124, 255, 0.18);
+  --omp-signal: #8f86ff;
+  --omp-signal-dim: rgba(143, 134, 255, 0.18);
   /* status semantics — running / done / pending / failed */
-  --omp-cyan: #22d3ee;
-  --omp-cyan-dim: rgba(34, 211, 238, 0.18);
-  --omp-green: #2fe09a;
-  --omp-green-dim: rgba(47, 224, 154, 0.18);
-  --omp-amber: #ffb020;
-  --omp-amber-dim: rgba(255, 176, 32, 0.18);
-  --omp-red: #ff5d5d;
-  --omp-red-dim: rgba(255, 93, 93, 0.19);
+  --omp-cyan: #35d6f2;
+  --omp-cyan-dim: rgba(53, 214, 242, 0.18);
+  --omp-green: #3ee6a6;
+  --omp-green-dim: rgba(62, 230, 166, 0.18);
+  --omp-amber: #ffb838;
+  --omp-amber-dim: rgba(255, 184, 56, 0.18);
+  --omp-red: #ff6b6b;
+  --omp-red-dim: rgba(255, 107, 107, 0.19);
   /* category accents — never a status */
   --omp-violet: #b18cff;
   --omp-violet-dim: rgba(177, 140, 255, 0.18);
@@ -73,17 +76,24 @@
   --omp-pink-dim: rgba(248, 113, 184, 0.18);
   --omp-teal: #2ee6c8;
   --omp-teal-dim: rgba(46, 230, 200, 0.18);
-  --omp-blue: #4d9eff;
-  --omp-blue-dim: rgba(77, 158, 255, 0.18);
+  --omp-blue: #6aa9ff;
+  --omp-blue-dim: rgba(106, 169, 255, 0.18);
   --omp-focus: var(--omp-signal);
-  --omp-row-hover: rgba(148, 163, 184, 0.07);
-  --omp-row-active: rgba(139, 124, 255, 0.07);
+  --omp-row-hover: rgba(148, 163, 184, 0.08);
+  --omp-row-active: rgba(143, 134, 255, 0.1);
   --omp-radius: 12px;
   --omp-radius-sm: 7px;
   --omp-font: "Plus Jakarta Sans", system-ui, -apple-system, "Segoe UI", sans-serif;
   --omp-display: "Space Grotesk", "Plus Jakarta Sans", system-ui, sans-serif;
   --omp-mono: "JetBrains Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
   --omp-shell-max: 1720px;
+  /* Layout constants that JS-free CSS and the capture tooling both read. */
+  --omp-rail: 184px;
+  --omp-rail-collapsed: 64px;
+  --omp-drawer: 384px;
+  /* Fallback only: the live window sets this from COMPACT_ROWS (stream.ts). */
+  --omp-live-rows: 5;
+  --omp-header-h: 52px;
 }
 
 html,
@@ -94,7 +104,7 @@ body {
   color: var(--omp-text);
   font-family: var(--omp-font);
   font-size: 14px;
-  line-height: 1.45;
+  line-height: 1.5;
 }
 
 #root {
@@ -107,20 +117,15 @@ body {
 }
 
 /* ---------- application shell: viewport workspace, no page scroll ---------- */
-/* Ambient wash: three low-opacity radial glows (violet/cyan/pink) over the
- * near-black anchor. Atmosphere only — opacities stay low enough to read
- * as depth, never as a colored panel. */
+/* Flat application surface — no ambient glow, no gradient wash, no
+ * decoration behind the work. Depth comes from the tonal ladder. */
 .omp-shell {
   height: 100vh;
   height: 100dvh;
   display: flex;
   flex-direction: column;
   overflow: hidden;
-  background:
-    radial-gradient(560px 320px at 12% -4%, rgba(139, 124, 255, 0.1), transparent 70%),
-    radial-gradient(620px 340px at 88% 0%, rgba(34, 211, 238, 0.07), transparent 70%),
-    radial-gradient(520px 380px at 96% 46%, rgba(248, 113, 184, 0.045), transparent 70%),
-    var(--omp-bg);
+  background: var(--omp-bg);
   color: var(--omp-text);
 }
 
@@ -128,15 +133,27 @@ body {
   flex: 1;
   min-height: 0;
   display: grid;
-  grid-template-columns: 184px minmax(0, 1fr) 372px;
+  grid-template-columns: var(--omp-rail) minmax(0, 1fr) 0;
   overflow: hidden;
   width: 100%;
   max-width: var(--omp-shell-max);
   margin: 0 auto;
   box-sizing: border-box;
-  /* Rail open/close glides instead of snapping: column widths interpolate.
-   * Reduced-motion already zeroes transitions globally. */
+  /* Rail and Inspector drawer open/close glide instead of snapping: column
+   * widths interpolate. Reduced-motion zeroes transitions globally. */
   transition: grid-template-columns var(--omp-dur-layout) var(--omp-ease-out);
+}
+
+.omp-shell[data-inspector="open"] .omp-body {
+  grid-template-columns: var(--omp-rail) minmax(0, 1fr) var(--omp-drawer);
+}
+
+.omp-shell[data-sidebar="collapsed"] .omp-body {
+  grid-template-columns: var(--omp-rail-collapsed) minmax(0, 1fr) 0;
+}
+
+.omp-shell[data-sidebar="collapsed"][data-inspector="open"] .omp-body {
+  grid-template-columns: var(--omp-rail-collapsed) minmax(0, 1fr) var(--omp-drawer);
 }
 
 .omp-main {
@@ -208,10 +225,8 @@ body {
 }
 
 .omp-metric-label {
-  font-size: 11px;
-  font-weight: 700;
-  letter-spacing: 0.06em;
-  text-transform: uppercase;
+  font-size: 11.5px;
+  font-weight: 600;
   color: var(--omp-muted);
   margin-top: 2px;
   overflow-wrap: anywhere;
@@ -262,7 +277,7 @@ body {
   display: flex;
   align-items: center;
   gap: 12px;
-  height: 52px;
+  height: var(--omp-header-h);
   padding: 0 16px;
   background: var(--omp-bg-2);
   border-bottom: 1px solid var(--omp-border);
@@ -311,8 +326,6 @@ body {
   gap: 6px;
   font-size: 12px;
   font-weight: 600;
-  letter-spacing: 0.06em;
-  text-transform: uppercase;
   white-space: nowrap;
 }
 
@@ -398,12 +411,23 @@ input:focus-visible,
  * dot at the left, chevron at the right. */
 .omp-run-picker {
   background: var(--omp-raised);
+  min-width: 0;
+  overflow: hidden;
   border: 1px solid var(--omp-border-strong);
   border-radius: 8px;
   font-family: var(--omp-mono);
   display: inline-flex;
   align-items: center;
   gap: 6px;
+}
+
+/* The selected run id truncates rather than pushing the header wider. */
+.omp-run-picker [data-slot="select-value"],
+.omp-run-picker-label {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .omp-run-picker-dot {
@@ -421,6 +445,47 @@ input:focus-visible,
 .omp-run-picker-chevron {
   color: var(--omp-muted);
   margin-left: auto;
+  flex: none;
+}
+
+/* Inspector toggle: the drawer's one permanent affordance, carrying the
+ * selected slice so its subject is known before it opens. */
+.omp-inspector-toggle {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  font: inherit;
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--omp-secondary);
+  background: transparent;
+  border: 1px solid var(--omp-border);
+  border-radius: 8px;
+  padding: 5px 11px;
+  cursor: pointer;
+}
+
+.omp-inspector-toggle:hover {
+  color: var(--omp-text);
+  background: var(--omp-panel-2);
+}
+
+.omp-inspector-toggle[aria-expanded="true"] {
+  color: var(--omp-text);
+  background: var(--omp-panel-2);
+  border-color: var(--omp-border-strong);
+}
+
+.omp-inspector-toggle-slice {
+  font-family: var(--omp-mono);
+  font-size: 11.5px;
+  font-weight: 500;
+  color: var(--omp-cyan);
+  max-width: 14ch;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 /* ---------- sidebar: light rail, run first ---------- */
@@ -504,23 +569,7 @@ input:focus-visible,
   color: var(--item-c);
 }
 
-.omp-nav-count {
-  margin-left: auto;
-  font-size: 10.5px;
-  font-family: var(--omp-mono);
-  color: var(--omp-muted);
-}
-
-.omp-nav-btn[aria-current="page"] .omp-nav-count {
-  color: var(--item-c);
-}
-
-.omp-shell[data-sidebar="collapsed"] .omp-body {
-  grid-template-columns: 56px minmax(0, 1fr) 372px;
-}
-
 .omp-shell[data-sidebar="collapsed"] .omp-nav-label,
-.omp-shell[data-sidebar="collapsed"] .omp-nav-count,
 .omp-shell[data-sidebar="collapsed"] .omp-sidebar-run {
   display: none;
 }
@@ -531,64 +580,45 @@ input:focus-visible,
 /* Expanding fades labels back in behind the widening rail instead of
  * popping them. (Collapsing hides instantly so text never squishes.) */
 .omp-shell[data-sidebar="open"] .omp-nav-label,
-.omp-shell[data-sidebar="open"] .omp-nav-count,
 .omp-shell[data-sidebar="open"] .omp-sidebar-run {
   animation: omp-fade var(--omp-dur-state) var(--omp-ease-out) 120ms both;
 }
 
-/* Overview column: fills .omp-main; fixed-chrome sections keep their size
- * while the board takes the leftover. When the column overflows (short
- * viewport, tall sessions panel), the column itself scrolls as a fallback
- * so no section is ever clipped without a scroll path. */
+/* Overview workspace: fills .omp-main as one operating surface — hero, active
+ * execution, then the supporting workspace. Nothing here grows the page; each
+ * region scrolls inside itself, and the column scrolls only as a short-viewport
+ * fallback so no region is ever unreachable. */
 .omp-workspace {
   flex: 1;
   min-height: 0;
   min-width: 0;
   display: flex;
   flex-direction: column;
-  gap: 8px;
+  gap: 14px;
+  padding-bottom: 4px;
   overflow-x: hidden;
   overflow-y: auto;
 }
 
+/* Sentence-case section label: a real label, not decoration. */
 .omp-section-label {
-  font-size: 11px;
-  font-weight: 700;
-  letter-spacing: 0.08em;
-  text-transform: uppercase;
-  color: var(--omp-muted);
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 0.01em;
+  color: var(--omp-secondary);
 }
 
-/* Hero run card: the focal device. Raised card with a 3px top border in the
- * current stage's status color (ambient status read before any text), the
- * slice header line with a solid status pill, the pipeline rail, and the
- * run-level stat row behind a divider. */
+/* ---------- run hero: identity band, not telemetry ---------- */
+/* No card and no accent rail: the hero reads as the top of one workspace,
+ * separated from the execution region by a hairline. The active slice is
+ * unmistakably the largest type on the page. */
 .omp-runline {
   flex: none;
   display: flex;
   flex-direction: column;
-  gap: 8px;
-  padding: 12px 14px 10px;
-  background: var(--omp-raised);
-  border: 1px solid var(--omp-border);
-  border-top: 3px solid var(--omp-muted);
-  border-radius: var(--omp-radius);
-}
-
-.omp-runline[data-tone="cyan"] {
-  border-top-color: var(--omp-cyan);
-}
-
-.omp-runline[data-tone="green"] {
-  border-top-color: var(--omp-green);
-}
-
-.omp-runline[data-tone="amber"] {
-  border-top-color: var(--omp-amber);
-}
-
-.omp-runline[data-tone="red"] {
-  border-top-color: var(--omp-red);
+  gap: 6px;
+  padding: 2px 2px 12px;
+  border-bottom: 1px solid var(--omp-hairline);
 }
 
 .omp-runline-eyebrow {
@@ -602,8 +632,8 @@ input:focus-visible,
 
 .omp-runline-id {
   font-family: var(--omp-mono);
-  font-size: 12px;
-  color: var(--omp-muted);
+  font-size: 12.5px;
+  color: var(--omp-secondary);
 }
 
 .omp-hero {
@@ -612,19 +642,52 @@ input:focus-visible,
 
 .omp-hero-title {
   font-family: var(--omp-display);
-  font-size: 21px;
+  font-size: 26px;
   font-weight: 600;
-  margin: 0;
+  line-height: 1.25;
+  margin: 2px 0 0;
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: 10px;
   min-width: 0;
   flex-wrap: wrap;
 }
 
+.omp-hero-glyph {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+}
+
+.omp-hero-glyph svg {
+  width: 17px;
+  height: 17px;
+  display: block;
+}
+
+.omp-hero-glyph[data-tone="cyan"] {
+  color: var(--omp-cyan);
+}
+
+.omp-hero-glyph[data-tone="green"] {
+  color: var(--omp-green);
+}
+
+.omp-hero-glyph[data-tone="amber"] {
+  color: var(--omp-amber);
+}
+
+.omp-hero-glyph[data-tone="red"] {
+  color: var(--omp-red);
+}
+
+.omp-hero-glyph[data-tone="muted"] {
+  color: var(--omp-muted);
+}
+
 .omp-hero-id {
   font-family: var(--omp-mono);
-  font-size: 14px;
+  font-size: 16px;
   font-style: normal;
   font-weight: 500;
   color: var(--omp-cyan);
@@ -636,88 +699,72 @@ input:focus-visible,
   text-overflow: ellipsis;
   white-space: nowrap;
   flex: 1;
-  flex-basis: 160px;
+  flex-basis: 220px;
 }
 
 /* Solid status pill: the one most important status read on the screen.
- * Solid status fill + near-black text — bolder than a tint by design. */
+ * Solid fill + near-black text — bolder than a tint by design, sentence case
+ * so it stays readable. */
 .omp-hero-status {
   font-family: var(--omp-font);
-  font-size: 11px;
-  font-weight: 700;
-  letter-spacing: 0.06em;
-  text-transform: uppercase;
+  font-size: 12px;
+  font-weight: 600;
   flex: none;
-  padding: 3px 10px;
+  padding: 3px 11px;
   border-radius: 999px;
   margin-left: auto;
 }
 
 .omp-hero-status[data-tone="cyan"] {
   background: var(--omp-cyan);
-  color: #042227;
+  color: #062a33;
 }
 
 .omp-hero-status[data-tone="green"] {
   background: var(--omp-green);
-  color: #052015;
+  color: #06281c;
 }
 
 .omp-hero-status[data-tone="red"] {
   background: var(--omp-red);
-  color: #2b0d0d;
+  color: #33100f;
 }
 
 .omp-hero-status[data-tone="amber"] {
   background: var(--omp-amber);
-  color: #2e1a00;
+  color: #33230a;
 }
+
 .omp-hero-status[data-tone="muted"] {
   background: var(--omp-panel-2);
   color: var(--omp-secondary);
   border: 1px solid var(--omp-border);
 }
 
-.omp-hero-status-glyph {
-  display: inline-flex;
-  align-items: center;
-  margin-right: 6px;
-  vertical-align: 1px;
-}
-
-.omp-hero-status-glyph svg {
-  width: 10px;
-  height: 10px;
-  display: block;
-}
-.omp-runline-telemetry .omp-stat[data-tone="cyan"] strong {
-  color: var(--omp-cyan);
-}
-
-.omp-runline-telemetry .omp-stat[data-tone="red"] strong {
-  color: var(--omp-red);
-}
-
+/* generation · attempt · lane · what it is on — technical metadata, so mono,
+ * but at a readable size rather than 11px gossamer. */
 .omp-hero-sub {
-  margin: 1px 0 0;
-  font-size: 12px;
+  margin: 6px 0 0;
   font-family: var(--omp-mono);
+  font-size: 13px;
   color: var(--omp-secondary);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
+.omp-hero-action {
+  color: var(--omp-text);
+}
+
 .omp-runline-telemetry {
   display: flex;
   align-items: baseline;
-  gap: 10px 14px;
+  gap: 10px 16px;
   flex-wrap: wrap;
-  font-size: 12px;
+  font-size: 12.5px;
   color: var(--omp-muted);
-  margin: 0;
-  padding-top: 8px;
-  border-top: 1px solid var(--omp-border);
+  margin: 4px 0 0;
 }
 
 .omp-stat {
@@ -730,7 +777,7 @@ input:focus-visible,
 .omp-stat strong {
   color: var(--omp-text);
   font-family: var(--omp-display);
-  font-size: 16px;
+  font-size: 15px;
   font-weight: 600;
 }
 
@@ -750,187 +797,262 @@ input:focus-visible,
   color: var(--omp-red);
 }
 
-/* Pipeline stepper — horizontal rail (hero). 22px circular nodes joined by
- * a 1.5px line; the completed rail reads left to right in green. Only the
- * running node gets a halo so "where we are" is instant. */
-.omp-stepper--horizontal {
-  list-style: none;
-  margin: 2px 0 0;
-  padding: 0;
-  display: flex;
-  align-items: flex-start;
-  gap: 0;
-  overflow-x: auto;
+.omp-runline-telemetry .omp-stat[data-tone="cyan"] strong {
+  color: var(--omp-cyan);
 }
 
-.omp-stepper--horizontal .omp-stepper-step {
-  flex: 1 1 0;
-  min-width: 92px;
+.omp-runline-telemetry .omp-stat[data-tone="red"] strong {
+  color: var(--omp-red);
+}
+
+/* ---------- active execution: the protagonist ---------- */
+/* One raised workspace surface: worker switcher, execution spine, live output.
+ * No internal cards — spacing and tonal steps carry the grouping. */
+.omp-exec {
+  flex: 2 1 300px;
+  min-height: 320px;
+  min-width: 0;
   display: flex;
   flex-direction: column;
-  gap: 2px;
+  gap: 10px;
+  padding: 14px 16px;
+  background: var(--omp-panel);
+  border-radius: 14px;
+  overflow: hidden;
 }
 
-.omp-stepper-top {
+.omp-exec-bar {
   display: flex;
   align-items: center;
-  gap: 0;
+  gap: 10px;
+  flex-wrap: wrap;
+  min-width: 0;
 }
 
-.omp-stepper-node {
+.omp-exec-inspect {
+  margin-left: auto;
   flex: none;
-  width: 22px;
-  height: 22px;
+  font: inherit;
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--omp-text);
+  background: var(--omp-panel-2);
+  border: 1px solid var(--omp-border);
+  border-radius: var(--omp-radius-sm);
+  padding: 5px 12px;
+  cursor: pointer;
+}
+
+.omp-exec-inspect:hover {
+  background: var(--omp-raised);
+  border-color: var(--omp-border-strong);
+}
+
+/* Execution spine: one inline sequence of observed stages. The current phase
+ * carries the weight (filled node, bright label, its own detail); completed
+ * phases sit quiet; phases that have not happened stay restrained outlines. */
+.omp-spine {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 4px 6px;
+  min-width: 0;
+}
+
+.omp-spine-step {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 6px;
+  min-width: 0;
+}
+
+.omp-spine-step + .omp-spine-step::before {
+  content: "→";
+  align-self: center;
+  margin-right: 5px;
+  font-size: 12px;
+  color: var(--omp-border-strong);
+}
+
+.omp-spine-node {
+  flex: none;
+  align-self: center;
+  width: 16px;
+  height: 16px;
   border-radius: 50%;
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  border: 1.5px solid var(--omp-muted);
-  background: var(--omp-panel-2);
+  border: 1.5px solid var(--omp-border-strong);
+  background: transparent;
   color: var(--omp-muted);
+  transition:
+    width var(--omp-dur-state) var(--omp-ease-out),
+    height var(--omp-dur-state) var(--omp-ease-out);
 }
 
-.omp-stepper-node svg {
-  width: 11px;
-  height: 11px;
+.omp-spine-node svg {
+  width: 9px;
+  height: 9px;
   display: block;
 }
 
-.omp-stepper-step[data-state="done"] .omp-stepper-node {
-  background: var(--omp-green);
+.omp-spine-step[data-state="done"] .omp-spine-node {
+  background: var(--omp-green-dim);
   border-color: var(--omp-green);
-  color: #052015;
+  color: var(--omp-green);
 }
 
-.omp-stepper-step[data-state="running"] .omp-stepper-node {
+.omp-spine-step[data-state="running"] .omp-spine-node {
   background: var(--omp-cyan);
   border-color: var(--omp-cyan);
-  color: #042227;
+  color: #062a33;
   box-shadow: 0 0 0 4px var(--omp-cyan-dim);
+  animation: omp-spine-arrive var(--omp-dur-state) var(--omp-ease-out) both;
 }
 
-.omp-stepper-step[data-state="fail"] .omp-stepper-node {
+.omp-spine-step[data-state="fail"] .omp-spine-node {
   background: var(--omp-red);
   border-color: var(--omp-red);
-  color: #2b0d0d;
+  color: #33100f;
+  box-shadow: 0 0 0 4px var(--omp-red-dim);
+  animation: omp-spine-arrive var(--omp-dur-state) var(--omp-ease-out) both;
 }
 
-.omp-stepper-step[data-state="pending"] .omp-stepper-node {
-  background: var(--omp-panel-2);
+.omp-spine-step[data-state="pending"] .omp-spine-node {
+  background: transparent;
   border-color: var(--omp-muted);
   color: var(--omp-muted);
 }
 
-.omp-stepper-connector {
-  flex: 1;
-  height: 1.5px;
-  min-width: 8px;
-  background: var(--omp-border-strong);
-  margin: 0 6px 0 4px;
-  border-radius: 1px;
-  transform-origin: left center;
-}
-
-.omp-stepper-connector[data-filled="true"] {
-  background: var(--omp-green);
-  animation: omp-stepper-fill 300ms var(--omp-ease-out) both;
-}
-
-@keyframes omp-stepper-fill {
+@keyframes omp-spine-arrive {
   from {
-    transform: scaleX(0);
+    opacity: 0.35;
+    transform: scale(0.7);
   }
   to {
-    transform: scaleX(1);
+    opacity: 1;
+    transform: scale(1);
   }
 }
 
-.omp-stepper-label {
-  font-size: 11px;
-  font-weight: 600;
-  color: var(--omp-text);
-  margin-top: 4px;
+.omp-spine-label {
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--omp-muted);
+  white-space: nowrap;
 }
 
-.omp-stepper-step[data-state="pending"] .omp-stepper-label {
+.omp-spine-step[data-state="done"] .omp-spine-label {
   color: var(--omp-secondary);
 }
 
-.omp-stepper-sub {
-  font-family: var(--omp-mono);
-  font-size: 10.5px;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  max-width: 100%;
-}
-
-.omp-stepper-sub[data-state="fail"] {
+.omp-spine-step[data-state="fail"] .omp-spine-label {
   color: var(--omp-red);
 }
 
-/* Worker lanes: concurrency at a glance. */
+.omp-spine-step[data-current="true"] .omp-spine-label {
+  font-size: 13.5px;
+  font-weight: 600;
+  color: var(--omp-text);
+}
 
+.omp-spine-step[data-current="true"] .omp-spine-node {
+  width: 18px;
+  height: 18px;
+}
+
+.omp-spine-sub {
+  font-family: var(--omp-mono);
+  font-size: 11.5px;
+  color: var(--omp-secondary);
+  max-width: min(38ch, 40vw);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* Worker lanes: concurrency at a glance, compact by default. */
 .omp-lanes {
-  flex: none;
   display: flex;
-  align-items: center;
+  flex-direction: column;
   gap: 8px;
   min-width: 0;
+}
+
+.omp-lanes--dense {
+  flex: 1 1 auto;
+  flex-direction: row;
+  align-items: center;
+  gap: 6px;
   overflow-x: auto;
-  padding-bottom: 2px;
+  overflow-y: hidden;
 }
 
 .omp-lane-list {
   display: flex;
-  gap: 8px;
+  flex-wrap: wrap;
+  gap: 6px;
   list-style: none;
   margin: 0;
   padding: 0;
   min-width: 0;
 }
 
+.omp-lanes--dense .omp-lane-list {
+  flex-wrap: nowrap;
+}
+
 .omp-lane {
-  display: flex;
+  display: inline-flex;
   align-items: center;
   gap: 8px;
-  padding: 5px 10px;
+  padding: 4px 11px;
   border: 1px solid var(--omp-border);
-  border-radius: var(--omp-radius-sm);
-  background: var(--omp-panel);
+  border-radius: 999px;
+  background: var(--omp-panel-2);
   color: var(--omp-text);
   cursor: pointer;
   font: inherit;
-  font-size: 12px;
+  font-size: 12.5px;
   white-space: nowrap;
-  max-width: 340px;
+  max-width: 420px;
   overflow: hidden;
 }
 
+.omp-lanes:not(.omp-lanes--dense) .omp-lane {
+  border-radius: var(--omp-radius-sm);
+  padding: 7px 12px;
+  width: 100%;
+}
+
 .omp-lane:hover {
-  background: var(--omp-row-hover);
+  background: var(--omp-raised);
 }
 
 .omp-lane[data-selected="true"] {
-  border-color: var(--omp-cyan);
+  border-color: var(--omp-signal);
   background: var(--omp-row-active);
 }
 
 .omp-lane-id {
   font-family: var(--omp-mono);
   font-weight: 700;
+  font-size: 11.5px;
   color: var(--omp-muted);
 }
 
 .omp-lane-slice {
   font-family: var(--omp-mono);
-  font-size: 12px;
+  font-size: 12.5px;
 }
 
 .omp-lane-state {
-  font-weight: 700;
-  font-size: 11px;
-  letter-spacing: 0.05em;
+  font-weight: 600;
+  font-size: 12px;
 }
 
 .omp-lane[data-tone="cyan"] .omp-lane-state {
@@ -948,156 +1070,254 @@ input:focus-visible,
 .omp-lane[data-tone="red"] .omp-lane-state {
   color: var(--omp-red);
 }
-.omp-lane-last {
-  color: var(--omp-muted);
-  max-width: 140px;
+
+.omp-lane .omp-hint {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* Live worker output — the reading surface for "what is it doing right now".
+ * Compact by default: a fixed window (no scrollbar, no growth) of the newest
+ * meaningful rows, where new rows rise in and the row that falls out of the
+ * window animates out. Expanded: the same log as the full raw tail with its
+ * own scroll. The log surface is the deepest tone on the page — code lives on
+ * its own plane, separated by spacing and one border. */
+.omp-livefeed {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  flex: 1 1 auto;
+  min-height: 0;
   min-width: 0;
 }
- /* Live worker feed: the raw tool-call stream, front and center under the
-  * hero. Blue top border marks "this panel is the tool stream" (category,
-  * not status). Fixed chrome (flex:none) with a capped internal log scroll
-  * so the board below keeps the remaining viewport. */
- .omp-livefeed {
-   position: relative;
-   flex: none;
-   min-width: 0;
-   background: var(--omp-panel);
-   border: 1px solid var(--omp-hairline);
-   border-top: 2px solid var(--omp-blue);
-   border-radius: var(--omp-radius);
-   padding: 10px 12px;
-   display: flex;
-   flex-direction: column;
-   gap: 6px;
-   overflow: hidden;
- }
 
- .omp-livefeed-head {
-   display: flex;
-   align-items: baseline;
-   gap: 8px;
-   min-width: 0;
-   flex-wrap: wrap;
- }
+/* The feed fills whatever the execution panel gives it (compact and expanded
+ * alike); the log inside stays the deepest tone, rows anchored at its bottom. */
+.omp-livefeed-head {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
+  flex-wrap: wrap;
+}
 
- .omp-livefeed-dot {
-   width: 8px;
-   height: 8px;
-   border-radius: 50%;
-   background: var(--omp-muted);
-   flex: none;
-   align-self: center;
- }
+.omp-livefeed-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--omp-muted);
+  flex: none;
+}
 
- .omp-livefeed[data-live="true"] .omp-livefeed-dot {
-   background: var(--omp-cyan);
-   animation: omp-pulse 1.8s ease-in-out infinite;
- }
+.omp-livefeed[data-live="true"] .omp-livefeed-dot {
+  background: var(--omp-cyan);
+  animation: omp-pulse 2.4s ease-in-out infinite;
+}
 
- .omp-livefeed-id {
-   font-family: var(--omp-mono);
-   font-size: 12px;
-   flex: none;
- }
+.omp-livefeed-follow {
+  flex: none;
+  font-size: 11.5px;
+  font-weight: 600;
+  color: var(--omp-cyan);
+  background: var(--omp-cyan-dim);
+  border-radius: 999px;
+  padding: 1px 9px;
+}
 
- .omp-livefeed-title {
-   flex: 1 1 160px;
-   font-weight: 600;
-   font-size: 13px;
- }
+.omp-livefeed-log-name {
+  min-width: 0;
+  max-width: 42ch;
+  font-family: var(--omp-mono);
+  font-size: 11.5px;
+  color: var(--omp-muted);
+}
 
- .omp-livefeed-latest {
-   color: var(--omp-secondary);
-   font-size: 12.5px;
-   margin: 0;
- }
+.omp-livefeed-toggle {
+  margin-left: auto;
+  flex: none;
+  font: inherit;
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--omp-secondary);
+  background: transparent;
+  border: 1px solid var(--omp-border);
+  border-radius: var(--omp-radius-sm);
+  padding: 3px 10px;
+  cursor: pointer;
+}
 
- .omp-livefeed-latest[data-fresh="true"] {
-   animation: omp-feed-fresh 1.2s ease-out both;
- }
+.omp-livefeed-toggle:hover {
+  color: var(--omp-text);
+  background: var(--omp-panel-2);
+}
 
- .omp-livefeed-log {
-   position: relative;
-   margin: 0;
-   max-height: 220px;
-   overflow-y: auto;
-   scrollbar-gutter: stable;
-   font-size: 11.5px;
- }
+.omp-livefeed-log {
+  margin: 0;
+  background: var(--omp-log);
+  border: 1px solid var(--omp-border);
+  border-radius: 10px;
+  padding: 8px 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  font-size: 12px;
+  overflow: hidden;
+}
 
- /* Soft clip where content scrolls under the header: 14px panel-color
-  * fade, sticky so it rides the scroll. */
- .omp-livefeed-log::before {
-   content: "";
-   position: sticky;
-   top: 0;
-   display: block;
-   height: 14px;
-   margin-bottom: -14px;
-   background: linear-gradient(var(--omp-panel), transparent);
-   pointer-events: none;
-   z-index: 1;
- }
+/* Compact: a fixed-size window (roughly --omp-live-rows meaningful rows) that
+ * fills the execution panel. Rows sit at the bottom edge, so new output always
+ * lands where the eye already is and slack space never looks like content. */
+.omp-livefeed[data-expanded="false"] .omp-livefeed-log {
+  flex: 1 1 auto;
+  min-height: calc(var(--omp-live-rows, 5) * 20px + 16px);
+  justify-content: flex-end;
+}
 
- .omp-feed-line {
-   display: flex;
-   align-items: baseline;
-   gap: 8px;
-   min-width: 0;
-   padding: 1px 2px;
-   border-radius: 4px;
- }
+/* Expanded: the full worker-log tail, scrolling on its own. */
+.omp-livefeed[data-expanded="true"] .omp-livefeed-log {
+  flex: 1 1 auto;
+  min-height: 180px;
+  overflow-y: auto;
+  scrollbar-gutter: stable;
+}
 
- .omp-feed-line[data-fresh="true"] {
-   background: linear-gradient(90deg, var(--omp-cyan-dim), transparent 40%);
-   animation: omp-feed-fresh 1.2s ease-out both;
- }
+.omp-live-row {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  min-width: 0;
+  padding: 0 2px;
+  font-family: var(--omp-mono);
+  font-size: 12px;
+  line-height: 1.6;
+}
 
- @keyframes omp-feed-fresh {
-   from {
-     filter: brightness(1.35);
-   }
-   to {
-     filter: brightness(1);
-   }
- }
+.omp-live-row[data-motion="enter"] {
+  animation: omp-live-enter 320ms var(--omp-ease-out) both;
+}
 
- .omp-feed-idx {
-   flex: none;
-   min-width: 2ch;
-   text-align: right;
-   font-size: 10.5px;
-   color: var(--omp-muted);
- }
+.omp-live-row[data-motion="leave"] {
+  overflow: hidden;
+  animation: omp-live-leave var(--omp-dur-state) var(--omp-ease-out) both;
+}
 
- .omp-feed-tag {
-   flex: none;
-   font-size: 10.5px;
-   font-weight: 700;
-   letter-spacing: 0.04em;
- }
+@keyframes omp-live-enter {
+  from {
+    opacity: 0;
+    transform: translateY(6px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
 
- .omp-feed-tag[data-kind="read"] {
-   color: var(--omp-blue);
- }
+@keyframes omp-live-leave {
+  from {
+    opacity: 1;
+    max-height: 20px;
+  }
+  to {
+    opacity: 0;
+    max-height: 0;
+    transform: translateY(-5px);
+  }
+}
 
- .omp-feed-tag[data-kind="shell"] {
-   color: var(--omp-amber);
- }
+.omp-live-tag {
+  flex: none;
+  min-width: 4.5ch;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+  color: var(--omp-muted);
+}
 
- .omp-feed-tag[data-kind="turn"] {
-   color: var(--omp-muted);
-   font-weight: 500;
- }
+.omp-live-tag[data-kind="read"] {
+  color: var(--omp-blue);
+}
 
- .omp-feed-text {
-   min-width: 0;
-   flex: 1;
-   overflow: hidden;
-   text-overflow: ellipsis;
-   white-space: nowrap;
-   color: var(--omp-secondary);
- }
+.omp-live-tag[data-kind="run"] {
+  color: var(--omp-amber);
+}
+
+.omp-live-tag[data-kind="tool"] {
+  color: var(--omp-violet);
+}
+
+.omp-live-tag[data-kind="say"] {
+  color: var(--omp-secondary);
+}
+
+.omp-live-tag[data-kind="note"] {
+  color: var(--omp-teal);
+}
+
+.omp-live-tag[data-kind="warn"] {
+  color: var(--omp-amber);
+}
+
+.omp-live-tag[data-kind="fail"] {
+  color: var(--omp-red);
+}
+
+.omp-live-tag[data-kind="event"] {
+  color: var(--omp-cyan);
+}
+
+.omp-live-text {
+  min-width: 0;
+  flex: 1 1 auto;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--omp-secondary);
+}
+
+.omp-live-row[data-kind="event"] .omp-live-text {
+  color: var(--omp-text);
+}
+
+.omp-live-row[data-kind="warn"] .omp-live-text {
+  color: var(--omp-amber);
+}
+
+.omp-live-row[data-kind="fail"] .omp-live-text {
+  color: var(--omp-red);
+}
+
+.omp-live-meta {
+  flex: none;
+  max-width: 46%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 11px;
+  color: var(--omp-muted);
+}
+
+.omp-livefeed-foot {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin: 0;
+}
+
+.omp-livefeed-jump {
+  flex: none;
+  font: inherit;
+  font-size: 12px;
+  font-weight: 600;
+  color: #062a33;
+  background: var(--omp-cyan);
+  border: none;
+  border-radius: 999px;
+  padding: 3px 12px;
+  cursor: pointer;
+}
+
  /* Operator sessions: unblock rounds + debug sessions with the same
   * live-tail treatment as slice workers. Fixed chrome (flex:none); each
   * session log scrolls internally so the board below keeps the viewport. */
@@ -1118,6 +1338,27 @@ input:focus-visible,
    align-items: baseline;
    justify-content: space-between;
    gap: 8px;
+ }
+
+ /* Session rows reuse the live-tail treatment at their own scale. */
+ .omp-session-head {
+   display: flex;
+   align-items: baseline;
+   gap: 8px;
+   min-width: 0;
+   flex-wrap: wrap;
+ }
+
+ .omp-session-name {
+   font-family: var(--omp-mono);
+   font-size: 12px;
+   flex: none;
+ }
+
+ .omp-session-title {
+   flex: 1 1 140px;
+   font-weight: 600;
+   font-size: 13px;
  }
 
  .omp-session {
@@ -1215,47 +1456,103 @@ input:focus-visible,
   border-color: var(--omp-red);
 }
 
-/* Board bar + scrolling board region. */
+/* Supporting workspace: Board | DAG | Agents over one selection. A mode
+ * switch, a hairline, and one scroll region — no card per mode, no third
+ * dashboard. The active execution above keeps its size. */
+.omp-modes {
+  flex: 2 1 240px;
+  min-height: 220px;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  overflow: hidden;
+}
 
-.omp-board-bar {
+.omp-modes-bar {
   flex: none;
   display: flex;
   align-items: center;
-  justify-content: space-between;
-  gap: 12px;
+  gap: 4px;
+  min-width: 0;
+  border-bottom: 1px solid var(--omp-hairline);
 }
 
-.omp-board-scroll {
-  flex: 1;
+.omp-modes-bar .omp-hint {
+  margin-left: auto;
+  padding-bottom: 6px;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* Workspace modes ride the shared underline-tab primitive (radix `Tabs`:
+ * roving tabindex, arrow keys, aria-controls). The shadcn list/trigger
+ * defaults are neutralized here, exactly as `.omp-tabs`/`.omp-tab` do. */
+.omp-modes-tabs {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.omp-modes-list {
+  display: flex;
+  gap: 2px;
+  height: auto;
+  padding: 0;
+  border-radius: 0;
+  background: transparent;
+  overflow-x: auto;
+}
+
+.omp-mode-tab {
+  border: none;
+  background: transparent;
+  color: var(--omp-muted);
+  cursor: pointer;
+  font: inherit;
+  font-size: 13px;
+  font-weight: 600;
+  padding: 6px 12px;
+  border-radius: 0;
+  box-shadow: none;
+  border-bottom: 2px solid transparent;
+  margin-bottom: -1px;
+  white-space: nowrap;
+  transition:
+    color var(--omp-dur-state) var(--omp-ease-out),
+    border-color var(--omp-dur-state) var(--omp-ease-out);
+}
+
+.omp-mode-tab:hover {
+  color: var(--omp-text);
+}
+
+.omp-mode-tab[aria-selected="true"],
+.omp-mode-tab[data-state="active"] {
+  color: var(--omp-text);
+  border-bottom-color: var(--omp-signal);
+  background: transparent;
+  box-shadow: none;
+}
+
+/* The one scroll region for whichever mode is showing. */
+.omp-modes-body {
+  flex: 1 1 auto;
   min-height: 0;
   overflow-y: auto;
-  border: 1px solid var(--omp-hairline);
-  border-top: 2px solid var(--omp-violet);
-  border-radius: var(--omp-radius);
-  background: var(--omp-panel);
+  overflow-x: hidden;
+  scrollbar-gutter: stable;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
 }
- /* Board panel root must be a flex column: it is the flex parent that lets
-  * .omp-board-scroll (flex:1, min-height:0) actually scroll instead of growing
-  * with content. Floor at 200px keeps a usable internal scroll region and
-  * forces the workspace-level fallback scroll instead of collapsing to zero
-  * on short viewports. */
- .omp-board-panel {
-   flex: 1;
-   min-height: 200px;
-   min-width: 0;
-   display: flex;
-   flex-direction: column;
-   overflow: hidden;
-   gap: 6px;
- }
 
 .omp-board {
-  padding: 4px;
-}
-
-.omp-board-title {
-  font-size: 13px;
-  margin: 8px 10px 4px;
+  padding: 2px 0;
 }
 
 .omp-board-list {
@@ -1414,10 +1711,8 @@ input:focus-visible,
 
 .omp-board-state {
   flex: none;
-  font-size: 11px;
-  font-weight: 700;
-  letter-spacing: 0.05em;
-  text-transform: uppercase;
+  font-size: 12px;
+  font-weight: 600;
 }
 
 .omp-board-state[data-tone="cyan"] {
@@ -1467,7 +1762,6 @@ input:focus-visible,
 
 /* ---------- status: flat symbol + word ---------- */
 
-.omp-status,
 .omp-badge {
   display: inline-flex;
   align-items: center;
@@ -1477,27 +1771,22 @@ input:focus-visible,
   white-space: nowrap;
 }
 
-.omp-status[data-tone="cyan"],
 .omp-badge[data-tone="cyan"] {
   color: var(--omp-cyan);
 }
 
-.omp-status[data-tone="green"],
 .omp-badge[data-tone="green"] {
   color: var(--omp-green);
 }
 
-.omp-status[data-tone="amber"],
 .omp-badge[data-tone="amber"] {
   color: var(--omp-amber);
 }
 
-.omp-status[data-tone="red"],
 .omp-badge[data-tone="red"] {
   color: var(--omp-red);
 }
 
-.omp-status[data-tone="muted"],
 .omp-badge:not([data-tone]) {
   color: var(--omp-secondary);
 }
@@ -1638,15 +1927,34 @@ input:focus-visible,
   animation: omp-pulse 1.8s ease-in-out infinite;
 }
 
-/* ---------- inspector column: always populated ---------- */
-
+/* ---------- inspector: contextual drawer ---------- */
+/* Closed by default — the active worker keeps the viewport. Opening it adds a
+ * grid column (the workspace narrows instead of being covered), and the drawer
+ * scrolls on its own. This is where slice forensics live: output, diff, gates,
+ * review, prompt, events, usage, log, and control. */
 .omp-inspector {
   min-width: 0;
   min-height: 0;
+  width: var(--omp-drawer);
   overflow-y: auto;
+  overflow-x: hidden;
   background: var(--omp-bg-2);
-  border-left: 1px solid var(--omp-border);
+  border-left: 1px solid var(--omp-hairline);
   padding: 12px 14px 20px;
+  scrollbar-gutter: stable;
+}
+
+.omp-shell[data-inspector="closed"] .omp-inspector {
+  visibility: hidden;
+  border-left-color: transparent;
+}
+
+.omp-inspector-closebar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 6px;
 }
 
 .omp-inspector-empty {
@@ -1663,17 +1971,6 @@ input:focus-visible,
 .omp-inspector-head {
   border-bottom: 1px solid var(--omp-hairline);
   padding-bottom: 8px;
-}
-
-/* The one earned uppercase label per screen: real section label, not
- * decoration. Signal-blue carries brand/selection meaning. */
-.omp-inspector-eyebrow {
-  font-family: var(--omp-font);
-  font-size: 10px;
-  font-weight: 700;
-  letter-spacing: 0.09em;
-  text-transform: uppercase;
-  color: var(--omp-signal);
 }
 
 .omp-inspector-title {
@@ -1803,7 +2100,7 @@ input:focus-visible,
   position: relative;
 }
 
-.omp-stepper--vertical::before {
+.omp-trace--rail::before {
   content: "";
   position: absolute;
   left: 21px;
@@ -1874,22 +2171,20 @@ input:focus-visible,
 
 .omp-trace-name {
   flex: none;
-  font-weight: 700;
-  font-size: 11px;
-  letter-spacing: 0.05em;
-  text-transform: uppercase;
-  width: 88px;
+  font-weight: 600;
+  font-size: 12px;
+  min-width: 74px;
 }
 
-.omp-trace-step .omp-hint {
+.omp-trace-sub {
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
-.omp-trace-step[data-state="fail"] .omp-stepper-sub,
-.omp-trace-step[data-state="failed"] .omp-stepper-sub {
+.omp-trace-step[data-state="fail"] .omp-trace-sub,
+.omp-trace-step[data-state="failed"] .omp-trace-sub {
   color: var(--omp-red);
   font-weight: 600;
 }
@@ -1967,14 +2262,22 @@ input:focus-visible,
   margin-top: 6px;
 }
 
-/* ---------- activity: first-class fixed strip ---------- */
-
+/* ---------- activity: compact bar, full stream on demand ---------- */
+/* Collapsed it is one strip that says how much happened and shows the newest
+ * few rows; opened it becomes the searchable stream (filters, search, raw
+ * Terminal). Activity exists when the operator needs it — it never takes a
+ * third of the viewport from the worker. */
 .omp-activity {
   flex: none;
-  height: 184px;
+  height: 46px;
   background: var(--omp-bg-2);
-  border-top: 1px solid var(--omp-border);
+  border-top: 1px solid var(--omp-hairline);
   overflow: hidden;
+  transition: height var(--omp-dur-layout) var(--omp-ease-out);
+}
+
+.omp-activity[data-open="true"] {
+  height: min(46vh, 420px);
 }
 
 .omp-activity-inner {
@@ -1982,7 +2285,7 @@ input:focus-visible,
   box-sizing: border-box;
   max-width: var(--omp-shell-max);
   margin: 0 auto;
-  padding: 8px 16px 10px;
+  padding: 6px 16px 10px;
   display: flex;
   flex-direction: column;
   min-height: 0;
@@ -1993,15 +2296,70 @@ input:focus-visible,
   display: flex;
   align-items: center;
   gap: 12px;
+  min-width: 0;
 }
 
-.omp-activity-head h2 {
-  font-size: 11px;
-  font-weight: 700;
-  letter-spacing: 0.08em;
-  text-transform: uppercase;
+.omp-activity-toggle {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font: inherit;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--omp-text);
+  background: transparent;
+  border: none;
+  padding: 2px 0;
+  cursor: pointer;
+}
+
+.omp-activity-toggle svg {
+  width: 15px;
+  height: 15px;
   color: var(--omp-muted);
-  margin: 0;
+}
+
+.omp-activity-toggle:hover svg {
+  color: var(--omp-text);
+}
+
+/* Collapsed preview: the newest few events, one line each. */
+.omp-activity-peek {
+  flex: 1 1 auto;
+  display: flex;
+  gap: 18px;
+  min-width: 0;
+  overflow: hidden;
+}
+
+.omp-activity-peek-row {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 8px;
+  min-width: 0;
+  font-family: var(--omp-mono);
+  font-size: 11.5px;
+  color: var(--omp-secondary);
+  /* The strip is one line: a preview that does not fit truncates. */
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.omp-activity-peek-detail {
+  min-width: 0;
+  max-width: 34ch;
+  color: var(--omp-muted);
+}
+
+/* Opened: filters, search, and the list own the strip. */
+.omp-activity-body {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  margin-top: 6px;
 }
 
 .omp-activity-list {
@@ -2011,8 +2369,9 @@ input:focus-visible,
   list-style: none;
   margin: 6px 0 0;
   padding: 0;
-  font-size: 12px;
+  font-size: 12.5px;
   font-family: var(--omp-mono);
+  scrollbar-gutter: stable;
 }
 
 .omp-activity-list li {
@@ -2026,11 +2385,6 @@ input:focus-visible,
 
 .omp-activity-list li:hover {
   background: var(--omp-row-hover);
-}
-
-.omp-activity-seq {
-  color: var(--omp-muted);
-  flex: none;
 }
 
 .omp-activity-time {
@@ -2797,7 +3151,8 @@ input:focus-visible,
 /* ---------- scrollbars ---------- */
 
 .omp-inspector::-webkit-scrollbar,
-.omp-board-scroll::-webkit-scrollbar,
+.omp-modes-body::-webkit-scrollbar,
+.omp-livefeed-log::-webkit-scrollbar,
 .omp-activity-list::-webkit-scrollbar,
 .omp-table-wrap::-webkit-scrollbar,
 .omp-dag-scroll::-webkit-scrollbar,
@@ -2808,7 +3163,8 @@ input:focus-visible,
 }
 
 .omp-inspector::-webkit-scrollbar-thumb,
-.omp-board-scroll::-webkit-scrollbar-thumb,
+.omp-modes-body::-webkit-scrollbar-thumb,
+.omp-livefeed-log::-webkit-scrollbar-thumb,
 .omp-activity-list::-webkit-scrollbar-thumb,
 .omp-table-wrap::-webkit-scrollbar-thumb,
 .omp-dag-scroll::-webkit-scrollbar-thumb,
@@ -2821,7 +3177,8 @@ input:focus-visible,
 }
 
 .omp-inspector::-webkit-scrollbar-track,
-.omp-board-scroll::-webkit-scrollbar-track,
+.omp-modes-body::-webkit-scrollbar-track,
+.omp-livefeed-log::-webkit-scrollbar-track,
 .omp-activity-list::-webkit-scrollbar-track,
 .omp-table-wrap::-webkit-scrollbar-track,
 .omp-dag-scroll::-webkit-scrollbar-track,
@@ -3074,15 +3431,18 @@ button[data-slot="select-trigger"] {
 
 @media (max-width: 1180px) {
   .omp-body {
-    grid-template-columns: 64px minmax(0, 1fr) 340px;
+    grid-template-columns: var(--omp-rail-collapsed) minmax(0, 1fr) 0;
   }
 
-  .omp-shell[data-sidebar="collapsed"] .omp-body {
-    grid-template-columns: 64px minmax(0, 1fr) 340px;
+  .omp-shell[data-inspector="open"] .omp-body {
+    grid-template-columns: var(--omp-rail-collapsed) minmax(0, 1fr) 340px;
+  }
+
+  .omp-inspector {
+    width: 340px;
   }
 
   .omp-nav-label,
-  .omp-nav-count,
   .omp-sidebar-run {
     display: none;
   }
@@ -3097,7 +3457,16 @@ button[data-slot="select-trigger"] {
 }
 
 @media (max-width: 900px) {
+  /* Stacked shell: rail on top, workspace next, activity at the bottom, and
+   * the Inspector as an overlay instead of a column. The active execution
+   * still comes first in the workspace, and no state disappears. */
   .omp-body {
+    display: flex;
+    flex-direction: column;
+  }
+
+  .omp-shell[data-inspector="open"] .omp-body,
+  .omp-shell[data-sidebar="collapsed"][data-inspector="open"] .omp-body {
     display: flex;
     flex-direction: column;
   }
@@ -3132,11 +3501,6 @@ button[data-slot="select-trigger"] {
     display: inline;
   }
 
-  .omp-shell[data-sidebar="collapsed"] .omp-body {
-    display: flex;
-    flex-direction: column;
-  }
-
   .omp-shell[data-sidebar="collapsed"] .omp-nav-label {
     display: inline;
   }
@@ -3144,25 +3508,106 @@ button[data-slot="select-trigger"] {
   .omp-main {
     flex: 1;
     min-height: 0;
+    padding: 10px 12px;
   }
 
   .omp-inspector {
-    flex: none;
-    height: 42%;
-    border-left: none;
-    border-top: 1px solid var(--omp-border);
+    position: fixed;
+    top: var(--omp-header-h);
+    right: 0;
+    bottom: 0;
+    z-index: 30;
+    width: min(420px, 100vw - 20px);
+    border-left: 1px solid var(--omp-border);
+    box-shadow: -20px 0 44px rgba(0, 0, 0, 0.42);
+    transform: translateX(100%);
+    transition: transform var(--omp-dur-layout) var(--omp-ease-out);
   }
 
-  .omp-activity {
-    height: 150px;
+  .omp-shell[data-inspector="open"] .omp-inspector {
+    transform: translateX(0);
+  }
+
+  /* Narrow: the hero compresses to a few lines so the active execution stays
+   * on the first screen — the worker is never the least visible region. */
+  .omp-workspace {
+    gap: 10px;
+  }
+
+  .omp-runline {
+    gap: 4px;
+    padding-bottom: 9px;
+  }
+
+  .omp-hero-title {
+    font-size: 19px;
+    line-height: 1.3;
+    gap: 8px;
   }
 
   .omp-hero-name {
+    display: -webkit-box;
+    -webkit-line-clamp: 2;
+    -webkit-box-orient: vertical;
     white-space: normal;
+    flex-basis: 100%;
+    order: 3;
+  }
+
+  .omp-hero-status {
+    margin-left: 0;
   }
 
   .omp-hero-sub {
     white-space: normal;
+  }
+
+  .omp-runline-telemetry {
+    gap: 8px 12px;
+  }
+
+  /* Regions keep the size their content needs and the column scrolls, so the
+   * worker, its phase, and its live output are all fully visible first. */
+  .omp-exec {
+    flex: none;
+    min-height: 340px;
+    padding: 12px 12px;
+  }
+
+  .omp-modes {
+    flex: none;
+    min-height: 300px;
+  }
+
+  .omp-spine-sub {
+    max-width: 60vw;
+  }
+
+  .omp-livefeed-log-name {
+    max-width: 24ch;
+  }
+
+  .omp-activity {
+    height: 42px;
+  }
+
+  /* The collapsed strip stays one line: the label and count hold their size,
+   * the newest-event preview ellipsizes instead of wrapping. */
+  .omp-activity-head {
+    flex-wrap: nowrap;
+  }
+
+  .omp-activity-head .omp-hint,
+  .omp-activity-toggle {
+    white-space: nowrap;
+  }
+
+  .omp-activity-peek-row:nth-child(n + 2) {
+    display: none;
+  }
+
+  .omp-activity-peek-detail {
+    max-width: 18ch;
   }
 
   .omp-board-title-text {
@@ -3202,16 +3647,50 @@ button[data-slot="select-trigger"] {
 }
 
 @media (max-width: 600px) {
-  .omp-brand-name {
-    display: none;
-  }
-
+  .omp-brand-name,
   .omp-live {
     display: none;
   }
 
+  /* Phone-width header: the run picker keeps a readable id, drops its label
+   * and its status dot (the live badge in the rail area already shows it). */
+  .omp-run-picker-label .omp-hint {
+    display: none;
+  }
+
+  .omp-run-picker-dot {
+    display: none;
+  }
+
   .omp-header-run [data-slot="select-trigger"] {
-    width: 6.5rem;
+    width: 6rem;
+  }
+
+  .omp-inspector-toggle {
+    padding: 5px 9px;
+  }
+
+  .omp-inspector-toggle-slice {
+    display: none;
+  }
+
+  /* The eyebrow's freshness hint is the least important line on a phone. */
+  .omp-runline-eyebrow .omp-hint {
+    display: none;
+  }
+
+  .omp-hero-title {
+    font-size: 17px;
+  }
+
+  .omp-livefeed-toggle,
+  .omp-exec-inspect {
+    font-size: 12px;
+    padding: 3px 9px;
+  }
+
+  .omp-spine-sub {
+    display: none;
   }
 }
 
@@ -3226,10 +3705,10 @@ button[data-slot="select-trigger"] {
   }
 
   .omp-live[data-live="true"] .omp-live-dot,
+  .omp-livefeed[data-live="true"] .omp-livefeed-dot,
   .omp-board-row[data-live="true"] > .omp-board-glyph,
-  .omp-stepper-connector[data-filled="true"],
-  .omp-feed-line[data-fresh="true"],
-  .omp-livefeed-latest[data-fresh="true"],
+  .omp-live-row[data-motion],
+  .omp-spine-node,
   .omp-workspace > *,
   .omp-attention,
   .omp-activity-list li:first-child,

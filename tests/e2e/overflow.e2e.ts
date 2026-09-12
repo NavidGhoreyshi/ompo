@@ -20,7 +20,7 @@ function collectOverflow(): OverflowHit[] {
     "TEXT", "CIRCLE", "LINE", "POLYLINE", "POLYGON", "ELLIPSE", "USE",
     "INPUT", "TEXTAREA", "SELECT", "OPTION", "CANVAS", "VIDEO", "IMG",
   ]);
-  const SCROLL_OK = ["omp-table-wrap", "omp-code", "omp-dag-scroll", "omp-tabs", "omp-terminal-log", "omp-lanes"];
+  const SCROLL_OK = ["omp-table-wrap", "omp-code", "omp-dag-scroll", "omp-tabs", "omp-terminal-log", "omp-lanes", "omp-activity-list"];
   const hits: OverflowHit[] = [];
   const seen = new Set<string>();
 
@@ -111,8 +111,24 @@ async function openView(page: Page, name: string): Promise<void> {
   await page.getByRole("navigation", { name: "Dashboard sections" }).getByRole("button", { name }).click();
 }
 
+/** The Inspector is a drawer now: open it (header toggle) before its tabs. */
+async function openInspector(page: Page): Promise<void> {
+  const toggle = page.getByRole("button", { name: /Inspector/ });
+  if ((await toggle.getAttribute("aria-expanded")) !== "true") await toggle.click();
+  await page.getByRole("tablist", { name: "Inspector views" }).waitFor();
+}
+
+async function closeInspector(page: Page): Promise<void> {
+  const toggle = page.getByRole("button", { name: /Inspector/ });
+  if ((await toggle.getAttribute("aria-expanded")) === "true") await toggle.click();
+}
+
 async function openInspectorTab(page: Page, name: string): Promise<void> {
   await page.getByRole("tablist", { name: "Inspector views" }).getByRole("tab", { name }).click();
+}
+
+async function openMode(page: Page, name: string): Promise<void> {
+  await page.getByRole("tablist", { name: "Workspace mode" }).getByRole("tab", { name }).click();
 }
 
 async function scan(page: Page, where: string, out: Map<string, OverflowHit[]>): Promise<void> {
@@ -135,26 +151,42 @@ test.describe("dashboard client health", () => {
 test.describe("overflow at desktop", () => {
   test.use({ viewport: { width: 1440, height: 900 } });
 
-  test("no text escapes its container across views and inspector tabs", async ({ page }) => {
+  test("no text escapes its container across views, modes, and inspector tabs", async ({ page }) => {
     const errors = await collectClientErrors(page);
     const hits = new Map<string, OverflowHit[]>();
     await page.goto("/");
     await page.getByRole("listbox").waitFor();
 
     await scan(page, "overview/board", hits);
-    await page.getByRole("tablist", { name: "Board mode" }).getByRole("tab", { name: "Graph" }).click();
-    await scan(page, "overview/graph", hits);
-    await page.getByRole("tablist", { name: "Board mode" }).getByRole("tab", { name: "Board" }).click();
+    await openMode(page, "DAG");
+    await scan(page, "overview/dag", hits);
+    await openMode(page, "Agents");
+    await scan(page, "overview/agents", hits);
+    await openMode(page, "Board");
+
+    // Live window, compact and expanded.
+    await page.getByRole("button", { name: "View full log" }).click();
+    await scan(page, "overview/live-expanded", hits);
+    await page.getByRole("button", { name: "Collapse log" }).click();
 
     // Inspector over the two stress slices, every tab.
     await page.getByRole("option", { name: /longtitle/ }).click();
+    await openInspector(page);
     for (const tab of ["Output", "Diff", "Verify", "Review", "Prompt", "Events", "Usage", "Log"]) {
       await openInspectorTab(page, tab);
       await scan(page, `inspector/longtitle/${tab}`, hits);
     }
+    await closeInspector(page);
     await page.getByRole("option", { name: /longreason/ }).click();
+    await openInspector(page);
     await openInspectorTab(page, "Output");
     await scan(page, "inspector/longreason/Output", hits);
+    await closeInspector(page);
+
+    // Activity expanded over the same run.
+    await page.getByRole("button", { name: /Activity/ }).click();
+    await scan(page, "overview/activity-expanded", hits);
+    await page.getByRole("button", { name: /Activity/ }).click();
 
     for (const view of ["Runs", "Roadmap", "Agents", "Stats"]) {
       await openView(page, view);
@@ -174,9 +206,14 @@ test.describe("overflow at narrow width", () => {
     await page.goto("/");
     await page.getByRole("listbox").waitFor();
     await scan(page, "narrow/overview", hits);
+    await openMode(page, "Agents");
+    await scan(page, "narrow/agents", hits);
+    await openMode(page, "Board");
     await page.getByRole("option", { name: /longtitle/ }).click();
+    await openInspector(page);
     await openInspectorTab(page, "Output");
     await scan(page, "narrow/inspector", hits);
+    await closeInspector(page);
     await openView(page, "Runs");
     await scan(page, "narrow/runs", hits);
     expect(hits.size, hits.size > 0 ? `overflow:\n${[...hits].map(([w, h]) => `${w}:\n${formatHits(h)}`).join("\n")}` : "clean").toBe(0);

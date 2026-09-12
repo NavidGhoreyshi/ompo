@@ -103,7 +103,8 @@
       "viewportShell": true,
       "panelScroll": true,
       "stacked900": true,
-      "tableScroll": true
+      "tableScroll": true,
+      "compactWindow": true
     },
     "longOutput": {
       "workerTailLines": 60,

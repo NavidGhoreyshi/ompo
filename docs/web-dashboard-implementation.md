@@ -178,29 +178,44 @@ flow rules:
   clicks always win; the effect only fills an empty selection, so the
   Inspector is never an empty rectangle while slices exist.
 - Layout (viewport app shell, no page scroll): `Header` (run picker,
-  live/quiescent badge, version) / `Sidebar` (run-first rail with counts)
-  / `main` (current page) / `aside` Inspector / fixed-height bottom
-  `Activity` strip. The board, inspector body, and activity list scroll
-  internally. Selection changes reset tab-local UI state by `runId` /
-  `sliceId` keys.
+  live/quiescent badge, version, Inspector toggle carrying the selected
+  slice) / `Sidebar` (run-first rail, no counts) / `main` (current page) /
+  `aside` Inspector (a contextual drawer, closed by default — the grid
+  column animates 0 → 384px and the workspace narrows instead of being
+  covered) / compact bottom `Activity` bar. `data-inspector` on `.omp-shell`
+  drives the column; the closed aside is `inert` + `visibility: hidden`.
+  Region scrolls: `.omp-workspace` (fallback), `.omp-modes-body`,
+  `.omp-inspector`, `.omp-activity-list`, and the expanded live log;
+  secondary pages scroll inside `.omp-page`. Selection changes reset
+  tab-local UI state by `runId` / `sliceId` keys.
+- Progressive disclosure: the Overview always shows the active worker;
+  Inspector (forensics + control) and the full Activity stream are on
+  demand. Selection never opens the Inspector implicitly — the auto-select
+  effect only fills the selection; `inspect(sliceId)` (board row, lane, DAG
+  node, attention chip) selects *and* opens the drawer.
 
 ### 3.2 Pages (`web/src/pages/`)
 
- - `Overview` — composition-first workspace: `RunHeader` run hero (run id,
-   then the auto-selected slice as `id title STATUS`, then a gen/attempt/
-   lane/action subline from `heroAction` — live worker line, latest slice
-   event, or status fallback — with counts/elapsed/tokens/workers demoted
-   to one muted telemetry line), `LiveFeed` (front and center under the
-   hero: the followed slice's lane/attempt/gen/turns-tools, latest worker
-   progress line, and live tail of its worker log via `useSliceLog`, same
-   slice the hero leads with), `SessionsPanel` (operator sessions only when
-   they exist: unblock rounds + debug sessions with live tails via
-   `useSessionLog`, amber pulse while running), `WorkerLanes` (one row per
-   live agent, sorted by lane, selecting a lane inspects its slice), an
-   inline failed/blocked-env attention banner, and the `SliceTable` board (dense
-   execution rows: state symbol + id + title + one attempt/gen/agent/
-   deps/duration meta line). No graph here: `Dag`, the slice table, and
-   the plan preview live in exactly one place (`RoadmapPage`).
+ - `Overview` — a focused operator workspace in three bands, top to bottom:
+   1. `RunHeader` run hero: run id + live/quiescent, then the auto-selected
+      slice as `● id title STATUS`, then a `generation · attempt · lane ·
+      action` line from `heroAction` (live worker line, latest slice event,
+      or status fallback), then one muted telemetry line (counts, elapsed,
+      tokens, workers). No rail here — the lifecycle lives with the work.
+   2. `ActiveExecution` — the protagonist: `WorkerLanes` (compact switcher
+      chips, only when more than one worker is live), the `PipelineStepper`
+      execution spine (Claim → … → Done; the current phase is the furthest
+      observed live stage — a running slice leads with Work, a verifying one
+      with Verify, a finished one with Done; completed quiet, unobserved
+      stages restrained outlines), and `LiveFeed`.
+   3. `omp-modes` — Board | DAG | Agents over the *same* selection and one
+      scroll region: `SliceTable` (state symbol, id/title, one
+      attempt/gen/lane/deps meta line, blocked/failed reason), `Dag`, or
+      `WorkerLanes` + `SessionsPanel` (operator sessions: unblock rounds and
+      debug sessions with live tails via `useSessionLog`).
+   Failed/blocked-env attention and duplicate-loop banners render between
+   hero and execution. No graph in the Board mode: `Dag` appears in the
+   workspace mode and in `RoadmapPage`, from one component.
 - `AgentsPage` — live-worker rows (`AgentCard`: pure projection over
   server `AgentRow`; `verifying` shows the commit-mutex holder). Empty on
   quiescent runs by design — rows are point-in-time derivations, not
@@ -209,8 +224,8 @@ flow rules:
   gates, fallbacks).
 ### 3.3 Inspector (`components/Inspector.tsx` + tab views)
 
-Always-populated active-slice panel (App auto-selects; the only empty state
-is "no slices yet"): identity header (id, title, status symbol + word,
+Contextual drawer (`onClose` + header toggle; App auto-selects the subject,
+and the only empty state is "no slices yet"): identity header (id, title, status symbol + word,
 attempt/generation/effort/agent/deps, reason), `ExecutionTrace` lifecycle
 (Claim → Generation → Work → Handoff → Verify → Review → Done from observed
 state only — no predicted progress), underline tabs, contextual
@@ -261,18 +276,26 @@ intents. Outcome state derives from actual outcomes only:
 
 ### 3.5 Bottom strip: `Activity.tsx` + `Terminal.tsx`
 
-`Activity` is a fixed-height (184px) first-class panel: the SSE-owned event
-buffer with timestamp, lane, type, slice, and concise detail per row
-(`lib/events.ts` classifies worker/verify/review/control/system lanes;
-control types always stay control) plus lane chips and text search. The
-list scrolls internally (newest first); the page shell never scrolls for
-it. `Terminal` is the raw one-line-per-event view (full payload in
-tooltips), secondary by default. Both render props — no fetching, no
-clocks.
+`Activity` is a compact bar (46px) by default: event count, live/settled
+state, and the newest three events as one-line previews (time, lane glyph,
+type, concise detail) with a toggle. Opened (up to `min(46vh, 420px)`) it
+becomes the full stream: timestamp, lane, type, slice, and concise detail
+per row (`lib/events.ts` classifies worker/verify/review/control/system
+lanes; control types always stay control) plus lane chips, text search, and
+the raw `Terminal` view (full payloads in tooltips). The list scrolls
+internally (newest first); the shell never scrolls for it. Both render
+props — no fetching, no clocks.
 
 ### 3.6 Pure view helpers (`web/src/lib/`)
 
-`dag.ts` (Kahn layout + ready computation mirroring `select.ts`),
+`stream.ts` (live worker-output semantics: the progress grammar
+`src/worker.ts` writes → concise rows, lifecycle events ordered around the
+current generation's output — rows from before the generation opener are
+gated out, so a previous attempt never reads as newer than live output —
+compact-window selection with a raw-output fallback, line-identity recovery
+across polls, follow-from-scroll), plus
+`useLiveStream.ts` (one slice's polled log + that derivation, built on
+`useSliceLog`), `dag.ts` (Kahn layout + ready computation mirroring `select.ts`),
 `timeline.ts` (attempt bars on a wall-clock axis from observed events
 only — open attempts end at the last observed event, dashed, never
 extrapolated), `events.ts` (lane classification + concise intent
@@ -292,10 +315,14 @@ the shadcn primitives in use (`button`, `badge`, `card`, `tabs`,
 `separator`, `input`, `select`, `skeleton`) with `lucide-react` icons —
 status pills in tables, control buttons/inputs/selects, the run picker, the
 board/graph and inspector tab bars, and loading skeletons. Flat execution
-surfaces (board rows, hero, lanes) deliberately stay flat symbol + word,
-never color alone. Viewport app shell (`100dvh`, shell clips page scroll;
-board/inspector/activity scroll internally); rail collapses at 1180px,
-shell stacks at 900px. Panels use `aria-label`s, tabs are real
+surfaces (board rows, hero, lanes, spine) deliberately stay flat symbol +
+word, never color alone. Surfaces come from a four-step tonal ladder
+(`--omp-bg` → `--omp-panel` → `--omp-raised`, plus the deeper `--omp-log`
+plane the live window sits on) rather than glow, gradient, or glass;
+section labels are sentence case, status words are color + glyph + word.
+Viewport app shell (`100dvh`, shell clips page scroll; every region scrolls
+internally); rail collapses at 1180px, shell stacks and the drawer becomes
+an overlay at 900px, and the phone header drops the run label at 600px. Panels use `aria-label`s, tabs are real
 `tablist`/`tab`/`tabpanel` roles (radix `Tabs` with free arrow-key nav),
 control outcomes use `aria-live="polite"`, and full payloads sit behind
 `title` tooltips rather than truncation.
@@ -352,21 +379,34 @@ when the bundle version differs from `/api/health`.
   helpers, and web helpers; no invented scheduler or display semantics.
 - `tests/read-api.test.ts` — slice detail envelope (artifact flags,
   tails, metrics-absent contracts).
-- `tests/web-dashboard-redesign.test.ts` — composition pins:
+- `tests/web-dashboard-redesign.test.ts` — dashboard behavior: the
   `preferredSliceId` order (running/verifying, failed, blocked,
-  most-recent done, roadmap order), viewport shell rules (100dvh,
-  shell clips page scroll, board/inspector/activity scroll internally),
-  run-strip/lanes/board/trace/tabs presence with no KPI-card language,
-  Overview composition (strip + lanes + board/graph, no bento grid),
-  Inspector default (no empty state, all eight tabs including Events).
+  most-recent done, roadmap order), the `heroAction` line per status, and
+  the execution spine's current stage (running → Work, verifying → Verify,
+  finished → Done, unclaimed → none). Layout and rendering are e2e's job —
+  nothing here asserts CSS or component source text.
+- `tests/live-stream.test.ts` — the live window's semantics: the progress
+  grammar → semantic rows, line identity across polls, generation-scoped
+  event ordering, the ~5-row compact window, raw-line rendering, and
+  follow-from-scroll.
 - `scripts/web-qa.ts` + `scripts/gen-captures.ts` — structural DOM
   captures under `captures/` (regenerate after UI changes). The narrow
   CSS contract pins the viewport shell (100dvh + hidden page scroll +
   internal panel scroll + 900px stacked breakpoint).
+- `scripts/web-captures.ts` — browser screenshots of five Overview states
+  (`captures/web-overview-*.png`) for human visual review; run after
+  `bun run web:build`, since the fixture server serves the embedded bundle.
 - `bun run test:e2e` (`tests/e2e/`, Playwright + Chromium) — real-browser
   suite over a fixture server (`serve.ts`) with overflow-stressing strings
-  (200-char titles, unbroken reason/log tokens). `overflow.e2e.ts` asserts
-  zero client errors on boot and no text escaping its container across all
-  five views and all eight inspector tabs at 1440px and 390px; the detector
-  treats designed scrollers (tables, code, lane strip, tab strips) as
-  intentional and flags spills, cuts, and unintended scroll regions.
+  (200-char titles, unbroken reason/log tokens). `overview.e2e.ts` covers
+  the redesigned surface as behavior: the auto-selected worker, the
+  ~5-row compact window, expand/collapse, scroll-pauses-follow + Jump to
+  live, worker switching, the spine's current phase, Activity
+  collapse/expand, the Inspector drawer, Board/DAG/Agents sharing one
+  selection, the hero → execution → modes stack, collapsed-rail width, and
+  narrow-width stacking. `overflow.e2e.ts` asserts zero client errors on
+  boot and no text escaping its container across all five views, all
+  modes, and all eight inspector tabs at 1440px and 390px; the detector
+  treats designed scrollers as intentional and flags spills, cuts, and
+  unintended scroll regions. The config pins `NO_PROXY` for loopback so a
+  proxied environment cannot break the readiness probe.

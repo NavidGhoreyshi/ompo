@@ -69,12 +69,16 @@ export function buildPipelineStages(
   const raw: { name: string; state: TraceState; note: string }[] = [
     {
       name: "Claim",
-      state: claimed ? (active && selected.attempts <= 1 && genCount <= 1 ? "active" : "done") : "waiting",
+      // Claiming is atomic: observed once, it is behind us. Its own detail
+      // keeps the attempt number; the halo belongs to the live phases.
+      state: claimed ? "done" : "waiting",
       note: claimed ? `attempt ${selected.attempts}` : "unclaimed",
     },
     {
       name: "Generation",
-      state: genCount > 1 ? "done" : claimed ? "active" : "waiting",
+      // A generation is in flight only while the slice is: a finished slice
+      // must never show its generation still running.
+      state: genCount > 1 ? "done" : active ? "active" : claimed ? "done" : "waiting",
       note: `gen ${selected.generation}${handoffs > 0 ? ` · ${handoffs} handoff${handoffs === 1 ? "" : "s"}` : ""}`,
     },
     {
@@ -118,4 +122,21 @@ export function buildPipelineStages(
   ];
 
   return raw.map((s) => ({ label: s.name, sublabel: s.note, state: toStageState(s.state) }));
+}
+
+/**
+ * The stage the slice is in: the furthest observed live stage — the last
+ * running one, else the last failure, else the last completed stage. Taking
+ * the *last* active stage matters: Claim/Generation/Work can all read as live
+ * at once while a worker runs, and the spine must lead with Work (or Verify),
+ * not with the phase the slice entered first. -1 means no observed phase.
+ */
+export function currentStageIndex(stages: PipelineStage[]): number {
+  for (let i = stages.length - 1; i >= 0; i--) if (stages[i]!.state === "running") return i;
+  for (let i = stages.length - 1; i >= 0; i--) if (stages[i]!.state === "fail") return i;
+  let lastDone = -1;
+  stages.forEach((s, i) => {
+    if (s.state === "done") lastDone = i;
+  });
+  return lastDone;
 }

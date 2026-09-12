@@ -1,60 +1,94 @@
-import { useEffect, useRef } from "react";
-import type { AgentRow, SliceSummary } from "../api.ts";
-import { useSliceLog } from "../lib/useSliceLog.ts";
-import { StatusSymbol } from "./icons.tsx";
+import { useEffect, useRef, useState, type CSSProperties } from "react";
+import type { AgentRow, RunEvent, SliceSummary } from "../api.ts";
+import { COMPACT_ROWS, followFromScroll, rawLine, type StreamEntry } from "../lib/stream.ts";
+import { LIVE_TAIL, useLiveStream } from "../lib/useLiveStream.ts";
 import { toneForStatus } from "./StatusBadge.tsx";
 
-type FeedTagKind = "read" | "shell" | "turn";
+/** Ghost rows live just long enough to be seen leaving. */
+const EXIT_MS = 240;
 
-function tagForLine(line: string): { tag: string; kind: FeedTagKind } | null {
-  const read = line.match(/^\s*(read|glob|grep)\b/i);
-  if (read) return { tag: read[1]!.toLowerCase(), kind: "read" };
-  if (/^\s*bash\b/i.test(line)) return { tag: "bash", kind: "shell" };
-  const turn = line.match(/turn\s+\d+\s+done\b/i);
-  if (turn) return { tag: turn[0]!.toLowerCase(), kind: "turn" };
-  return null;
+function StreamRow({ entry, motion }: { entry: StreamEntry; motion?: "enter" | "leave" }) {
+  return (
+    <div
+      className="omp-live-row"
+      data-kind={entry.kind}
+      data-motion={motion ?? "steady"}
+      title={entry.meta ? `${entry.text} — ${entry.meta}` : entry.text}
+    >
+      <span aria-hidden="true" className="omp-live-tag" data-kind={entry.kind}>
+        {entry.tag}
+      </span>
+      <span className="omp-live-text">{entry.text}</span>
+      {entry.meta && <span className="omp-live-meta">{entry.meta}</span>}
+    </div>
+  );
 }
 
 /**
- * Live worker feed: the TUI-equivalent stream, front and center. Follows the
- * active slice (selection, else the slice that needs eyes): who is working
- * (lane), what turn the session is on (attempt/generation, turns/tools), the
- * worker's latest progress line, and the live tail of its log — the
- * turn-by-turn progress the event stream can't show (events only advance at
- * stage boundaries). Quiescent runs show the settled tail, marked settled;
- * a slice with no log yet says so honestly. Never empty, never estimated.
+ * The live worker window — the visual protagonist of the Overview.
  *
- * Lines render as index · tag · content: read-type calls (read/glob/grep)
- * in blue, shell calls (bash) in amber, turn markers muted. Tool-type color
- * is categorical, not a run status — the feed and the status pills never
- * share a visual unit.
+ * Compact (default): the newest few *meaningful* rows — tool calls, turn
+ * boundaries, lifecycle events — in a fixed window with no scrollbar. New rows
+ * rise in, the row that falls out of the window is animated out, and the
+ * window never grows. Expanded: the full worker-log tail the panel polled
+ * (raw lines, semantic colors), scrolling independently.
+ *
+ * Following is behavior, not decoration: the compact window follows by
+ * construction, and the expanded window follows until the operator scrolls
+ * away from the bottom — then a `Jump to live` affordance appears and stays
+ * until they take it. Collapsing never silently re-enables follow. Nothing is
+ * truncated permanently; the expanded view and the Inspector's Log tab read
+ * the same log.
  */
 export default function LiveFeed({
   runId,
   slice,
   agent,
-  live,
+  events,
 }: {
   runId: string | null;
   slice: SliceSummary | null;
   agent?: AgentRow;
-  live: boolean;
+  events: RunEvent[];
 }) {
-  const active = slice !== null && (slice.status === "running" || slice.status === "verifying");
-  const { name, lines, error, loading } = useSliceLog(runId, slice?.id ?? null, active, 100);
-  const logRef = useRef<HTMLDivElement | null>(null);
+  const stream = useLiveStream(runId, slice, events);
+  const [expanded, setExpanded] = useState(false);
+  const [follow, setFollow] = useState(true);
+  const bodyRef = useRef<HTMLDivElement | null>(null);
 
-  // Tail-following: stay pinned to the newest line as polls land.
+  // Enter/leave motion for the compact window: rows that just arrived, and the
+  // rows that fell out of it. One pass per window change, cleared on a timer.
+  const [motion, setMotion] = useState<{ enter: string[]; leave: StreamEntry[] }>({ enter: [], leave: [] });
+  const prevRef = useRef<StreamEntry[]>(stream.compact);
+  const windowKey = stream.compact.map((e) => e.key).join("|");
   useEffect(() => {
-    const el = logRef.current;
-    if (el) el.scrollTop = el.scrollHeight;
-  }, [lines]);
+    const prev = prevRef.current;
+    const next = stream.compact;
+    prevRef.current = next;
+    const nextKeys = new Set(next.map((e) => e.key));
+    const leave = prev.filter((e) => !nextKeys.has(e.key));
+    const prevKeys = new Set(prev.map((e) => e.key));
+    const enter = next.filter((e) => !prevKeys.has(e.key)).map((e) => e.key);
+    if (leave.length === 0 && enter.length === 0) return;
+    setMotion({ enter, leave });
+    const timer = setTimeout(() => setMotion({ enter: [], leave: [] }), EXIT_MS);
+    return () => clearTimeout(timer);
+    // Keyed on the window's keys, not the array identity: a re-render that
+    // rebuilds the same rows must not replay the motion.
+  }, [windowKey]);
+
+  // Follow: the expanded view stays pinned to the newest line while following.
+  useEffect(() => {
+    const el = bodyRef.current;
+    if (el && expanded && follow) el.scrollTop = el.scrollHeight;
+    // Pinned on new output, on expanding, and on re-taking the follow.
+  }, [expanded, follow, stream.lines.length]);
 
   if (!slice) {
     return (
-      <section className="omp-livefeed" data-live="false" aria-label="Live worker feed">
+      <section className="omp-livefeed" data-live="false" data-expanded="false" aria-label="Live worker output">
         <div className="omp-livefeed-head">
-          <span className="omp-section-label">Live feed</span>
+          <span className="omp-section-label">Live output</span>
           <span className="omp-hint">no slices yet</span>
         </div>
       </section>
@@ -62,98 +96,132 @@ export default function LiveFeed({
   }
 
   const tone = toneForStatus(slice.status);
-  const metrics = agent?.metrics;
-  const progress =
-    metrics !== undefined
-      ? `${metrics.turns}t/${metrics.tools}tl`
-      : agent !== undefined
-        ? `attempt ${agent.attempt} · gen ${agent.generation}`
-        : `attempt ${slice.attempts} · gen ${slice.generation}`;
-  const lastLine = lines.length > 0 ? lines[lines.length - 1]! : null;
+  const streaming = slice.status === "running" || slice.status === "verifying";
+  // The compact window follows by construction; `follow` is the operator's
+  // choice inside the expanded view and survives collapsing.
+  const following = !expanded || follow;
+  const rows = expanded
+    ? stream.lines.map((line, i) => rawLine(line, stream.ids[i] ?? i, stream.logName))
+    : stream.compact;
+  const capped = expanded && stream.lines.length >= LIVE_TAIL;
+  const empty = !stream.loading && !stream.error && rows.length === 0;
 
   return (
-    <section className="omp-livefeed" data-live={active ? "true" : "false"} aria-label={`Live worker feed — ${slice.id}`}>
+    <section
+      className="omp-livefeed"
+      data-live={streaming ? "true" : "false"}
+      data-expanded={expanded ? "true" : "false"}
+      aria-label={`Live worker output — ${slice.id}`}
+      style={{ "--omp-live-rows": COMPACT_ROWS } as CSSProperties}
+    >
       <div className="omp-livefeed-head">
-        <span className="omp-section-label">Live feed</span>
+        <span className="omp-section-label">Live output</span>
         <span aria-hidden="true" className="omp-livefeed-dot" data-tone={tone} />
-        <code className="omp-livefeed-id">{slice.id}</code>
-        <span className="omp-ellipsis omp-livefeed-title" title={slice.title}>
-          {slice.title}
-        </span>
-        <span aria-hidden="true" className="omp-status-sym" data-tone={tone}>
-          <StatusSymbol status={slice.status} />
-        </span>
-        <span className="omp-board-state" data-tone={tone}>
-          {slice.status}
-        </span>
-        {agent?.wedged === true && (
-          <strong className="omp-attention" role="alert" title="The worker transcript stopped growing while the run still holds its lock — the loop is wedged, not working">
-            STALLED · no worker output {agent.staleForMs == null ? "" : `${Math.max(1, Math.round(agent.staleForMs / 60000))}m`}
-          </strong>
+        {streaming && following ? (
+          <span className="omp-livefeed-follow" title="Following new worker output">
+            live
+          </span>
+        ) : (
+          <span className="omp-hint">{streaming ? "paused" : "settled"}</span>
         )}
-        <span className="omp-hint">
-          {agent !== undefined ? `L${agent.lane} · ` : ""}
-          {progress}
-          {" · "}
-          {active ? "live (2s poll)" : "settled"}
+        {agent !== undefined && (
+          <span className="omp-hint">
+            L{agent.lane} · gen {agent.generation} · attempt {agent.attempt}
+          </span>
+        )}
+        <span className="omp-livefeed-log-name omp-ellipsis" title={stream.logName ?? undefined}>
+          {stream.logName ?? "no worker log yet"}
+          {stream.lines.length > 0 ? ` · ${stream.lines.length} lines` : ""}
         </span>
+        <button
+          type="button"
+          className="omp-livefeed-toggle"
+          aria-expanded={expanded}
+          onClick={() => setExpanded((e) => !e)}
+        >
+          {expanded ? "Collapse log" : "View full log"}
+        </button>
       </div>
-      {agent?.lastLine ? (
-        <p className="omp-ellipsis omp-livefeed-latest" title={agent.lastLine}>
-          <span className="omp-hint">latest · </span>
-          {agent.lastLine}
+
+      {agent?.wedged === true && (
+        <p className="omp-attention" role="alert" title="The worker transcript stopped growing while the run still holds its lock — the loop is wedged, not working">
+          <strong>STALLED</strong>
+          <span className="omp-hint">
+            no worker output {agent.staleForMs == null ? "" : `for ${Math.max(1, Math.round(agent.staleForMs / 60000))}m`} — the
+            lock is still held
+          </span>
         </p>
-      ) : (
-        slice.reason && (
-          <p className="omp-ellipsis omp-livefeed-latest" title={slice.reason}>
-            <span className="omp-hint">reason · </span>
-            {slice.reason}
-          </p>
-        )
       )}
-      {loading && <p className="omp-hint">loading worker log…</p>}
-      {!loading && error && (
+
+      {stream.loading && stream.lines.length === 0 && <p className="omp-hint">loading worker log…</p>}
+      {!stream.loading && stream.error && (
         <p className="omp-error" role="alert">
-          {error}
+          {stream.error}
         </p>
       )}
-      {!loading && !error && lines.length === 0 && (
+      {empty && (
         <p className="omp-hint">
-          {active ? "worker started — lines appear once it starts writing" : `no worker lines yet · ${name ?? "no log file"}`}
+          {streaming
+            ? "worker started — lines appear once it writes"
+            : slice.reason
+              ? `no worker output · ${slice.reason}`
+              : "no worker output recorded for this slice"}
         </p>
       )}
-      {!loading && !error && lastLine !== null && (
-        <p className="omp-ellipsis omp-livefeed-latest" data-fresh="true" title={lastLine}>
-          <span className="omp-hint">last line · </span>
-          {lastLine}
-        </p>
-      )}
-      {!loading && !error && lines.length > 0 && (
+
+      {rows.length > 0 && (
         <div
-          ref={logRef}
+          ref={bodyRef}
           className="omp-code omp-livefeed-log"
           role="log"
-          aria-label={`Worker log tail — ${slice.id}`}
-          tabIndex={0}
+          aria-label={`Worker output — ${slice.id}${expanded ? "" : " (latest lines)"}`}
+          tabIndex={expanded ? 0 : -1}
+          data-follow={following ? "true" : "false"}
+          onScroll={
+            expanded
+              ? (e) => {
+                  const el = e.currentTarget;
+                  setFollow(
+                    followFromScroll(Math.max(0, el.scrollHeight - el.clientHeight - el.scrollTop)),
+                  );
+                }
+              : undefined
+          }
         >
-          {lines.map((line, i) => {
-            const tagged = tagForLine(line);
-            const fresh = i === lines.length - 1;
-            return (
-              <div key={`${i}-${line.length}`} className="omp-feed-line" data-fresh={fresh ? "true" : "false"}>
-                <span aria-hidden="true" className="omp-feed-idx">
-                  {String(i + 1).padStart(2, "0")}
-                </span>
-                {tagged && (
-                  <span className="omp-feed-tag" data-kind={tagged.kind}>
-                    {tagged.tag}
-                  </span>
-                )}
-                <span className="omp-feed-text">{line}</span>
-              </div>
-            );
-          })}
+          {motion.leave.map((entry) => (
+            <StreamRow key={`leave:${entry.key}`} entry={entry} motion="leave" />
+          ))}
+          {rows.map((entry) => (
+            <StreamRow
+              key={entry.key}
+              entry={entry}
+              motion={motion.enter.includes(entry.key) ? "enter" : undefined}
+            />
+          ))}
         </div>
+      )}
+
+      {expanded && (
+        <p className="omp-livefeed-foot">
+          {!follow && (
+            <button
+              type="button"
+              className="omp-livefeed-jump"
+              onClick={() => {
+                const el = bodyRef.current;
+                if (el) el.scrollTop = el.scrollHeight;
+                setFollow(true);
+              }}
+            >
+              Jump to live
+            </button>
+          )}
+          <span className="omp-hint">
+            {capped ? `last ${stream.lines.length} lines` : `${stream.lines.length} lines`} · raw worker log · following{" "}
+            {follow ? "on" : "off"}
+            {slice.status === "running" || slice.status === "verifying" ? " · refreshing every 2s" : ""}
+          </span>
+        </p>
       )}
     </section>
   );

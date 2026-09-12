@@ -9,6 +9,7 @@ import {
   LuScrollText,
   LuShieldCheck,
   LuTriangleAlert,
+  LuX,
 } from "react-icons/lu";
 import type { IconType } from "react-icons";
 import type { RunEvent, SliceDetail, SliceSummary } from "../api.ts";
@@ -54,6 +55,7 @@ export default function Inspector({
   selected,
   detail,
   onControlDone,
+  onClose,
   slices,
   events = [],
   live,
@@ -63,6 +65,8 @@ export default function Inspector({
   selected: SliceSummary | undefined;
   detail: SliceDetail | Record<string, unknown> | null;
   onControlDone: () => void;
+  /** Closes the contextual drawer (App owns the open state). */
+  onClose: () => void;
   slices: SliceSummary[];
   events?: RunEvent[];
   live?: boolean;
@@ -91,7 +95,12 @@ export default function Inspector({
   return (
     <div className="omp-inspector-panel" aria-label="Inspector" aria-live="polite">
       <div className="omp-inspector-head">
-        <span className="omp-inspector-eyebrow">Active slice</span>
+        <div className="omp-inspector-closebar">
+          <span className="omp-section-label">Inspector</span>
+          <button type="button" className="omp-icon-btn" onClick={onClose} aria-label="Close inspector" title="Close inspector">
+            <LuX aria-hidden="true" className="size-4" />
+          </button>
+        </div>
         <h2 className="omp-inspector-title">
           <code>{sel.id}</code> {sel.title}
         </h2>

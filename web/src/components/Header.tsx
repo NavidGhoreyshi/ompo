@@ -1,4 +1,4 @@
-import { LuChevronDown, LuPanelLeft } from "react-icons/lu";
+import { LuChevronDown, LuPanelLeft, LuPanelRight } from "react-icons/lu";
 import type { RunSummary } from "../api.ts";
 import { Button } from "./ui/button.tsx";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "./ui/select.tsx";
@@ -11,6 +11,9 @@ export default function Header({
   version,
   sidebarCollapsed,
   onToggleSidebar,
+  inspectorOpen,
+  onToggleInspector,
+  selectedId,
 }: {
   runs: RunSummary[];
   runId: string | null;
@@ -19,6 +22,10 @@ export default function Header({
   version: string | null;
   sidebarCollapsed: boolean;
   onToggleSidebar: () => void;
+  inspectorOpen: boolean;
+  onToggleInspector: () => void;
+  /** Selected slice, shown on the inspector toggle so the drawer's subject is visible before opening. */
+  selectedId?: string | null;
 }) {
   return (
     <header className="omp-header">
@@ -75,6 +82,18 @@ export default function Header({
             </SelectContent>
           </Select>
         </label>
+        <button
+          type="button"
+          className="omp-inspector-toggle"
+          aria-expanded={inspectorOpen}
+          aria-controls="omp-inspector"
+          onClick={onToggleInspector}
+          title={inspectorOpen ? "Hide the inspector" : "Open the inspector for the selected slice"}
+        >
+          <LuPanelRight aria-hidden="true" className="size-4 shrink-0" />
+          Inspector
+          {selectedId && <code className="omp-inspector-toggle-slice">{selectedId}</code>}
+        </button>
       </div>
     </header>
   );

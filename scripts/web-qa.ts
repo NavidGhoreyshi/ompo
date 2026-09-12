@@ -330,10 +330,23 @@ try {
   // 14. narrow-width CSS contract (static): viewport shell, internal scroll, stacked narrow layout.
   const css = readFileSync(join(ROOT, "web", "src", "styles", "theme.css"), "utf8");
   check("viewport shell", css.includes("height: 100dvh") && css.includes(".omp-shell") && css.includes("overflow: hidden"));
-  check("internal panel scroll", css.includes(".omp-board-scroll") && css.includes("overflow-y: auto"));
+  check(
+    "internal panel scroll",
+    // Every region that can outgrow its box owns a scroll path: the workspace
+    // column, the board/DAG/agents mode body, the opened activity list, the
+    // inspector drawer, and the expanded live log.
+    [
+      [".omp-workspace", /\.omp-workspace\s*\{[^}]*overflow-y:\s*auto/s],
+      [".omp-modes-body", /\.omp-modes-body\s*\{[^}]*overflow-y:\s*auto/s],
+      [".omp-activity-list", /\.omp-activity-list\s*\{[^}]*overflow-y:\s*auto/s],
+      [".omp-inspector", /\.omp-inspector\s*\{[^}]*overflow-y:\s*auto/s],
+      [".omp-livefeed-log", /\.omp-livefeed\[data-expanded="true"\] \.omp-livefeed-log\s*\{[^}]*overflow-y:\s*auto/s],
+    ].every(([, re]) => re.test(css)),
+  );
+  check("compact live window is a fixed row window", /\.omp-livefeed\[data-expanded="false"\] \.omp-livefeed-log\s*\{[^}]*min-height:\s*calc\(var\(--omp-live-rows/s.test(css));
   check("narrow stacked breakpoint", css.includes("@media (max-width: 900px)"));
   check("narrow table scroll", css.includes(".omp-table-wrap") && css.includes("overflow-x: auto"));
-  snap.narrow = { viewportShell: true, panelScroll: true, stacked900: true, tableScroll: true };
+  snap.narrow = { viewportShell: true, panelScroll: true, stacked900: true, tableScroll: true, compactWindow: true };
 
   // 15. long output capped; 16. empty output null-safe.
   const workerTailLines = ship.workerTail ? ship.workerTail.split("\n").length : 0;

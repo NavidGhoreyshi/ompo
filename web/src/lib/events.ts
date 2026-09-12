@@ -77,7 +77,7 @@ export function truncateDetail(s: string, max = 180): string {
 }
 
 /** Concise `control_requested` JSON intent: `skip w2d — no longer needed`. */
-function conciseControlIntent(detail: string): string | null {
+export function conciseControlIntent(detail: string): string | null {
   try {
     const raw = JSON.parse(detail) as { kind?: unknown; sliceId?: unknown; jobs?: unknown; reason?: unknown };
     if (typeof raw !== "object" || raw === null || typeof raw.kind !== "string") return null;

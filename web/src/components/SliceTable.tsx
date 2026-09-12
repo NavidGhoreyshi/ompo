@@ -1,4 +1,4 @@
-import type { RunEvent, SliceSummary } from "../api.ts";
+import type { AgentRow, RunEvent, SliceSummary } from "../api.ts";
 import { StatusSymbol } from "./icons.tsx";
 import { toneForStatus } from "./StatusBadge.tsx";
 import { formatDurationMs } from "../lib/format.ts";
@@ -27,11 +27,13 @@ export default function SliceTable({
   selected,
   onSelect,
   events = [],
+  agents = [],
 }: {
   slices: SliceSummary[];
   selected?: string | null;
   onSelect: (sliceId: string) => void;
   events?: RunEvent[];
+  agents?: AgentRow[];
 }) {
   if (slices.length === 0) {
     return (
@@ -42,6 +44,7 @@ export default function SliceTable({
   }
 
   const durations = durationBySlice(events);
+  const lanes = new Map(agents.map((a) => [a.id, a.lane]));
 
   return (
     <section className="omp-board" aria-label="Slice board">
@@ -51,6 +54,7 @@ export default function SliceTable({
           const dur = durations.get(s.id);
           const tone = toneForStatus(s.status);
           const live = s.status === "running" || s.status === "verifying";
+          const lane = lanes.get(s.id);
           const durText = typeof dur === "number" ? formatDurationMs(dur) : live ? "working…" : "";
           return (
             <li key={s.id}>
@@ -74,7 +78,7 @@ export default function SliceTable({
                   </span>
                   <span className="omp-board-meta">
                     {s.effort ? `${s.effort} · ` : ""}attempt {s.attempts} · gen {s.generation}
-                    {s.agent ? ` · ${s.agent}` : ""}
+                    {lane !== undefined ? ` · L${lane}` : s.agent ? ` · ${s.agent}` : ""}
                     {s.deps.length > 0 ? ` · needs ${s.deps.join(", ")}` : ""}
                   </span>
                   {s.reason && (s.status === "failed" || s.status === "blocked-env") && (

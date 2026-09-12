@@ -134,13 +134,22 @@ storeApi.claimSlice(dir, run, "verifying");
 storeApi.workerFinished(dir, run, "verifying", "slices/verifying/report.json", { exit: 0, durationMs: 3_000 });
 
 storeApi.claimSlice(dir, run, "running");
-sliceFile(
-  dir, run, "running", "worker-1-g0.log",
-  `steady progress line\nlast observed worker line ${LONG_LINE}\n`,
-);
+sliceFile(dir, run, "running", "worker-1-g0.log",
+  `  [running] turn 1…\n  [running] last observed worker line ${LONG_LINE}\n`);
+// Long worker log for the live window: real progress grammar, enough lines to
+// scroll, and one catastrophic line so truncation is exercised too.
 sliceFile(
   dir, run, "longtitle", "worker-1-g0.log",
-  [`${LONG_LINE}`, `short line`, `${LONG_LINE}`].join("\n") + "\n",
+  [
+    ...Array.from({ length: 40 }, (_, i) => `  [longtitle] tool read: src/${"deeply-nested-module-".repeat(4)}file-${i + 1}.ts`),
+    `  [longtitle] tool glob: ${LONG_LINE}`,
+    `  [longtitle] turn 1 done (41 tool results)`,
+    ...Array.from({ length: 40 }, (_, i) => `  [longtitle] tool edit: src/${"deeply-nested-module-".repeat(4)}file-${i + 1}.ts`),
+    `  [longtitle] tool bash: bun test --coverage --filter ${LONG_LINE}`,
+    `  [longtitle] tool bash FAILED`,
+    `  [longtitle] retrying: provider error 429`,
+    `  [longtitle] turn 2 done (42 tool results)`,
+  ].join("\n") + "\n",
 );
 sliceFile(dir, run, "longtitle", "prompt-1-g0.md", `# prompt\n\n${LONG_LINE}\n\n${"ordinary prompt prose ".repeat(40)}\n`);
 sliceFile(

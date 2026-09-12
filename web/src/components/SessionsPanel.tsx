@@ -67,10 +67,10 @@ function SessionCard({ runId, session }: { runId: string | null; session: Operat
 
   return (
     <article className="omp-session" data-live={active ? "true" : "false"} aria-label={`Session ${sessionLabel(session)}`}>
-      <div className="omp-livefeed-head">
+      <div className="omp-session-head">
         <span aria-hidden="true" className="omp-livefeed-dot" />
-        <code className="omp-livefeed-id">{session.name}</code>
-        <span className="omp-ellipsis omp-livefeed-title" title={sessionLabel(session)}>
+        <code className="omp-session-name">{session.name}</code>
+        <span className="omp-ellipsis omp-session-title" title={sessionLabel(session)}>
           {sessionLabel(session)}
         </span>
         <span className="omp-hint">

@@ -22,21 +22,19 @@ export const VIEWS: ViewDef[] = [
 ];
 
 /**
- * Light run-centric rail: five views, no decorative cards. Overview is the
- * control room; Runs/Roadmap/Agents/Stats are secondary. The current run
- * stays visible at the rail head so navigation never competes with it.
- * Each item owns one category color via `--item-c` / `--item-c-dim` — a
- * single implementation with a color prop, not five variants.
+ * Quiet run-centric rail: five views, no counts, no decorative cards. The
+ * current run stays visible at the rail head so navigation never competes
+ * with it. Each item owns one category color via `--item-c` / `--item-c-dim`
+ * — a single implementation with a color prop, not five variants. Anything
+ * that lives on a page (slice counts, agent counts) is shown there, once.
  */
 export default function Sidebar({
   view,
   onNavigate,
-  counts,
   runId,
 }: {
   view: View;
   onNavigate: (v: View) => void;
-  counts: Partial<Record<View, number>>;
   runId?: string | null;
 }) {
   return (
@@ -60,9 +58,6 @@ export default function Sidebar({
           >
             <Icon aria-hidden="true" className="omp-nav-icon size-[15px] shrink-0" strokeWidth={2} />
             <span className="omp-nav-label">{v.label}</span>
-            {typeof counts[v.id] === "number" && (
-              <span className="omp-nav-count">{counts[v.id]}</span>
-            )}
           </button>
         );
       })}

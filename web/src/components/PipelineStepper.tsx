@@ -1,4 +1,4 @@
-import type { PipelineStage } from "../lib/pipeline.ts";
+import { currentStageIndex, type PipelineStage } from "../lib/pipeline.ts";
 
 function NodeGlyph({ state }: { state: PipelineStage["state"] }) {
   if (state === "done") {
@@ -33,10 +33,17 @@ function NodeGlyph({ state }: { state: PipelineStage["state"] }) {
 }
 
 /**
- * Pipeline stepper: the run's claim → done sequence as a horizontal rail
- * (hero) or a vertical rail (inspector checklist). Same `PipelineStage[]`
- * data, two presentations. Failure differs by icon shape ("!"), not color
- * alone; every node sits next to its word label.
+ * Execution lifecycle: CLAIM → GENERATION → WORK → HANDOFF → VERIFY → REVIEW
+ * → DONE, observed state only.
+ *
+ * Horizontal (Overview): an execution spine — one inline sequence where the
+ * current phase carries the weight (filled node, bright label, its own
+ * detail), completed phases sit quiet behind it, and phases that have not
+ * happened are restrained outlines. No stage implies progress it has not
+ * observed.
+ *
+ * Vertical (Inspector): the same stages as a checklist, one per row with
+ * every detail visible.
  */
 export default function PipelineStepper({
   stages,
@@ -49,14 +56,14 @@ export default function PipelineStepper({
 }) {
   if (variant === "vertical") {
     return (
-      <ol className="omp-trace omp-stepper omp-stepper--vertical" aria-label={label}>
+      <ol className="omp-trace omp-trace--rail" aria-label={label}>
         {stages.map((s) => (
-          <li key={s.label} className="omp-trace-step omp-stepper-step" data-state={s.state}>
-            <span aria-hidden="true" className="omp-trace-sym omp-stepper-node" data-state={s.state}>
+          <li key={s.label} className="omp-trace-step" data-state={s.state}>
+            <span aria-hidden="true" className="omp-trace-sym" data-state={s.state}>
               <NodeGlyph state={s.state} />
             </span>
             <span className="omp-trace-name">{s.label}</span>
-            <span className="omp-hint omp-stepper-sub" data-state={s.state}>
+            <span className="omp-hint omp-trace-sub" data-state={s.state}>
               {s.sublabel}
             </span>
           </li>
@@ -65,25 +72,23 @@ export default function PipelineStepper({
     );
   }
 
+  const current = currentStageIndex(stages);
   return (
-    <ol className="omp-stepper omp-stepper--horizontal" aria-label={label}>
+    <ol className="omp-spine" aria-label={label}>
       {stages.map((s, i) => {
-        const prevDone = i > 0 && stages[i - 1]!.state === "done";
-        const filled = s.state === "done" || (s.state === "running" && prevDone);
+        const isCurrent = i === current;
         return (
-          <li key={s.label} className="omp-stepper-step" data-state={s.state}>
-            <span className="omp-stepper-top">
-              <span aria-hidden="true" className="omp-stepper-node" data-state={s.state}>
-                <NodeGlyph state={s.state} />
-              </span>
-              {i < stages.length - 1 && (
-                <span aria-hidden="true" className="omp-stepper-connector" data-filled={filled ? "true" : "false"} />
-              )}
+          <li
+            key={s.label}
+            className="omp-spine-step"
+            data-state={s.state}
+            data-current={isCurrent ? "true" : "false"}
+          >
+            <span aria-hidden="true" className="omp-spine-node" data-state={s.state}>
+              <NodeGlyph state={s.state} />
             </span>
-            <span className="omp-stepper-label">{s.label}</span>
-            <span className="omp-stepper-sub omp-hint" data-state={s.state}>
-              {s.sublabel}
-            </span>
+            <span className="omp-spine-label">{s.label}</span>
+            {isCurrent && s.sublabel && <span className="omp-spine-sub">{s.sublabel}</span>}
           </li>
         );
       })}

@@ -1,20 +1,18 @@
 import type { AgentRow, RunDetail, RunEvent } from "../api.ts";
 import { formatElapsed, formatTokens } from "../lib/format.ts";
 import { describeEvent } from "../lib/events.ts";
-import { buildPipelineStages } from "../lib/pipeline.ts";
 import { heroAction, preferredSliceId } from "../lib/selection.ts";
 import { StatusSymbol } from "./icons.tsx";
-import PipelineStepper from "./PipelineStepper.tsx";
 import { toneForStatus } from "./StatusBadge.tsx";
-import { Separator } from "./ui/separator.tsx";
 
 /**
- * Run hero, not telemetry: first glance answers "s5a is running,
- * generation 1, on worker L0, working on X — while the rest is
- * done/pending." Hierarchy: current run → what is happening (hero slice +
- * state) → which worker (lane) → what it is on (live line, else latest
- * slice event, else status fallback) → quiet telemetry (counts, elapsed,
- * tokens, workers, 12px muted). No forecasts, ETAs, or cost estimates.
+ * Run hero — the Overview's identity band, not telemetry.
+ *
+ * Hierarchy: current run (id + live/quiescent) → the active slice (status
+ * glyph, id, title, state pill) → generation / attempt / worker and what the
+ * worker is on right now → one quiet telemetry line (counts, elapsed, tokens,
+ * workers). No ETA, no projected cost, no completion percentage: every number
+ * here is observed, and the counts mirror the board exactly.
  */
 export default function RunHeader({
   detail,
@@ -66,7 +64,6 @@ export default function RunHeader({
   }
 
   const heroTone = hero ? toneForStatus(hero.status) : "muted";
-  const stages = hero ? buildPipelineStages(hero, null) : [];
 
   return (
     <section className="omp-runline" data-tone={heroTone} aria-label="Run status">
@@ -80,28 +77,45 @@ export default function RunHeader({
       {hero ? (
         <div className="omp-hero">
           <h1 className="omp-hero-title">
+            <span aria-hidden="true" className="omp-hero-glyph" data-tone={heroTone}>
+              <StatusSymbol status={hero.status} />
+            </span>
             <code className="omp-hero-id">{hero.id}</code>
             <span className="omp-hero-name" title={hero.title}>
               {hero.title}
             </span>
             <span className="omp-hero-status" data-tone={heroTone}>
-              <span aria-hidden="true" className="omp-hero-status-glyph">
-                <StatusSymbol status={hero.status} />
-              </span>
               {hero.status}
             </span>
           </h1>
           <p className="omp-hero-sub">
-            gen {hero.generation} · attempt {hero.attempts}
-            {agent ? ` · L${agent.lane}` : hero.agent ? ` · ${hero.agent}` : ""}
-            {action ? ` · ${action}` : ""}
+            <span>generation {hero.generation}</span>
+            <span aria-hidden="true"> · </span>
+            <span>attempt {hero.attempts}</span>
+            {agent ? (
+              <>
+                <span aria-hidden="true"> · </span>
+                <span>L{agent.lane}</span>
+              </>
+            ) : hero.agent ? (
+              <>
+                <span aria-hidden="true"> · </span>
+                <span>{hero.agent}</span>
+              </>
+            ) : null}
+            {action ? (
+              <>
+                <span aria-hidden="true"> · </span>
+                <span className="omp-hero-action" title={action}>
+                  {action}
+                </span>
+              </>
+            ) : null}
           </p>
-          <PipelineStepper stages={stages} variant="horizontal" />
         </div>
       ) : (
         <p className="omp-hint">No slices yet.</p>
       )}
-      <Separator className="my-0.5 opacity-70" aria-hidden="true" />
       <p className="omp-runline-telemetry" aria-label="Run counts">
         <span className="omp-stat" data-tone="green">
           <strong>{counts.done}</strong> done
