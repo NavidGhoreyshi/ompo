@@ -1,5 +1,6 @@
-import { useCallback, useEffect, useRef, useState } from "react";
- import { api, type AgentRow, type OperatorSession, type RunDetail, type RunEvent, type RunStats, type RunSummary, type SliceDetail } from "./api.ts";
+import { Component, lazy, Suspense, useCallback, useEffect, useRef, useState, type ReactNode } from "react";
+import { api, type AgentRow, type OperatorSession, type RunDetail, type RunEvent, type RunStats, type RunSummary, type SliceDetail } from "./api.ts";
+import { instrument } from "./scene/instrument.ts";
 import { preferredSliceId } from "./lib/selection.ts";
 import Activity from "./components/Activity.tsx";
 import Header from "./components/Header.tsx";
@@ -12,6 +13,44 @@ import RunsPage from "./pages/RunsPage.tsx";
 import StatsPage from "./pages/StatsPage.tsx";
 
 const POLL_MS = 900;
+
+/** The deck is a lazy chunk; the shell loads it only when the surface asks. */
+const Deck = lazy(() => import("./scene/Deck.tsx"));
+
+type Surface = "dashboard" | "deck";
+
+function initialSurface(): Surface {
+  return new URLSearchParams(window.location.search).get("surface") === "deck" ? "deck" : "dashboard";
+}
+
+/**
+ * A failed deck chunk (offline build, stale asset) must leave the operator a
+ * usable shell: the boundary renders a card with the way back, and the
+ * dashboard never unmounts because of it.
+ */
+class DeckBoundary extends Component<{ onExit: () => void; children: ReactNode }, { failed: boolean }> {
+  state = { failed: false };
+
+  static getDerivedStateFromError(): { failed: boolean } {
+    return { failed: true };
+  }
+
+  componentDidCatch(error: unknown): void {
+    console.error("deck surface failed to load", error);
+  }
+
+  render(): ReactNode {
+    if (!this.state.failed) return this.props.children;
+    return (
+      <div className="omp-deck-notice" role="alert">
+        <p>The 3D surface failed to load — the dashboard is unaffected.</p>
+        <button type="button" className="omp-deck-button" onClick={this.props.onExit}>
+          Back to dashboard
+        </button>
+      </div>
+    );
+  }
+}
 
 function useRuns() {
   const [runs, setRuns] = useState<RunSummary[]>([]);
@@ -46,6 +85,7 @@ export default function App() {
   const [sliceDetail, setSliceDetail] = useState<SliceDetail | Record<string, unknown> | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [view, setView] = useState<View>("overview");
+  const [surface, setSurface] = useState<Surface>(initialSurface);
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   // The Inspector is a contextual drawer, closed by default: the active
   // worker keeps the viewport until the operator asks for forensics.
@@ -53,6 +93,15 @@ export default function App() {
   const seqRef = useRef(-1);
   const selRef = useRef<string | null>(null);
   selRef.current = sel;
+
+  // The surface is a URL parameter so the desktop shell (`d11`) can address it;
+  // replacing state keeps the dashboard's own history untouched.
+  useEffect(() => {
+    const url = new URL(window.location.href);
+    if (surface === "deck") url.searchParams.set("surface", "deck");
+    else url.searchParams.delete("surface");
+    window.history.replaceState(null, "", url);
+  }, [surface]);
 
   useEffect(() => {
     api.health()
@@ -79,6 +128,7 @@ export default function App() {
       ]);
       setDetail(d);
       setEvents(ev.events);
+      for (const e of ev.events) instrument.noteEvent(e.seq, e.at);
       seqRef.current = ev.offset;
       setStats(st);
       setAgents(ag);
@@ -101,6 +151,7 @@ export default function App() {
           const ev = JSON.parse((m as MessageEvent).data) as RunEvent;
           if (typeof ev.seq === "number" && ev.seq > seqRef.current) {
             seqRef.current = ev.seq;
+            instrument.noteEvent(ev.seq, ev.at);
             setEvents((prev) => [...prev.slice(-400), ev]);
             // Targeted refresh: the frame only signals *what* changed — board/slice
             // state always re-derives from the read endpoints, never from the payload.
@@ -127,6 +178,7 @@ export default function App() {
         const ev = await api.events(runId, seqRef.current);
         if (ev.events.length > 0) {
           seqRef.current = ev.offset;
+          for (const e of ev.events) instrument.noteEvent(e.seq, e.at);
           setEvents((prev) => [...prev.slice(-400), ...ev.events]);
           await loadRun(runId);
         }
@@ -177,6 +229,10 @@ export default function App() {
     setInspectorOpen(true);
   }, []);
 
+  const toggleSurface = useCallback(() => {
+    setSurface((current) => (current === "deck" ? "dashboard" : "deck"));
+  }, []);
+
   const openRun = useCallback((id: string) => {
     setRunId(id);
     setSel(null);
@@ -208,12 +264,31 @@ export default function App() {
         inspectorOpen={inspectorOpen}
         onToggleInspector={() => setInspectorOpen((o) => !o)}
         selectedId={sel}
+        surface={surface}
+        onToggleSurface={toggleSurface}
       />
       <div className="omp-body">
         <Sidebar view={view} onNavigate={setView} runId={runId} />
         <main className="omp-main" aria-label={`${view} workspace`}>
           {stale && <p className="omp-warn">Bundle built against a different ompo version — rebuild the dashboard (`bun run web:build`).</p>}
           {(error ?? runsError) && <p className="omp-error" role="alert">{error ?? runsError}</p>}
+          {surface === "deck" ? (
+            <DeckBoundary onExit={toggleSurface}>
+              <Suspense fallback={<div className="omp-deck-skeleton" role="status">loading the 3D surface…</div>}>
+                <Deck
+                  runId={runId}
+                  detail={detail}
+                  events={events}
+                  agents={agents}
+                  selected={sel}
+                  sliceDetail={sliceDetail}
+                  live={detail?.live ?? false}
+                  onExit={toggleSurface}
+                />
+              </Suspense>
+            </DeckBoundary>
+          ) : (
+            <>
           {view === "overview" && (
             <Overview
               detail={detail}
@@ -235,6 +310,8 @@ export default function App() {
             <AgentsPage agents={agents} live={detail?.live ?? false} selected={sel} onSelect={setSel} />
           )}
           {view === "stats" && <StatsPage stats={stats} runId={runId} />}
+            </>
+          )}
         </main>
         <aside
           className="omp-inspector"

@@ -14,6 +14,8 @@ export default function Header({
   inspectorOpen,
   onToggleInspector,
   selectedId,
+  surface,
+  onToggleSurface,
 }: {
   runs: RunSummary[];
   runId: string | null;
@@ -26,6 +28,9 @@ export default function Header({
   onToggleInspector: () => void;
   /** Selected slice, shown on the inspector toggle so the drawer's subject is visible before opening. */
   selectedId?: string | null;
+  /** Which surface the workspace is showing; the toggle is the way between them. */
+  surface: "dashboard" | "deck";
+  onToggleSurface: () => void;
 }) {
   return (
     <header className="omp-header">
@@ -82,6 +87,16 @@ export default function Header({
             </SelectContent>
           </Select>
         </label>
+        <button
+          type="button"
+          className="omp-surface-toggle"
+          aria-pressed={surface === "deck"}
+          aria-label={surface === "deck" ? "Switch to the dashboard surface" : "Switch to the deck surface"}
+          onClick={onToggleSurface}
+          title={surface === "deck" ? "Back to the dashboard (D)" : "Open the 3D deck surface"}
+        >
+          {surface === "deck" ? "Dashboard" : "Deck"}
+        </button>
         <button
           type="button"
           className="omp-inspector-toggle"

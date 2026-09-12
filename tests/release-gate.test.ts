@@ -428,3 +428,91 @@ describe("release gate: architecture lock (engine -> store+events -> Web/TUI/CLI
     expect(apiRefs).toBeGreaterThan(0);
   });
 });
+
+describe("release gate: deck boundary (roadmap d01)", () => {
+  const webRoot = join(import.meta.dir, "..", "web", "src");
+  const sceneRoot = join(webRoot, "scene");
+
+  const walkFiles = (root: string, match: (name: string) => boolean): string[] => {
+    const files: string[] = [];
+    const walk = (d: string): void => {
+      for (const e of readdirSync(d, { withFileTypes: true })) {
+        const p = join(d, e.name);
+        if (e.isDirectory()) walk(p);
+        else if (match(e.name)) files.push(p);
+      }
+    };
+    walk(root);
+    return files;
+  };
+
+  const importSpecifiers = (text: string): string[] => [...text.matchAll(/^\s*import[^;]*?from\s*["']([^"']+)["']/gm)].map((m) => m[1]!);
+  const relative = (file: string): string => file.slice(webRoot.length + 1).split("\\").join("/");
+
+  test("`three` is confined to renderer.ts; Deck.tsx may not smuggle it in", () => {
+    const scene = walkFiles(sceneRoot, (name) => name.endsWith(".ts") || name.endsWith(".tsx"));
+    expect(scene.length).toBeGreaterThan(0);
+    for (const file of scene) {
+      const name = relative(file);
+      const allowed = name === "scene/renderer.ts" || /^scene\/Deck.*\.tsx$/.test(name);
+      const usesThree = importSpecifiers(readFileSync(file, "utf8")).some((spec) => spec === "three" || spec.startsWith("three/"));
+      if (usesThree && !allowed) {
+        throw new Error(`${name} imports three — only scene/renderer.ts and Deck*.tsx may`);
+      }
+    }
+    // The renderer is the one that must, and it is not a documentation claim.
+    const renderer = readFileSync(join(sceneRoot, "renderer.ts"), "utf8");
+    expect(importSpecifiers(renderer)).toContain("three");
+    expect(importSpecifiers(readFileSync(join(sceneRoot, "Deck.tsx"), "utf8"))).not.toContain("three");
+  });
+
+  test("the deck renders: no fetching, no transport, no store access under scene/**", () => {
+    for (const file of walkFiles(sceneRoot, (name) => name.endsWith(".ts") || name.endsWith(".tsx"))) {
+      const name = relative(file);
+      const text = readFileSync(file, "utf8");
+      expect(`${name}: fetch`).toBe(text.includes("fetch(") ? `${name}: fetch(` : `${name}: fetch`);
+      expect(`${name}: EventSource`).toBe(text.includes("new EventSource") ? `${name}: EventSource` : `${name}: EventSource`);
+      expect(`${name}: WebSocket`).toBe(text.includes("new WebSocket") ? `${name}: WebSocket` : `${name}: WebSocket`);
+      for (const spec of importSpecifiers(text)) {
+        expect(`${name}: ${spec}`).toBe(spec.startsWith("node:") ? `${name}: forbidden` : `${name}: ${spec}`);
+        expect(`${name}: ${spec}`).toBe(spec.includes("../src/") ? `${name}: forbidden` : `${name}: ${spec}`);
+      }
+    }
+  });
+
+  test("M1: the deck projects instead of re-deriving (no second source of slice/agent state)", () => {
+    // Derivation lives in web/src/lib/** and, for the scene's own model, in the
+    // deck modules listed in the roadmap's module map. Anywhere else — a
+    // component, a page, a new scene file — re-deriving slice status, the
+    // "needs eyes" ranking, the pipeline stage index or the live-window
+    // contents is a second source of truth, whether copied or re-exported.
+    const deckDerivations = new Set([
+      "scene/model.ts",
+      "scene/rail.ts",
+      "scene/focus.ts",
+      "scene/lanes.ts",
+      "scene/alerts.ts",
+      "scene/deltas.ts",
+      "scene/history.ts",
+      "scene/fallback.ts",
+      "scene/palette.ts",
+      "scene/ambient.ts",
+    ]);
+    const stageLabels = ["Claim", "Generation", "Work", "Handoff", "Verify", "Review", "Done"];
+    const violations: string[] = [];
+    for (const file of walkFiles(webRoot, (name) => name.endsWith(".ts") || name.endsWith(".tsx"))) {
+      const name = relative(file);
+      if (name.startsWith("lib/") || deckDerivations.has(name)) continue;
+      const text = readFileSync(file, "utf8");
+
+      // Rank switch over live statuses: `case "running": … return 0`.
+      const rankSwitch = /(?:case\s*["'](?:running|verifying)["']\s*:|===\s*["'](?:running|verifying)["'])[\s\S]{0,240}?return\s+\d/;
+      if (rankSwitch.test(text)) violations.push(`${name} ranks slices by status (preferredSliceId belongs in lib/selection.ts)`);
+
+      // Pipeline stage index: three or more stage names in one file.
+      const present = stageLabels.filter((label) => text.includes(`"${label}"`));
+      if (present.length >= 3) violations.push(`${name} names pipeline stages (${present.join(", ")}) — buildPipelineStages belongs in lib/pipeline.ts`);
+    }
+    expect(violations).toEqual([]);
+  });
+});

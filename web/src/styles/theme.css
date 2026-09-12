@@ -3752,3 +3752,216 @@ button[data-slot="select-trigger"] {
     transform: none !important;
   }
 }
+
+/* ---------- deck surface (3D, slice d01) ---------- */
+/* The workspace column shows either the dashboard or the deck. The deck is a
+ * canvas plus a DOM HUD: all text stays in the document (CP-3), so the HUD is
+ * selectable, searchable and screen-readable while the canvas draws only
+ * geometry. */
+.omp-deck {
+  position: relative;
+  flex: 1;
+  min-height: 0;
+  min-width: 0;
+  overflow: hidden;
+  background: #0a0e14;
+  border: 1px solid var(--omp-border);
+  border-radius: var(--omp-radius);
+}
+
+.omp-deck:focus-visible {
+  outline: 2px solid var(--omp-focus);
+  outline-offset: -2px;
+}
+
+.omp-deck-canvas {
+  display: block;
+  width: 100%;
+  height: 100%;
+}
+
+.omp-deck-hud {
+  position: absolute;
+  top: 10px;
+  left: 10px;
+  right: 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  align-items: flex-start;
+  pointer-events: none;
+  font-family: var(--omp-mono);
+  font-size: 12px;
+}
+
+.omp-deck-row,
+.omp-deck-panel {
+  pointer-events: auto;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  max-width: 100%;
+  padding: 6px 10px;
+  border: 1px solid var(--omp-border);
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--omp-panel) 88%, transparent);
+  color: var(--omp-secondary);
+}
+
+.omp-deck-chip {
+  font-weight: 600;
+  color: var(--omp-text);
+}
+
+.omp-deck-chip[data-tier="minimal"] {
+  color: var(--omp-amber);
+}
+
+.omp-deck-warn {
+  color: var(--omp-amber);
+}
+
+.omp-deck-metric {
+  color: var(--omp-secondary);
+  white-space: nowrap;
+}
+
+.omp-deck-metric[data-live="true"] {
+  color: var(--omp-cyan);
+}
+
+.omp-deck-event {
+  color: var(--omp-muted);
+  max-width: 42ch;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.omp-deck-button {
+  margin-left: auto;
+  font: inherit;
+  font-family: var(--omp-font);
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--omp-secondary);
+  background: transparent;
+  border: 1px solid var(--omp-border);
+  border-radius: 7px;
+  padding: 3px 9px;
+  cursor: pointer;
+}
+
+.omp-deck-button:hover {
+  color: var(--omp-text);
+  background: var(--omp-panel-2);
+}
+
+.omp-deck-panel {
+  flex-direction: column;
+  align-items: stretch;
+  gap: 10px;
+  max-width: 560px;
+}
+
+.omp-deck-subject {
+  margin: 0;
+  color: var(--omp-muted);
+}
+
+.omp-deck-costs {
+  margin: 0;
+  display: grid;
+  gap: 4px;
+}
+
+.omp-deck-costs > div {
+  display: grid;
+  grid-template-columns: 12ch minmax(0, 1fr);
+  gap: 8px;
+}
+
+.omp-deck-costs dt {
+  color: var(--omp-muted);
+}
+
+.omp-deck-costs dd {
+  margin: 0;
+  color: var(--omp-text);
+}
+
+.omp-deck-keys {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: 3px;
+}
+
+.omp-deck-keys li {
+  display: grid;
+  grid-template-columns: 7ch 1fr auto;
+  gap: 8px;
+  color: var(--omp-muted);
+}
+
+.omp-deck-keys li[data-live="true"] {
+  color: var(--omp-secondary);
+}
+
+.omp-deck-keys kbd {
+  font-family: var(--omp-mono);
+  color: var(--omp-text);
+}
+
+.omp-deck-keys em {
+  font-style: normal;
+  color: var(--omp-muted);
+}
+
+.omp-deck-notice,
+.omp-deck-skeleton {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  color: var(--omp-secondary);
+  border: 1px solid var(--omp-border);
+  border-radius: var(--omp-radius);
+  background: var(--omp-panel);
+}
+
+.omp-deck-actions {
+  display: flex;
+  gap: 8px;
+}
+
+.omp-surface-toggle {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  font: inherit;
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--omp-secondary);
+  background: transparent;
+  border: 1px solid var(--omp-border);
+  border-radius: 8px;
+  padding: 5px 11px;
+  cursor: pointer;
+}
+
+.omp-surface-toggle:hover {
+  color: var(--omp-text);
+  background: var(--omp-panel-2);
+}
+
+.omp-surface-toggle[aria-pressed="true"] {
+  color: var(--omp-text);
+  background: var(--omp-panel-2);
+  border-color: var(--omp-border-strong);
+}
