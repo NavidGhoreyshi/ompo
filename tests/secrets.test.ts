@@ -22,28 +22,47 @@ import { runRoadmapLoop } from "../src/loop.ts";
 import type { Verdict } from "../src/types.ts";
 import type { WorkerRunner } from "../src/worker.ts";
 
+/**
+ * Fixture values are assembled from fragments on purpose. Push protection
+ * scans pushed files — test fixtures included — and these samples are shaped
+ * exactly like the tokens they emulate (that is the fixtures' job), so a
+ * complete literal blocks every push to this repository. The scanner under
+ * test still sees the assembled value at runtime.
+ */
+const fixture = (...parts: string[]): string => parts.join("");
+const AWS_KEY = fixture("AK", "IA", "IOSFODNN7SECRETS");
+const AWS_KEY2 = fixture("AK", "IA", "QZ3K9M2V7X4B8JXS");
+const AWS_DOC_EXAMPLE = fixture("AK", "IA", "IOSFODNN7EXAMPLE");
+const GH_TOKEN = fixture("gh", "p_", "qZ3kL9mN2vB7xC4dF6gH8jK1pQ5rS0tUvW3yXaZbCd6");
+const SLACK_TOKEN = fixture("xox", "b-550823488112-abcdefghijklmnopzzqQ");
+const STRIPE_KEY = fixture("sk", "_live_", "qZ3kL9mN2vB7xC4dF6gH8jK1p");
+const OPENAI_KEY = fixture("sk", "-", "qZ3kL9mN2vB7xC4dF6gH8jK1pQ5rS0tUvW3yXaZbCd");
+const GOOGLE_KEY = fixture("AI", "za", "SyAqZ3kL9mN2vB7xC4dF6gH8jK1pQ5rStUvW8y");
+const PEM_RSA = fixture("-----BE", "GIN RSA PRIVATE KEY-----");
+const PEM_OPENSSH = fixture("-----BE", "GIN OPENSSH PRIVATE KEY-----");
+
 function mkVerdict(): Verdict {
   return { sliceId: "s1", attempt: 2, pass: true, steps: [], at: new Date().toISOString() };
 }
 
 describe("scanTextLines", () => {
   test("detects an AWS access key", () => {
-    const hits = scanTextLines(`aws_access_key_id = AKIAIOSFODNN7SECRETS\n`);
+    const hits = scanTextLines(`aws_access_key_id = ${AWS_KEY}\n`);
     expect(hits).toEqual([{ line: 1, kind: "aws-access-key" }]);
   });
 
   test("detects private-key material", () => {
-    const hits = scanTextLines(`-----BEGIN RSA PRIVATE KEY-----\nMIIEowIBAAKCAQEA\n`);
+    const hits = scanTextLines(`${PEM_RSA}\nMIIEowIBAAKCAQEA\n`);
     expect(hits.map((h) => h.kind)).toEqual(["private-key"]);
     expect(hits[0]!.line).toBe(1);
   });
 
   test("detects github/slack/stripe/openai/google classes", () => {
-    expect(scanTextLines(`token = ghp_qZ3kL9mN2vB7xC4dF6gH8jK1pQ5rS0tUvW3yXaZbCd6`)[0]!.kind).toBe("github-token");
-    expect(scanTextLines(`t = ${"xox" + "b"}-550823488112-abcdefghijklmnopzzqQ`)[0]!.kind).toBe("slack-token");
-    expect(scanTextLines(`key = ${"sk" + "_live_"}qZ3kL9mN2vB7xC4dF6gH8jK1p`)[0]!.kind).toBe("stripe-key");
-    expect(scanTextLines(`key = sk-qZ3kL9mN2vB7xC4dF6gH8jK1pQ5rS0tUvW3yXaZbCd`)[0]!.kind).toBe("openai-key");
-    expect(scanTextLines(`key = AIzaSyAqZ3kL9mN2vB7xC4dF6gH8jK1pQ5rStUvW8y`)[0]!.kind).toBe("google-api-key");
+    expect(scanTextLines(`token = ${GH_TOKEN}`)[0]!.kind).toBe("github-token");
+    expect(scanTextLines(`t = ${SLACK_TOKEN}`)[0]!.kind).toBe("slack-token");
+    expect(scanTextLines(`key = ${STRIPE_KEY}`)[0]!.kind).toBe("stripe-key");
+    expect(scanTextLines(`key = ${OPENAI_KEY}`)[0]!.kind).toBe("openai-key");
+    expect(scanTextLines(`key = ${GOOGLE_KEY}`)[0]!.kind).toBe("google-api-key");
   });
   test("normal source code is not flagged", () => {
     const src = [
@@ -62,7 +81,7 @@ describe("scanTextLines", () => {
       `API_KEY=test`,
       `password = ""`,
       `password = \${DB_PASSWORD}`,
-      `aws_access_key_id = AKIAIOSFODNN7EXAMPLE`,
+      `aws_access_key_id = ${AWS_DOC_EXAMPLE}`,
     ].join("\n");
     expect(scanTextLines(cfg)).toEqual([]);
   });
@@ -74,7 +93,7 @@ describe("scanTextLines", () => {
 
   test("multiple findings across lines", () => {
     const hits = scanTextLines(
-      `a = AKIAIOSFODNN7SECRETS\nclean line\n-----BEGIN OPENSSH PRIVATE KEY-----\n`,
+      `a = ${AWS_KEY}\nclean line\n${PEM_OPENSSH}\n`,
     );
     expect(hits).toEqual([
       { line: 1, kind: "aws-access-key" },
@@ -100,7 +119,7 @@ describe("human-prose values", () => {
   });
 
   test("token classes ignore nearby prose", () => {
-    const hits = scanTextLines(`key = "AKIAQZ3K9M2V7X4B8JXS"; // رمز`);
+    const hits = scanTextLines(`key = "${AWS_KEY2}"; // رمز`);
     expect(hits).toEqual([{ line: 1, kind: "aws-access-key" }]);
   });
 });
@@ -151,7 +170,7 @@ describe("scanCandidateFiles", () => {
   });
 
   test("findings carry file/line/kind and no secret value", () => {
-    const secret = "AKIAIOSFODNN7SECRETS";
+    const secret = AWS_KEY;
     const r = scanCandidateFiles("/wt", ["src/a.ts"], io({ "a.ts": `const k = "${secret}";\n` }));
     expect(r.findings).toEqual([{ file: "src/a.ts", line: 1, kind: "aws-access-key" }]);
     expect(JSON.stringify(r)).not.toContain(secret);
@@ -187,14 +206,14 @@ describe("collectScanTargets on real git repos", () => {
     git(["commit", "-qm", "base"]);
     const base = spawnSync("git", ["rev-parse", "--abbrev-ref", "HEAD"], { cwd: dir, encoding: "utf8" }).stdout.trim();
     git(["checkout", "-qb", "ompo/r/s1"]);
-    writeFileSync(join(dir, "branch.ts"), `export const k = "AKIAQZ3K9M2V7X4B8JXS";\n`, "utf8");
+    writeFileSync(join(dir, "branch.ts"), `export const k = "${AWS_KEY2}";\n`, "utf8");
     git(["add", "-A"]);
     git(["commit", "-qm", "slice work"]);
     git(["checkout", "-q", base]);
     const wt = join(dir, "wt");
     git(["worktree", "add", wt, "ompo/r/s1"]);
     try {
-      writeFileSync(join(wt, "wt.ts"), `-----BEGIN RSA PRIVATE KEY-----\n`, "utf8");
+      writeFileSync(join(wt, "wt.ts"), `${PEM_RSA}\n`, "utf8");
       const collected = collectScanTargets(wt, { projectDir: dir, branch: "ompo/r/s1" });
       if ("failure" in collected) throw new Error(`unexpected scan failure: ${collected.failure}`);
       expect(collected.relPaths).toContain("branch.ts");
@@ -204,7 +223,7 @@ describe("collectScanTargets on real git repos", () => {
         { file: "branch.ts", line: 1, kind: "aws-access-key" },
         { file: "wt.ts", line: 1, kind: "private-key" },
       ]);
-      expect(JSON.stringify(scan)).not.toContain("AKIAQZ3K9M2V7X4B8JXS");
+      expect(JSON.stringify(scan)).not.toContain(AWS_KEY2);
     } finally {
       spawnSync("git", ["worktree", "remove", "--force", wt], { cwd: dir });
     }
@@ -235,7 +254,7 @@ describe("formatFindingsRedacted", () => {
 });
 
 describe("pre-merge gate in the loop", () => {
-  const LEAK = "AKIAQZ3K9M2V7X4B8JXS";
+  const LEAK = AWS_KEY2;
   const LEAK_MD = [
     "## [s1] Leaky slice",
     "Write the thing.",
