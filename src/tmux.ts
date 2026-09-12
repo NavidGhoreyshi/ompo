@@ -19,7 +19,7 @@ import { spawnSync } from "node:child_process";
 import { join } from "node:path";
 import { REPORT_CLOSE, REPORT_OPEN, validateCompletionReport } from "./report.ts";
 import { REVIEW_CLOSE, REVIEW_OPEN } from "./review.ts";
-import { DEFAULT_WORKER_TIMEOUT_MS, type WorkerRunner, type WorkerResult } from "./worker.ts";
+import { DEFAULT_WORKER_TIMEOUT_MS, thinkingArgs, type WorkerRunner, type WorkerResult } from "./worker.ts";
 
 /** Sync tmux control-call seam (fake in tests). */
 export type TmuxExec = (args: string[]) => { exit: number; out: string };
@@ -159,6 +159,7 @@ export function createTmuxRunner(opts: TmuxRunnerOptions = {}): WorkerRunner {
     const launchArgv = ["omp", "--cwd", ctx.projectDir, "--session-dir", sessionDir, "--no-title", "--auto-approve"];
     if (ctx.workerModel) launchArgv.push("--model", ctx.workerModel);
     if (ctx.extraArgs) launchArgv.push(...ctx.extraArgs);
+    launchArgv.push(...thinkingArgs(ctx.extraArgs));
     if (resumeId) launchArgv.push("--resume", resumeId);
     launchArgv.push(launchPrompt);
 

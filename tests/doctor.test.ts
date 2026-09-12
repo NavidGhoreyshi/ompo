@@ -87,6 +87,7 @@ function greenProbes(overrides?: DoctorProbes): DoctorProbes {
   return {
     ...files(),
     exec: greenExec,
+    probeModel: () => true,
     env: {},
     diskFreeMb: () => 500,
     ...overrides,
@@ -189,15 +190,10 @@ describe("runDoctor", () => {
   });
 
   test("unknown disk space passes as unknown; unreachable model named", async () => {
-    const exec: DoctorProbes["exec"] = (cmd, args) => {
-      if (cmd === "omp" && args[0] === "--model" && args[1] === "fallback-b") {
-        return { exit: 1, out: "unknown model" };
-      }
-      return greenExec(cmd, args);
-    };
+    const probeModel: DoctorProbes["probeModel"] = (m) => m !== "fallback-b";
     const res = await runDoctor(
       "/tmp/proj",
-      greenProbes({ exec, diskFreeMb: () => null }),
+      greenProbes({ probeModel, diskFreeMb: () => null }),
     );
     expect(res.ok).toBe(false);
     expect(res.checks.find((c) => c.name === "disk")!).toMatchObject({
@@ -206,7 +202,9 @@ describe("runDoctor", () => {
     });
     const models = res.checks.find((c) => c.name === "models")!;
     expect(models.ok).toBe(false);
+    expect(models.detail).toContain("reachable: test-model, review-model, fallback-a");
     expect(models.fix).toContain("fallback-b");
+    expect(models.fix).toContain("log in to its provider");
   });
 
   test("check never throws on hostile probes", async () => {
@@ -263,6 +261,16 @@ describe("explainConfig", () => {
     // Per-slice: b pins its own agent, a inherits workerModel.
     expect(text).toContain("a: test-model");
     expect(text).toContain("b: special-agent");
+  });
+
+  test("prints the resolved role matrix with sources", () => {
+    const text = explainConfig("/tmp/proj", files());
+    expect(text).toContain("global: (absent)");
+    expect(text).toContain("roles:");
+    expect(text).toContain("orchestrator: test-model (source: project)");
+    expect(text).toContain("worker: test-model (source: project)");
+    expect(text).toContain("reviewer: review-model (source: project)");
+    expect(text).toContain("debugger: test-model (source: project)");
   });
 
   test("missing files report defaults without throwing", () => {

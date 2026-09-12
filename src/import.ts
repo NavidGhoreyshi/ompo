@@ -13,6 +13,7 @@ import { existsSync, mkdirSync, readdirSync, readFileSync, statSync, writeFileSy
 import { dirname, join, relative } from "node:path";
 import { parseRoadmap, RoadmapParseError } from "./parse.ts";
 import { loadRoadmapConfig } from "./config.ts";
+import { DEFAULT_MODEL_FALLBACKS, globalConfigPath, loadGlobalConfig, mergeConfigs, resolveRoles } from "./globalConfig.ts";
 import { runOmpWorker, type WorkerRunner } from "./worker.ts";
 
 export const IMPORT_OPEN = "<<<OMPO_ROADMAP";
@@ -277,6 +278,9 @@ export async function runImport(opts: ImportOptions): Promise<ImportResult> {
   // Fail early on unreadable source (clear error before spawning a worker).
   readFileSync(opts.fromPath, "utf8");
   const cfg = loadRoadmapConfig(opts.projectDir);
+  const globalCfg = loadGlobalConfig();
+  const roles = resolveRoles(cfg, globalCfg);
+  const effective = mergeConfigs(cfg, globalCfg);
   const runner: WorkerRunner = opts.runner ?? runOmpWorker;
   const targetFile = relative(opts.projectDir, roadmapPath) || "ROADMAP.md";
   const prompt = buildImportPrompt(opts.fromPath, opts.hints, targetFile);
@@ -286,8 +290,8 @@ export async function runImport(opts: ImportOptions): Promise<ImportResult> {
     { prompt, sliceId: "import", attempt: 1 },
     {
       projectDir: opts.projectDir,
-      workerModel: opts.workerModel ?? cfg.workerModel,
-      timeoutMs: opts.timeoutMs ?? (cfg.workerTimeoutSec ? cfg.workerTimeoutSec * 1000 : undefined),
+      workerModel: opts.workerModel ?? roles.orchestrator.model,
+      timeoutMs: opts.timeoutMs ?? (effective.workerTimeoutSec ? effective.workerTimeoutSec * 1000 : undefined),
       extraArgs: opts.extraArgs,
     },
   );
@@ -334,6 +338,9 @@ export async function runInitPlanner(opts: InitPlannerOptions): Promise<ImportRe
   const roadmapPath = opts.roadmapPath ?? `${opts.projectDir}/ROADMAP.md`;
   const candidates = collectDocCandidates(opts.projectDir);
   const cfg = loadRoadmapConfig(opts.projectDir);
+  const globalCfg = loadGlobalConfig();
+  const roles = resolveRoles(cfg, globalCfg);
+  const effective = mergeConfigs(cfg, globalCfg);
   const runner: WorkerRunner = opts.runner ?? runOmpWorker;
   const targetFile = relative(opts.projectDir, roadmapPath) || "ROADMAP.md";
   const prompt = buildInitPrompt(candidates, targetFile);
@@ -345,8 +352,8 @@ export async function runInitPlanner(opts: InitPlannerOptions): Promise<ImportRe
       { prompt: task, sliceId: "init", attempt: 1 },
       {
         projectDir: opts.projectDir,
-        workerModel: opts.workerModel ?? cfg.workerModel,
-        timeoutMs: opts.timeoutMs ?? (cfg.workerTimeoutSec ? cfg.workerTimeoutSec * 1000 : undefined),
+        workerModel: opts.workerModel ?? roles.orchestrator.model,
+        timeoutMs: opts.timeoutMs ?? (effective.workerTimeoutSec ? effective.workerTimeoutSec * 1000 : undefined),
         extraArgs: opts.extraArgs,
         signal: opts.signal,
         onProgress: progress,
@@ -440,28 +447,40 @@ Verify: bun test
 Retries: 1
 `;
 
-export const YML_TEMPLATE = `# ompo project-local config — all keys optional.
-# workerModel: model pattern passed to \`omp --model\` for every slice worker.
+/**
+ * Project config template. With a global config present the model pins are
+ * commented out so the slots (deep/fast) drive every role; without one the
+ * historic paid-pool pin stays, keeping config-less projects byte-identical.
+ */
+export function projectYmlTemplate(pinModels: boolean): string {
+  const fallbacks = DEFAULT_MODEL_FALLBACKS.map((m) => `  - ${m}`).join("\n");
+  return `# ompo project-local config — all keys optional.
+${pinModels
+  ? `# workerModel: model pattern passed to \`omp --model\` for every slice worker.
 #   Omit to use your configured default model. Paid opencode-go model pinned
 #   so workers share the subscription pool (override hard slices via Agent:).
-workerModel: opencode-go/muse-spark-1.3-contributor
+workerModel: opencode-go/muse-spark-1.3-contributor`
+  : `# Model roles (worker/reviewer/debugger/orchestrator) resolve from your
+# global config (\`ompo setup\`, ~/.config/ompo/config.yml). Uncomment to
+# override per project:
+# workerModel: opencode-go/muse-spark-1.3-contributor`}
 # modelFallbacks: ordered fallback models when the primary is unavailable
 #   (rate limit, unknown id). Tried in order within the same attempt — no
 #   retry consumed, partial work preserved. Omp's default model is the
 #   implicit last resort after these.
-modelFallbacks:
-  - opencode-go/mimo-v2.5
-  - muse-spark-1.3-contributor-free
-  - deepseek-v4-flash-free
+${pinModels ? `modelFallbacks:\n${fallbacks}` : `# modelFallbacks:\n${DEFAULT_MODEL_FALLBACKS.map((m) => `#   - ${m}`).join("\n")}`}
 maxRetries: 1
 specBudget: 12000
 workerTimeoutSec: 900
 # agentModels: per-slice Agent: name → model pattern.
-agentModels:
-  task: opencode-go/muse-spark-1.3-contributor
+${pinModels ? `agentModels:\n  task: opencode-go/muse-spark-1.3-contributor` : `# agentModels:\n#   task: opencode-go/muse-spark-1.3-contributor`}
 # verifyDefaults: commands prepended before every slice's \`Verify:\` steps.
 verifyDefaults: []
 `;
+}
+
+/** Historic template (model pins on) — kept for compatibility/tests. */
+export const YML_TEMPLATE = projectYmlTemplate(true);
 
 /** Write .omp/roadmap.yml when absent (shared by init + unified flows). */
 export function ensureProjectConfig(projectDir: string, onEvent?: (m: string) => void): void {
@@ -470,7 +489,8 @@ export function ensureProjectConfig(projectDir: string, onEvent?: (m: string) =>
   const ymlPath = join(dir, "roadmap.yml");
   if (!existsSync(ymlPath)) {
     mkdirSync(dir, { recursive: true });
-    writeFileSync(ymlPath, YML_TEMPLATE, "utf8");
+    const hasGlobal = existsSync(globalConfigPath());
+    writeFileSync(ymlPath, projectYmlTemplate(!hasGlobal), "utf8");
     log(`wrote ${ymlPath}`);
   } else {
     log(`kept existing ${ymlPath}`);

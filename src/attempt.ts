@@ -11,6 +11,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import type { RoadmapConfig } from "./config.ts";
 import type { FaultSpec } from "./faults.ts";
+import type { ResolvedRoles } from "./globalConfig.ts";
 import type { Mutex } from "./mutex.ts";
 import { sliceDir, storeApi } from "./store.ts";
 import type { CompletionReport, Slice } from "./types.ts";
@@ -22,6 +23,8 @@ export interface AttemptCtx {
   runId: string;
   runner: WorkerRunner;
   cfg: RoadmapConfig;
+  /** Resolved model roles (project/global/slot/default) for every lane. */
+  roles: ResolvedRoles;
   commit: Mutex;
   wt: WorktreeOps;
   reviewer: WorkerRunner;

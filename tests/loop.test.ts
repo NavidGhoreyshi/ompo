@@ -724,6 +724,55 @@ describe("loop review gate", () => {
     expect(reviewCalls[0]!.model).toBe("zen-1.3-free");
     expect(reviewCalls[0]!.sessionDir).toBe(sliceDir(dir, "r", "a"));
   });
+
+  test("model escalation: Effort hi and retries run on the deep slot", async () => {
+    const dir = tmpProject();
+    mkdirSync(join(dir, ".omp"), { recursive: true });
+    writeFileSync(join(dir, ".omp", "roadmap.yml"), "deepModel: deep-slot\nfastModel: fast-slot\n", "utf8");
+    const marker = join(dir, "gate-pass");
+    // First attempt: gate red (marker absent) → retry; second attempt: green.
+    const md = `## [a] A\nEffort: hi\nDo A.\n## [b] B\nDepends: a\nDo B.\nVerify: test -f ${marker} || (touch ${marker}; exit 1)\nRetries: 1\n`;
+    createRun(dir, parseRoadmap(md), "r");
+    const calls: Array<{ sliceId: string; model?: string }> = [];
+    const runner: WorkerRunner = reviewAware(async (call, ctx) => {
+      if (!call.label) calls.push({ sliceId: call.sliceId, model: ctx.workerModel });
+      return { exit: 0, timedOut: false, stdout: reportFor(call.sliceId), stderr: "", durationMs: 1 };
+    });
+    const res = await runRoadmapLoop({ projectDir: dir, runId: "r", runner, noDebug: true, onEvent: () => {} });
+    expect(res.exitCode).toBe(0);
+    expect(calls.filter((c) => c.sliceId === "a").map((c) => c.model)).toEqual(["deep-slot"]);
+    expect(calls.filter((c) => c.sliceId === "b").map((c) => c.model)).toEqual(["fast-slot", "deep-slot"]);
+    const esc = JSON.parse(readFileSync(join(sliceDir(dir, "r", "b"), "worker-2-g0.models.json"), "utf8"));
+    expect(esc.escalated).toMatchObject({ cause: "attempt", model: "deep-slot" });
+  });
+
+  test("global slots drive worker and reviewer models end to end", async () => {
+    const dir = tmpProject();
+    const cfgHome = mkdtempSync(join(tmpdir(), "ompo-loop-cfg-"));
+    writeFileSync(join(cfgHome, "config.yml"), "deepModel: global-deep\nfastModel: global-fast\n", "utf8");
+    const prev = process.env["OMPO_CONFIG_HOME"];
+    process.env["OMPO_CONFIG_HOME"] = cfgHome;
+    try {
+      createRun(dir, parseRoadmap("## [a] A\nDo A.\n"), "r");
+      const workerModels: Array<string | undefined> = [];
+      const reviewModels: Array<string | undefined> = [];
+      const runner: WorkerRunner = async (call, ctx) => {
+        if (call.label?.endsWith(" review")) {
+          reviewModels.push(ctx.workerModel);
+          return { exit: 0, timedOut: false, stdout: verdictFor(call.sliceId), stderr: "", durationMs: 1 };
+        }
+        workerModels.push(ctx.workerModel);
+        return { exit: 0, timedOut: false, stdout: reportFor(call.sliceId), stderr: "", durationMs: 1 };
+      };
+      const res = await runRoadmapLoop({ projectDir: dir, runId: "r", runner, onEvent: () => {} });
+      expect(res.exitCode).toBe(0);
+      expect(workerModels).toEqual(["global-fast"]);
+      expect(reviewModels).toEqual(["global-deep"]);
+    } finally {
+      if (prev === undefined) delete process.env["OMPO_CONFIG_HOME"];
+      else process.env["OMPO_CONFIG_HOME"] = prev;
+    }
+  });
 });
 
 describe("loop harness fix", () => {

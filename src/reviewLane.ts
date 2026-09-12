@@ -65,7 +65,7 @@ export async function runReview(
 ): Promise<boolean> {
   const { projectDir, runId } = ctx;
   const dir = sliceDir(projectDir, runId, sliceId);
-  const reviewPrimary = ctx.reviewModel ?? ctx.cfg.reviewModel ?? ctx.cfg.workerModel;
+  const reviewPrimary = ctx.reviewModel ?? ctx.roles.reviewer.model;
   // Review audits through the same fallback chain (no retry consumed on a
   // model outage — the audit just moves to the next model).
   const reviewChain = buildModelChain(reviewPrimary, ctx.cfg.modelFallbacks);
@@ -228,7 +228,11 @@ export async function runReviewFix(
 ): Promise<"approved" | "settled" | "retry"> {
   const { projectDir, runId } = ctx;
   const dir = sliceDir(projectDir, runId, sliceId);
-  const fixChain = buildModelChain(resolveWorkerModel(claimed.workerAgent, ctx.cfg), ctx.cfg.modelFallbacks);
+  // Bounded minor-fix lane: the fast slot owns polish (the worker role),
+  // with per-slice Agent: routing still layered on top.
+  const fixPrimary = resolveWorkerModel(claimed.workerAgent, { workerModel: ctx.roles.worker.model, agentModels: ctx.cfg.agentModels })
+    ?? ctx.roles.worker.model;
+  const fixChain = buildModelChain(fixPrimary, ctx.cfg.modelFallbacks);
   const fixBudgetMs = ctx.debugTimeoutMs ?? DEFAULT_DEBUG_TIMEOUT_MS;
   log(ctx, `  review-fix ${sliceId} — minor polish session (attempt ${attempt}, budget ${formatTimeout(fixBudgetMs)})`);
 

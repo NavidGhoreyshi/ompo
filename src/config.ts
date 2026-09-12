@@ -6,7 +6,11 @@
  *
  * Supported keys:
  *   workerModel: <model pattern for omp --model>
- *   reviewModel: <independent reviewer model (defaults to workerModel)>
+ *   reviewModel: <independent reviewer model (defaults to the deep slot)>
+ *   deepModel: <deep slot — orchestrator/planner, reviewer, debugger, escalated workers>
+ *   fastModel: <fast slot — default worker and the review minor-fix lane>
+ *   orchestratorModel: <explicit orchestrator-role override (planner/import/unblock/revalidate)>
+ *   debugModel: <explicit debugger-role override>
  *   modelFallbacks: <ordered fallback models tried when the primary is unavailable>
  *   maxRetries: <int default override>
  *   specBudget: <int chars>
@@ -34,8 +38,16 @@ import { join } from "node:path";
 
 export interface RoadmapConfig {
   workerModel?: string;
-  /** Independent reviewer model (defaults to workerModel). */
+  /** Independent reviewer model (defaults to the deep slot). */
   reviewModel?: string;
+  /** Deep slot: strong model for orchestrator/planner, reviewer, debugger, and escalated workers. */
+  deepModel?: string;
+  /** Fast slot: default worker model and the bounded review minor-fix lane. */
+  fastModel?: string;
+  /** Explicit orchestrator-role override (planner/import/revalidate/unblock sessions). */
+  orchestratorModel?: string;
+  /** Explicit debugger-role override. */
+  debugModel?: string;
   maxRetries?: number;
   specBudget?: number;
   workerTimeoutSec?: number;
@@ -87,22 +99,26 @@ function unquote(v: string): string {
   }
   return t;
 }
-function parseConfigInt(raw: string, key: string, min: number, max: number): number {
+function parseConfigInt(raw: string, key: string, min: number, max: number, source: string): number {
   const n = Number(raw.trim());
   if (!Number.isInteger(n) || n < min || n > max) {
-    throw new Error(`.omp/roadmap.yml: ${key} must be an integer ${min}..${max} (got "${raw.trim()}")`);
+    throw new Error(`${source}: ${key} must be an integer ${min}..${max} (got "${raw.trim()}")`);
   }
   return n;
 }
 
-function parseConfigBool(raw: string, key: string): boolean {
+function parseConfigBool(raw: string, key: string, source: string): boolean {
   const t = raw.trim().toLowerCase();
   if (["true", "yes", "1", "on"].includes(t)) return true;
   if (["false", "no", "0", "off"].includes(t)) return false;
-  throw new Error(`.omp/roadmap.yml: ${key} must be true/false (got "${raw.trim()}")`);
+  throw new Error(`${source}: ${key} must be true/false (got "${raw.trim()}")`);
 
 }
- export function parseRoadmapYml(text: string): RoadmapConfig {
+ /**
+  * Parse the ompo config subset (`.omp/roadmap.yml` or the global config.yml).
+  * `source` labels parse errors so a bad global config names its own path.
+  */
+ export function parseConfigYml(text: string, source = ".omp/roadmap.yml"): RoadmapConfig {
   let section: string = "root";
   const cfg: RoadmapConfig = {};
   for (const raw of text.split("\n")) {
@@ -170,13 +186,17 @@ function parseConfigBool(raw: string, key: string): boolean {
         section = "root";
         if (key === "workerModel" && val) cfg.workerModel = val;
         else if (key === "reviewModel" && val) cfg.reviewModel = val;
-        else if (key === "maxRetries" && val) cfg.maxRetries = parseConfigInt(val, "maxRetries", 0, 10);
-        else if (key === "specBudget" && val) cfg.specBudget = parseConfigInt(val, "specBudget", 1000, 1_000_000);
-        else if (key === "workerTimeoutSec" && val) cfg.workerTimeoutSec = parseConfigInt(val, "workerTimeoutSec", 60, 8 * 3600);
-        else if (key === "placeholders" && val) cfg.placeholders = parseConfigBool(val, "placeholders");
-        else if (key === "serviceTimeoutSec" && val) cfg.serviceTimeoutSec = parseConfigInt(val, "serviceTimeoutSec", 10, 1800);
-        else if (key === "maxUnblocks" && val) cfg.maxUnblocks = parseConfigInt(val, "maxUnblocks", 0, 5);
-        else if (key === "contextCapTokens" && val) cfg.contextCapTokens = parseConfigInt(val, "contextCapTokens", 0, 1_000_000);
+        else if (key === "deepModel" && val) cfg.deepModel = val;
+        else if (key === "fastModel" && val) cfg.fastModel = val;
+        else if (key === "orchestratorModel" && val) cfg.orchestratorModel = val;
+        else if (key === "debugModel" && val) cfg.debugModel = val;
+        else if (key === "maxRetries" && val) cfg.maxRetries = parseConfigInt(val, "maxRetries", 0, 10, source);
+        else if (key === "specBudget" && val) cfg.specBudget = parseConfigInt(val, "specBudget", 1000, 1_000_000, source);
+        else if (key === "workerTimeoutSec" && val) cfg.workerTimeoutSec = parseConfigInt(val, "workerTimeoutSec", 60, 8 * 3600, source);
+        else if (key === "placeholders" && val) cfg.placeholders = parseConfigBool(val, "placeholders", source);
+        else if (key === "serviceTimeoutSec" && val) cfg.serviceTimeoutSec = parseConfigInt(val, "serviceTimeoutSec", 10, 1800, source);
+        else if (key === "maxUnblocks" && val) cfg.maxUnblocks = parseConfigInt(val, "maxUnblocks", 0, 5, source);
+        else if (key === "contextCapTokens" && val) cfg.contextCapTokens = parseConfigInt(val, "contextCapTokens", 0, 1_000_000, source);
       }
     } else if (section === "agentModels") {
       const m = trimmed.match(/^([^:]+?)\s*:\s*(.+)$/);
@@ -207,8 +227,13 @@ function parseConfigBool(raw: string, key: string): boolean {
   return cfg;
 }
 
+/** Project-local config parser (error labels: `.omp/roadmap.yml`). */
+export function parseRoadmapYml(text: string): RoadmapConfig {
+  return parseConfigYml(text);
+}
+
 export function loadRoadmapConfig(projectDir: string): RoadmapConfig {
   const path = configPath(projectDir);
   if (!existsSync(path)) return {};
-  return parseRoadmapYml(readFileSync(path, "utf8"));
+  return parseConfigYml(readFileSync(path, "utf8"));
 }

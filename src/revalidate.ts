@@ -17,6 +17,7 @@
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join, relative } from "node:path";
 import { loadRoadmapConfig } from "./config.ts";
+import { loadGlobalConfig, mergeConfigs, resolveRoles } from "./globalConfig.ts";
 import { extractRoadmapFromOutput, IMPORT_CLOSE, IMPORT_OPEN } from "./import.ts";
 import { lintRoadmap } from "./lint.ts";
 import { parseRoadmap } from "./parse.ts";
@@ -112,6 +113,9 @@ export async function runRevalidate(opts: RevalidateOptions): Promise<Revalidate
   if (!runId) throw new Error("no runs to revalidate — nothing has run yet");
   loadRun(opts.projectDir, runId);
   const cfg = loadRoadmapConfig(opts.projectDir);
+  const globalCfg = loadGlobalConfig();
+  const roles = resolveRoles(cfg, globalCfg);
+  const effective = mergeConfigs(cfg, globalCfg);
   const runner: WorkerRunner = opts.runner ?? runOmpWorker;
   const prompt = buildRevalidatePrompt(opts.projectDir, runId, relative(opts.projectDir, roadmapPath) || "ROADMAP.md");
 
@@ -120,8 +124,8 @@ export async function runRevalidate(opts: RevalidateOptions): Promise<Revalidate
     { prompt, sliceId: "revalidate", attempt: 1 },
     {
       projectDir: opts.projectDir,
-      workerModel: opts.workerModel ?? cfg.workerModel,
-      timeoutMs: opts.timeoutMs ?? (cfg.workerTimeoutSec ? cfg.workerTimeoutSec * 1000 : undefined),
+      workerModel: opts.workerModel ?? roles.orchestrator.model,
+      timeoutMs: opts.timeoutMs ?? (effective.workerTimeoutSec ? effective.workerTimeoutSec * 1000 : undefined),
       extraArgs: opts.extraArgs,
     },
   );

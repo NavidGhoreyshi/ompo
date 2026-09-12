@@ -183,5 +183,5 @@ describe("sprint3 CI formats + doctor", () => {
     const cfg = cli(dir, "config");
     expect(cfg.exit).toBe(0);
     expect(cfg.out).toContain("workerModel");
-  });
+  }, 20_000);
 });

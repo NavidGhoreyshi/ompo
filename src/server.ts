@@ -28,7 +28,7 @@ import { resolveRunId } from "./log.ts";
 import { appendEvent, listRuns, loadRun, lockHeld, readEvents, runDir } from "./store.ts";
 import { computeStats, queryEvents, replayRun } from "./stats.ts";
 import type { Effort, RunEvent, SliceStatus } from "./types.ts";
-import { loadRoadmapConfig } from "./config.ts";
+import { loadEffectiveConfig } from "./globalConfig.ts";
 import { loadHandoffs, type HandoffEntry } from "./handoffs.ts";
 import { buildPlanPreview, formatPreviewSummary } from "./planPreview.ts";
 import { sha256Hex } from "./parse.ts";
@@ -1201,7 +1201,7 @@ function planPreviewEnvelope(projectDir: string): Response {
       surveyed,
     });
   }
-  const cfg = loadRoadmapConfig(projectDir);
+  const cfg = loadEffectiveConfig(projectDir);
   const preview = buildPlanPreview(markdown, {
     verifyDefaults: cfg.verifyDefaults,
     agentModels: cfg.agentModels,
@@ -1246,7 +1246,7 @@ async function handlePlanDecision(projectDir: string, req: Request): Promise<Res
   } catch {
     return json({ error: `${ROADMAP_FILE} not found` }, 404);
   }
-  const cfg = loadRoadmapConfig(projectDir);
+  const cfg = loadEffectiveConfig(projectDir);
   const preview = buildPlanPreview(markdown, {
     verifyDefaults: cfg.verifyDefaults,
     agentModels: cfg.agentModels,

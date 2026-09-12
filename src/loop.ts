@@ -34,6 +34,7 @@ import {
   type ProgressTracker,
 } from "./attempt.ts";
 import { loadRoadmapConfig } from "./config.ts";
+import { escalationReason, loadGlobalConfig, mergeConfigs, resolveRoles } from "./globalConfig.ts";
 import { depSatisfied, readySlices } from "./select.ts";
 import { buildWorkerSpec } from "./spec.ts";
 import { sliceDir, storeApi, loadRun, RUNS_DIR } from "./store.ts";
@@ -166,7 +167,8 @@ async function runDebugger(
   writeFileSync(join(dir, `debug-prompt-${attempt}.md`), prompt, "utf8");
   // Debugger runs through the same fallback chain: a model outage must not
   // eat the one debug session (no retry consumed, partial fix preserved).
-  const debugChain = buildModelChain(resolveWorkerModel(claimed.workerAgent, ctx.cfg), ctx.cfg.modelFallbacks);
+  // Role: deep slot — the strong model owns diagnosis.
+  const debugChain = buildModelChain(ctx.roles.debugger.model, ctx.cfg.modelFallbacks);
   const debugBudgetMs = ctx.debugTimeoutMs ?? DEFAULT_DEBUG_TIMEOUT_MS;
   log(ctx, `  debug ${sliceId} — diagnosis session (attempt ${attempt}, budget ${formatTimeout(debugBudgetMs)})`);
 
@@ -319,7 +321,7 @@ async function runUnblocker(ctx: AttemptCtx, round: number): Promise<"continue" 
   const prompt = buildUnblockPrompt(targets, round, ctx.maxUnblocks);
   writeFileSync(join(runRoot, `unblock-${round}.prompt.md`), prompt, "utf8");
   log(ctx, `  prompt: ${unblockPromptRef(runId, round)}`);
-  const unblockChain = buildModelChain(resolveWorkerModel(head.workerAgent, ctx.cfg), ctx.cfg.modelFallbacks);
+  const unblockChain = buildModelChain(ctx.roles.orchestrator.model, ctx.cfg.modelFallbacks);
   const unblockBudgetMs = ctx.debugTimeoutMs ?? DEFAULT_DEBUG_TIMEOUT_MS;
   log(ctx, `◐ unblock round ${round}/${ctx.maxUnblocks} — ${targets.length} blocked slice(s): ${targets.map((t) => t.sliceId).join(", ")} (budget ${formatTimeout(unblockBudgetMs)})`);
   if (ctx.signal?.aborted) return "aborted";
@@ -672,7 +674,19 @@ async function runAttempt(ctx: AttemptCtx, sliceId: string): Promise<void> {
   // Model fallback chain: primary, then modelFallbacks, then omp default.
   // A model that is unavailable (rate limit, unknown id) is skipped within
   // the same attempt — no retry consumed, partial work preserved on the branch.
-  const workerChain = buildModelChain(resolveWorkerModel(claimed.workerAgent, ctx.cfg), ctx.cfg.modelFallbacks);
+  // Model escalation: retries (attempt ≥ 2) and `Effort: hi` slices run on
+  // the deep slot; explicit Agent: routing is bypassed by escalation so the
+  // strong model owns the rescue.
+  const escalated = escalationReason(attempt, claimed.effort);
+  const workerPrimary = escalated
+    ? ctx.roles.deep.model
+    : resolveWorkerModel(claimed.workerAgent, { workerModel: ctx.roles.worker.model, agentModels: ctx.cfg.agentModels })
+      ?? ctx.roles.worker.model;
+  if (escalated) {
+    const why = escalated === "attempt" ? `attempt ${attempt}` : "Effort: hi";
+    log(ctx, `  model escalation (${why}) — deep ${ctx.roles.deep.model}`);
+  }
+  const workerChain = buildModelChain(workerPrimary, ctx.cfg.modelFallbacks);
   const workerTimeoutMs = ctx.timeoutMsOverride ?? claimed.timeoutMs
     ?? (ctx.cfg.workerTimeoutSec ? ctx.cfg.workerTimeoutSec * 1000 : undefined);
   const progress = progressFn(ctx, sliceId);
@@ -785,8 +799,10 @@ async function runAttempt(ctx: AttemptCtx, sliceId: string): Promise<void> {
         },
       );
       stopForwarding();
-      if (res.fellBack) {
-        writeFileSync(join(dir, `worker-${attempt}-g${gen}.models.json`), JSON.stringify({ tried: res.tried, accepted: displayModel(res.model) }, null, 2) + "\n", "utf8");
+      if (res.fellBack || escalated) {
+        const record: Record<string, unknown> = { tried: res.tried, accepted: displayModel(res.model) };
+        if (escalated) record["escalated"] = { cause: escalated, model: ctx.roles.deep.model };
+        writeFileSync(join(dir, `worker-${attempt}-g${gen}.models.json`), JSON.stringify(record, null, 2) + "\n", "utf8");
       }
       workerMeta = { exit: res.exit, timedOut: res.timedOut, durationMs: res.durationMs };
       workerStdout = res.stdout;
@@ -1415,7 +1431,12 @@ async function reverifyDoneSlice(ctx: AttemptCtx, slice: Slice): Promise<void> {
 
 export async function runRoadmapLoop(opts: LoopOptions): Promise<LoopResult> {
   const runner: WorkerRunner = opts.runner ?? runOmpWorker;
-  const cfg = loadRoadmapConfig(opts.projectDir);
+  // Project overrides global; roles are resolved from the raw pair so
+  // `--explain`-style provenance (project/global/slot/default) stays exact.
+  const projectCfg = loadRoadmapConfig(opts.projectDir);
+  const globalCfg = loadGlobalConfig();
+  const cfg = mergeConfigs(projectCfg, globalCfg);
+  const roles = resolveRoles(projectCfg, globalCfg);
   const jobs = { value: Math.max(1, Math.floor(opts.jobs ?? 1)) };
   const wt = opts.worktrees ?? worktreeOpsFor(opts.projectDir);
   const commit = createMutex();
@@ -1426,6 +1447,7 @@ export async function runRoadmapLoop(opts: LoopOptions): Promise<LoopResult> {
     runId: opts.runId,
     runner,
     cfg,
+    roles,
     commit,
     wt,
     // Independent review: another fresh worker session (default: same runner

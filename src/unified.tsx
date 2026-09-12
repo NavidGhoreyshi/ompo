@@ -20,7 +20,7 @@ import {
   resolveInitPlan,
   runInitPlanner,
 } from "./import.ts";
-import { loadRoadmapConfig } from "./config.ts";
+import { loadEffectiveConfig } from "./globalConfig.ts";
 import { parseRoadmap, sha256Hex } from "./parse.ts";
 import {
   buildPlanPreview,
@@ -186,7 +186,7 @@ export async function driveUnifiedFlow(
   // file (edited externally) and revalidates — same parser, same lint, no
   // second representation. Blocked plans can never be accepted.
   session.phase = "preview";
-  const cfg = loadRoadmapConfig(o.projectDir);
+  const cfg = loadEffectiveConfig(o.projectDir);
   for (;;) {
     const preview = buildPlanPreview(markdown, { verifyDefaults: cfg.verifyDefaults, agentModels: cfg.agentModels });
     log(formatPreviewSummary(preview));

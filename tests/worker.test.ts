@@ -18,6 +18,7 @@ import {
   runOmpWorker,
   runWithModelFallbacks,
   summarizeToolArgs,
+  thinkingArgs,
   usageForEvent,
   type WorkerRunner,
 } from "../src/worker.ts";
@@ -94,6 +95,14 @@ describe("worker model resolution", () => {
     );
     expect(resolveWorkerModel("task", { workerModel: "d" })).toBe("d");
     expect(resolveWorkerModel(undefined, {})).toBeUndefined();
+  });
+
+  test("thinking default: max on every spawn unless the caller chose a level", () => {
+    expect(thinkingArgs()).toEqual(["--thinking", "max"]);
+    expect(thinkingArgs([])).toEqual(["--thinking", "max"]);
+    expect(thinkingArgs(["--foo"])).toEqual(["--thinking", "max"]);
+    expect(thinkingArgs(["--thinking", "low"])).toEqual([]);
+    expect(thinkingArgs(["--thinking=xhigh", "--foo"])).toEqual([]);
   });
 });
 

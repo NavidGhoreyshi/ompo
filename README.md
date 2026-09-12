@@ -113,8 +113,8 @@ re-runs the load-bearing gate command itself, and looks for what a worker
 would hide (weakened tests, unrelated diffs, missing error paths). The
 worker's report is a *claim* the reviewer verifies, never trusted.
 
-- Reviewer model: `.omp/roadmap.yml` `reviewModel` (defaults to `workerModel`)
-  or `--review-model M` per run.
+- Reviewer model: the resolved reviewer role (global `deepModel` slot, or
+  project `reviewModel` override) or `--review-model M` per run.
 - Approve → slice `done`. Reject → findings land in `slices/<id>/review-notes.md`
   and head the *next* attempt's spec ("PRIOR REVIEW REJECTION — address these
   FIRST"), same retry budget as any other failure.
@@ -253,23 +253,56 @@ deferred: 3 live check(s) across 2 slice(s) (see .omp/roadmap/runs/<runId>/defer
 Future roadmaps need no manual deferral sections — write the slice as if
 live values exist; the worker defers what it cannot prove.
 
-## Model matrix (plan §10, zero resolver code)
+## Model roles: two slots, global defaults, project overrides
 
-| Role         | Where            | Default                          |
-|--------------|------------------|----------------------------------|
-| Orchestrator | your `omp` shell | your configured default model    |
-| Worker       | `.omp/roadmap.yml `workerModel`` | `opencode-go/muse-spark-1.3-contributor` (paid pool) |
-| Reviewer     | `.omp/roadmap.yml `reviewModel`` | `workerModel` (same matrix)      |
-| Hard slice   | `Agent:` trailer + `agentModels:` map | per-slice override |
+Run `ompo setup` once (or on first `ompo init` / `ompo run` in a TTY) to pick
+two models into `~/.config/ompo/config.yml` (`$XDG_CONFIG_HOME`, or
+`$OMPO_CONFIG_HOME` for tests/CI). The wizard reads omp's own catalog
+(`omp models ls --json`) provider-first: choose a provider, then a model from
+its list — or type a filter/full selector to search the whole catalog. The
+catalog is not auth-aware, so log in to each provider in omp first; every pick
+is probed for reachability with a minimal omp call (exit 0 = usable) and an
+unreachable model warns before it is written.
+
+| Slot         | Default for                                                        |
+|--------------|--------------------------------------------------------------------|
+| `deepModel`  | orchestrator/planner, reviewer, debugger, unblock, escalated workers |
+| `fastModel`  | default worker, review minor-fix lane                              |
+
+Roles resolve per spawn with this precedence: **project explicit role >
+global explicit role > slot-derived > built-in default**
+(`opencode-go/muse-spark-1.3-contributor`, so pre-slot projects behave
+identically). `ompo config --explain` prints the resolved matrix with the
+source of every model.
+
+| Role                         | Project override   | Global override       | Default      |
+|------------------------------|--------------------|-----------------------|--------------|
+| Orchestrator (planner/import/revalidate/unblock/supervisor sessions) | `orchestratorModel` | `orchestratorModel` | `deepModel` |
+| Worker                       | `workerModel`      | `workerModel`         | `fastModel`  |
+| Reviewer                     | `reviewModel`      | `reviewModel`         | `deepModel`  |
+| Debugger                     | `debugModel`       | `debugModel`          | `deepModel`  |
+| Hard slice                   | `Agent:` trailer + `agentModels:` map | — | per-slice override |
 
 A slice `Agent:` that already looks like a model pattern (`a/b`, `x:y`)
 passes straight through to `omp --model`. Prewalk stays off: workers are
 one-shot `omp -p` processes, so no mid-run model swap is possible.
 
+**Escalation.** A worker retry (attempt ≥ 2) or a slice with `Effort: hi`
+runs on the deep slot (explicit `Agent:` routing is bypassed by escalation).
+`worker-<n>.models.json` records the escalation.
+
+**Reasoning effort is always max.** Every spawn — worker, reviewer, debugger,
+unblock, planner, revalidate — appends `--thinking max` unless a caller
+explicitly passed a thinking flag. There is no effort knob.
+
+`ompo setup` is re-runnable; `--no-setup` skips the first-run wizard.
+Projects keep full control: any role key in `.omp/roadmap.yml` wins over the
+global slots.
+
 ## Model fallback chain (never stops on 429)
 
 Every spawn — worker, reviewer, debugger — walks an ordered chain within the
-same attempt: `workerModel` (or the slice/review override), then each
+same attempt: the resolved role model (or the slice/review override), then each
 `modelFallbacks` entry, then omp's configured default model as the last
 resort. A model is skipped only when the spawn fails *as that model* (rate
 limit / free-tier exhaustion / unknown id, read off the `--mode json`
@@ -278,10 +311,11 @@ stop the chain immediately — no fallback burns on broken code. Skipped
 models cost no retry and preserve partial work to the slice branch
 (`worker-<n>.models.json` records which models were tried).
 
-Default chain (also stamped into new projects by `init`/`import`):
-`opencode-go/muse-spark-1.3-contributor` → `opencode-go/mimo-v2.5` →
-`muse-spark-1.3-contributor-free` (zen) → `deepseek-v4-flash-free` (zen) →
-omp default. Tune via `modelFallbacks:` (dedupe is automatic).
+Default chain (offered by `ompo setup` and stamped into new projects without
+a global config): `opencode-go/muse-spark-1.3-contributor` →
+`opencode-go/mimo-v2.5` → `muse-spark-1.3-contributor-free` (zen) →
+`deepseek-v4-flash-free` (zen) → omp default. Tune via `modelFallbacks:`
+(dedupe is automatic).
 
 ## Live control plane (TUI keys + `ompo ctl`)
 
@@ -432,8 +466,13 @@ ompo fill --var SEED_ADMIN_PASSWORD=real --var PORT=4000
 
 ```bash
 ompo doctor                 # omp, models, tmux, git, tree, gates, disk, config — exit 1 on any FAIL
-ompo config --explain       # resolved .omp/roadmap.yml + per-slice effective models
+ompo config --explain       # resolved config + role matrix (model + source) + per-slice models
 ```
+
+`doctor`'s models check probes every explicit model (resolved roles + fallbacks)
+with a real minimal omp call — `omp --model M --help` exits 0 for any id and
+proves nothing, so an unknown id or an unauthenticated provider is caught by
+an actual spawn. Each probe is one cheap `--thinking=off` call (~10s).
 
 ## Observability (`stats/query/export/replay/log`)
 

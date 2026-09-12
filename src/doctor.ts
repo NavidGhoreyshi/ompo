@@ -9,7 +9,9 @@
 import { spawnSync } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
-import { parseRoadmapYml, type RoadmapConfig } from "./config.ts";
+import { parseConfigYml, parseRoadmapYml, type RoadmapConfig } from "./config.ts";
+import { BUILTIN_DEFAULT_MODEL, globalConfigPath, mergeConfigs, resolveRoles } from "./globalConfig.ts";
+import { resolveWorkerModel, probeOmpModel } from "./worker.ts";
 import { listRuns, loadRun, lockHeld, sliceDir } from "./store.ts";
 import { parseRoadmap, splitGateChain } from "./parse.ts";
 import { crashedInFlight } from "./types.ts";
@@ -29,6 +31,8 @@ export interface DoctorResult {
 
 export interface DoctorProbes {
   exec?: (cmd: string, args: string[]) => { exit: number; out: string };
+  /** Model reachability probe (default: a real minimal omp call). */
+  probeModel?: (selector: string) => boolean;
   exists?: (p: string) => boolean;
   readFile?: (p: string) => string;
   env?: Record<string, string | undefined>;
@@ -37,6 +41,7 @@ export interface DoctorProbes {
 
 interface ResolvedProbes {
   exec: (cmd: string, args: string[]) => { exit: number; out: string };
+  probeModel: (selector: string) => boolean;
   exists: (p: string) => boolean;
   readFile: (p: string) => string;
   env: Record<string, string | undefined>;
@@ -77,6 +82,7 @@ function resolveProbes(
 ): ResolvedProbes {
   return {
     exec: probes?.exec ?? defaultExec,
+    probeModel: probes?.probeModel ?? probeOmpModel,
     exists: probes?.exists ?? existsSync,
     readFile: probes?.readFile ?? ((p) => readFileSync(p, "utf8")),
     env: probes?.env ?? process.env,
@@ -130,6 +136,20 @@ function loadYmlTolerant(
   }
 }
 
+/** Global config through the same probes (absent when the probe can't see it). */
+function loadGlobalTolerant(
+  p: ResolvedProbes,
+): { cfg: RoadmapConfig; present: boolean; path: string; error?: string } {
+  const path = globalConfigPath({ env: p.env });
+  const text = tryRead(p, path);
+  if (text === null) return { cfg: {}, present: false, path };
+  try {
+    return { cfg: parseConfigYml(text, path), present: true, path };
+  } catch (e) {
+    return { cfg: {}, present: true, path, error: errText(e) };
+  }
+}
+
 function checkOmp(p: ResolvedProbes): DoctorCheck {
   const r = p.exec("omp", ["--version"]);
   if (r.exit !== 0) {
@@ -146,28 +166,34 @@ function checkOmp(p: ResolvedProbes): DoctorCheck {
 function checkModels(
   p: ResolvedProbes,
   cfg: RoadmapConfig,
+  globalCfg: RoadmapConfig,
 ): DoctorCheck {
+  // Probe every EXPLICIT model a spawn can land on: resolved roles whose
+  // value came from project/global/slot config (not the built-in default,
+  // which config-less projects used implicitly before the slots existed)
+  // plus the fallback chain. Same probe count as the pre-slot behavior.
+  const roles = resolveRoles(cfg, globalCfg);
   const models = [
-    ...(cfg.workerModel ? [cfg.workerModel] : []),
-    ...(cfg.reviewModel && cfg.reviewModel !== cfg.workerModel
-      ? [cfg.reviewModel]
-      : []),
+    ...[roles.orchestrator, roles.worker, roles.reviewer, roles.debugger]
+      .filter((r) => r.source !== "default")
+      .map((r) => r.model),
     ...(cfg.modelFallbacks ?? []),
   ].filter((m, i, all) => m.trim() !== "" && all.indexOf(m) === i);
   if (models.length === 0) {
     return {
       name: "models",
       ok: true,
-      detail: "no model overrides (omp default)",
+      detail: `no model overrides (default ${BUILTIN_DEFAULT_MODEL})`,
     };
   }
-  // Reachability probe: `omp --model <M> --help` exits 0 when omp accepts
-  // the model id (auth/network reachable); anything else marks it suspect.
+  // Reachability probe: a real minimal omp call per model. `omp --model M
+  // --help` short-circuits before model resolution (any id exits 0), so it
+  // cannot detect a bad id or an unauthenticated provider. Slow (~10s per
+  // model) but decisive.
   const reachable: string[] = [];
   const unreachable: string[] = [];
   for (const m of models) {
-    const r = p.exec("omp", ["--model", m, "--help"]);
-    if (r.exit === 0) reachable.push(m);
+    if (p.probeModel(m)) reachable.push(m);
     else unreachable.push(m);
   }
   if (unreachable.length === 0) {
@@ -185,7 +211,7 @@ function checkModels(
     name: "models",
     ok: false,
     detail: parts.join("; "),
-    fix: `model "${unreachable[0]}" unreachable — check the model id, omp auth, or network`,
+    fix: `model "${unreachable[0]}" unreachable — check the model id, log in to its provider in omp, or fix the network`,
   };
 }
 
@@ -396,6 +422,8 @@ export async function runDoctor(
 ): Promise<DoctorResult> {
   const p = resolveProbes(projectDir, probes);
   const yml = loadYmlTolerant(projectDir, p);
+  const globalYml = loadGlobalTolerant(p);
+  const cfg = mergeConfigs(yml.cfg, globalYml.cfg);
   const checks: DoctorCheck[] = [];
   const run = (fn: () => DoctorCheck, name: string) => {
     try {
@@ -406,11 +434,11 @@ export async function runDoctor(
     }
   };
   run(() => checkOmp(p), "omp");
-  run(() => checkModels(p, yml.cfg), "models");
+  run(() => checkModels(p, yml.cfg, globalYml.cfg), "models");
   run(() => checkTmux(p), "tmux");
   run(() => checkGit(p, projectDir), "git");
   run(() => checkTree(p, projectDir), "tree");
-  run(() => checkGates(p, projectDir, yml.cfg), "gates");
+  run(() => checkGates(p, projectDir, cfg), "gates");
   run(() => checkRecovery(projectDir), "recovery");
   run(() => checkDisk(p), "disk");
   run(() => checkConfig(yml), "config");
@@ -424,28 +452,35 @@ function fmtValue(v: unknown, fallback = "(default)"): string {
 }
 
 /**
- * Human-readable dump of the resolved config plus each slice's effective
- * worker model (`slice.workerAgent ?? workerModel ?? (omp default)`).
- * Never throws on missing files — reports defaults instead.
+ * Human-readable dump of the resolved config plus the role matrix (model +
+ * source: project/global/slot/default) and each slice's effective worker
+ * model. Never throws on missing files — reports defaults instead.
  */
 export function explainConfig(
   projectDir: string,
-  probes?: Pick<DoctorProbes, "readFile" | "exists">,
+  probes?: Pick<DoctorProbes, "readFile" | "exists" | "env">,
 ): string {
   try {
     const full: ResolvedProbes = resolveProbes(projectDir, probes);
     const yml = loadYmlTolerant(projectDir, full);
-    const cfg = yml.cfg;
+    const globalYml = loadGlobalTolerant(full);
+    const cfg = mergeConfigs(yml.cfg, globalYml.cfg);
+    const roles = resolveRoles(yml.cfg, globalYml.cfg);
     const lines: string[] = [];
     lines.push(`ompo config for ${projectDir}:`);
     lines.push(
       `  source: ${yml.present ? ymlPath(projectDir) : "(absent, defaults)"}`,
     );
     if (yml.error !== undefined) lines.push(`  parse error: ${yml.error}`);
+    lines.push(`  global: ${globalYml.present ? globalYml.path : "(absent)"}`);
+    if (globalYml.error !== undefined) lines.push(`  global parse error: ${globalYml.error}`);
+    lines.push(`  roles:`);
+    for (const name of ["orchestrator", "worker", "reviewer", "debugger"] as const) {
+      const r = roles[name];
+      lines.push(`    ${name}: ${r.model} (source: ${r.source})`);
+    }
     lines.push(`  workerModel: ${fmtValue(cfg.workerModel, "(omp default)")}`);
-    lines.push(
-      `  reviewModel: ${fmtValue(cfg.reviewModel ?? cfg.workerModel, "(omp default)")}`,
-    );
+    lines.push(`  reviewModel: ${roles.reviewer.model}`);
     lines.push(`  maxRetries: ${fmtValue(cfg.maxRetries)}`);
     lines.push(`  specBudget: ${fmtValue(cfg.specBudget)}`);
     lines.push(`  workerTimeoutSec: ${fmtValue(cfg.workerTimeoutSec)}`);
@@ -486,7 +521,8 @@ export function explainConfig(
         lines.push(`slices (${doc.slices.length}):`);
         for (const s of doc.slices) {
           const effective =
-            s.workerAgent ?? cfg.workerModel ?? "(omp default)";
+            resolveWorkerModel(s.workerAgent, { workerModel: roles.worker.model, agentModels: cfg.agentModels })
+            ?? "(omp default)";
           lines.push(`  ${s.id}: ${effective}`);
         }
       } catch (e) {

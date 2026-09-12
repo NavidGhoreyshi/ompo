@@ -1,11 +1,14 @@
 # ompo project-local config — all keys optional.
+# User-level model roles live in ~/.config/ompo/config.yml (`ompo setup`):
+# deepModel drives orchestrator/reviewer/debugger, fastModel the worker.
+# Keys here override the global slots for this project only.
 # workerModel: model pattern passed to `omp --model` for every slice worker.
 #   Omit to use your configured default model. Paid opencode-go model pinned
 #   so workers share the subscription pool (override hard slices via `Agent:`).
 workerModel: opencode-go/muse-spark-1.3-contributor
 # reviewModel: model for the independent post-merge review session. Fresh
 # context, own model — the orchestrator's second pair of eyes on each slice.
-# Defaults to workerModel when omitted.
+# Defaults to the deep slot (global deepModel, or workerModel when unset).
 reviewModel: opencode-go/muse-spark-1.3-contributor
 # modelFallbacks: ordered fallback models when the primary is unavailable
 #   (rate limit, unknown id). Tried in order within the same attempt — no

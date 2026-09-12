@@ -32,7 +32,9 @@ import { applyIntent, drainIntents, latestSeq, quiescentLoopLocalRejection, requ
 import { mergeRoadmap, replanGuards } from "./replan.ts";
 import { formatFinding, lintFailed, lintRoadmap } from "./lint.ts";
 import { parseFaultSpec, seedSuffix } from "./faults.ts";
-import { loadRoadmapConfig } from "./config.ts";
+import { configPath } from "./config.ts";
+import { globalConfigPath, loadEffectiveConfig } from "./globalConfig.ts";
+import { isInteractive, needsSetup, runSetup } from "./setup.ts";
 import { preflightEnv } from "./verify.ts";
 import { runRoadmapLoop, type LoopOptions } from "./loop.ts";
 import { runImport, runInitPlanner, resolveInitPlan, ROADMAP_TEMPLATE, ensureProjectConfig } from "./import.ts";
@@ -53,6 +55,7 @@ function help(): string {
 USAGE
   ompo [--port N] [--no-open]              local dashboard: serve the web UI + API on 127.0.0.1 (auto port)
   ompo --tui [RUN FLAGS]                   unified TUI: plan (if needed) → run → done
+  ompo setup                               global model roles (deep + fast slots) → ~/.config/ompo/config.yml
   ompo init [--project DIR] [--roadmap PATH] [--replan] [--template] [--model M]
                                             planner session: survey docs → roadmap file (+ .omp/roadmap.yml)
   ompo import --from FILE [--project DIR] [--roadmap PATH] [--done IDS] [--active IDS] [--model M]
@@ -81,8 +84,8 @@ USAGE
   ompo worktrees prune [--project DIR]      git worktree prune + drop dirs for terminal/unknown runs
   ompo checklist [--run ID] [--json]        merged deferred + placeholders list (what — needs value; manual check)
   ompo fill --var K=V [--var ...] [--run ID] re-run gates of slices mentioning the vars (never writes the store)
-  ompo doctor [--project DIR]               pre-run env scan (omp, models, tmux, git, tree, gates, disk, config)
-  ompo config [--explain] [--project DIR]   resolved .omp/roadmap.yml + per-slice effective models
+  ompo doctor [--project DIR]               pre-run env scan; explicit models get a live reachability probe (slow)
+  ompo config [--explain] [--project DIR]   resolved config + role matrix (model + source) + per-slice models
   ompo stats [--run ID] [--json]            pass rate, means, per-Effort, top failing gates, model fallbacks
   ompo query "EXPR" [--run ID] [--json]     tiny DSL: all|failed|slice ID [where attempts>1 and reason~timeout]
   ompo export --html [--run ID] [--out FILE] self-contained HTML run report (stdout without --out)
@@ -99,7 +102,8 @@ RUN FLAGS
   --resume           resume existing run instead of creating one
   --slice ID         run only one slice (must be ready)
   --no-review        skip the independent post-merge review session
-  --review-model M   reviewer model (default: roadmap.yml reviewModel → workerModel)
+  --review-model M   reviewer model (default: resolved reviewer role — deep slot)
+  --no-setup         skip the first-run model setup wizard (CI/pipes skip it anyway)
   --no-placeholders    disable dev-only placeholders for missing env creds (default: on)
   --no-unblock       disable end-of-run unblock sessions (default: up to maxUnblocks rounds)
   --max-unblocks N   end-of-run unblock sessions before giving up (0..5, default 2)
@@ -171,6 +175,8 @@ interface Args {
   jobs?: number;
   noReview?: boolean;
   reviewModel?: string;
+  /** Skip the first-run global model setup wizard (`--no-setup`). */
+  noSetup?: boolean;
   noDebug?: boolean;
   noPlaceholders?: boolean;
   noUnblock?: boolean;
@@ -276,6 +282,7 @@ function parseArgs(argv: string[]): Args {
     else if (t === "--follow") a.follow = true;
     else if (t === "--json") a.logJson = true;
     else if (t === "--review-model" && argv[i + 1]) a.reviewModel = argv[++i]!;
+    else if (t === "--no-setup") a.noSetup = true;
     else if (t === "--help" || t === "-h") a.cmd = "--help";
     else if (t === "--tmux") a.tmux = true;
     else if (t === "--reason" && argv[i + 1]) a.reason = argv[++i]!;
@@ -306,7 +313,39 @@ function parseArgs(argv: string[]): Args {
   return a;
 }
 
+/**
+ * First-run hook (init / run / unified): when neither config level exists and
+ * the terminal is interactive, run the model-role wizard. Never fatal —
+ * `--no-setup`, CI/pipes, and failures all keep the built-in default.
+ */
+async function maybeFirstRunSetup(a: Args): Promise<void> {
+  try {
+    const offer = needsSetup({
+      projectConfig: existsSync(configPath(a.project)),
+      globalConfig: existsSync(globalConfigPath()),
+      tty: isInteractive(),
+      noSetup: a.noSetup,
+    });
+    if (!offer) return;
+    console.log("first run: no project or global model config — launching `ompo setup` (skip with --no-setup)");
+    await runSetup();
+  } catch (err) {
+    console.error(`setup skipped: ${err instanceof Error ? err.message : String(err)}`);
+  }
+}
+
+async function cmdSetup(): Promise<number> {
+  try {
+    await runSetup();
+    return 0;
+  } catch (err) {
+    console.error(`setup failed: ${err instanceof Error ? err.message : String(err)}`);
+    return 1;
+  }
+}
+
 async function cmdInit(a: Args): Promise<number> {
+  await maybeFirstRunSetup(a);
   ensureProjectConfig(a.project, (m) => console.log(m));
   const roadmapPath = a.roadmap;
   mkdirSync(dirname(roadmapPath), { recursive: true });
@@ -404,7 +443,7 @@ async function cmdRun(a: Args): Promise<number> {
   }
   const markdown = readFileSync(a.roadmap, "utf8");
   const parsed = parseRoadmap(markdown);
-  const cfg = loadRoadmapConfig(a.project);
+  const cfg = loadEffectiveConfig(a.project);
   // Dry-run never creates a run dir: simulate purely from the parsed doc so
   // "latest run" (resume/status/log/watch) keeps pointing at the last real run.
   if (a.dryRun) {
@@ -430,11 +469,17 @@ async function cmdRun(a: Args): Promise<number> {
     return lintFailed(lint) ? 1 : 0;
   }
 
+  // First-run model setup (interactive terminals only; --no-setup escapes).
+  await maybeFirstRunSetup(a);
+  // The wizard may have just written the global config: reload so this run's
+  // gates/roles see it.
+  const runCfg = loadEffectiveConfig(a.project);
+
   // Env preflight: every unique gate once against the base tree BEFORE any
   // worker spawns. Only infrastructure signatures block (a dead DB or a
   // squatted port); pre-slice code failures are the slices' job, not ours.
   if (a.checkEnv) {
-    const gates = [...new Set([...(cfg.verifyDefaults ?? []), ...parsed.slices.filter((s) => !s.skip).flatMap((s) => s.verify)])];
+    const gates = [...new Set([...(runCfg.verifyDefaults ?? []), ...parsed.slices.filter((s) => !s.skip).flatMap((s) => s.verify)])];
     if (gates.length === 0) {
       console.log("check-env: no gates to probe");
     } else {
@@ -754,7 +799,7 @@ async function cmdLint(a: Args): Promise<number> {
     console.error(`roadmap not found: ${a.roadmap}\nrun \`ompo init --project ${a.project}\` first`);
     return 1;
   }
-  const cfg = loadRoadmapConfig(a.project);
+  const cfg = loadEffectiveConfig(a.project);
   const res = lintRoadmap(readFileSync(a.roadmap, "utf8"), { verifyDefaults: cfg.verifyDefaults, agentModels: cfg.agentModels });
   for (const f of res.errors) console.error(formatFinding(f));
   for (const f of res.warnings) console.log(formatFinding(f));
@@ -768,7 +813,7 @@ async function cmdPlan(a: Args): Promise<number> {
     return 1;
   }
   const { buildPlanPreview, formatPreviewSummary, renderPreviewLines } = await import("./planPreview.ts");
-  const cfg = loadRoadmapConfig(a.project);
+  const cfg = loadEffectiveConfig(a.project);
   const preview = buildPlanPreview(readFileSync(a.roadmap, "utf8"), { verifyDefaults: cfg.verifyDefaults, agentModels: cfg.agentModels });
   for (const line of renderPreviewLines(preview)) console.log(line);
   console.log(formatPreviewSummary(preview));
@@ -1183,6 +1228,8 @@ async function cmdImport(a: Args): Promise<number> {
 }
 
 async function cmdUnified(a: Args): Promise<number> {
+  // First-run model setup before the TUI frame takes over the terminal.
+  await maybeFirstRunSetup(a);
   // Lazy import: the react/ink frame loads only for the TUI path.
   const { runUnified } = await import("./unified.tsx");
   try {
@@ -1269,6 +1316,8 @@ async function main(): Promise<number> {
       return cmdInit(a);
     case "tui":
       return cmdUnified(a);
+    case "setup":
+      return cmdSetup();
     case "import":
       return cmdImport(a);
     case "revalidate":

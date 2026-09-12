@@ -10,6 +10,7 @@ import { REVIEW_CLOSE, REVIEW_OPEN } from "../src/review.ts";
 import type { WorkerRunner } from "../src/worker.ts";
 import { createMutex } from "../src/mutex.ts";
 import { loadRoadmapConfig } from "../src/config.ts";
+import { resolveRoles } from "../src/globalConfig.ts";
 import { worktreeOpsFor } from "../src/worktree.ts";
 
 function tmpProject(): string {
@@ -151,6 +152,7 @@ describe("crash recovery", () => {
         faults: { failVerify: [], abortAttempt: 0 },
         reviewer: recoveryOnlyRunner(seen),
         cfg: loadRoadmapConfig(dir),
+        roles: resolveRoles(loadRoadmapConfig(dir), {}),
         commit: createMutex(),
         wt: worktreeOpsFor(dir),
         trackers: new Map(),

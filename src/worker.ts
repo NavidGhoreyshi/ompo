@@ -7,7 +7,7 @@
  * holds trivially): no transcript is attached, only the compiled spec.
  */
 
-import { spawn } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 
 export interface WorkerCall {
   prompt: string;
@@ -119,6 +119,41 @@ export const WORKER_CLOSE_GRACE_MS = 5000;
 
 /** Silence before the stall advisory fires (transcript + TUI stay honest). */
 export const WORKER_STALL_WARN_MS = 5 * 60 * 1000;
+
+/** Standing reasoning-effort default: every spawn runs at max. */
+export const DEFAULT_THINKING = "max";
+
+/**
+ * `--thinking max` argv unless the caller already passed a thinking level
+ * (`--thinking X` or `--thinking=X`). The single spawn chokepoint applies it
+ * to every headless lane (worker, reviewer, debugger, unblock, planner,
+ * revalidate, supervisor). Pure — unit-tested.
+ */
+export function thinkingArgs(extraArgs?: readonly string[]): string[] {
+  const explicit = (extraArgs ?? []).some((a) => a === "--thinking" || a.startsWith("--thinking="));
+  return explicit ? [] : ["--thinking", DEFAULT_THINKING];
+}
+
+/**
+ * Reachability probe for one model selector — the only honest check that a
+ * spawn will work: `omp --model M --help` short-circuits before model
+ * resolution (any id exits 0), so probe with a real minimal spawn. Unknown
+ * id AND unauthenticated provider both exit non-zero. `--thinking=off` keeps
+ * it one cheap call; stdin is ignored so omp never waits for piped input;
+ * timeout/errors = false. Used by `ompo setup` and `ompo doctor`.
+ */
+export function probeOmpModel(selector: string): boolean {
+  try {
+    const r = spawnSync(
+      "omp",
+      ["-p", "--mode", "text", "--thinking=off", "--no-session", "--model", selector, "Reply with the single word ok"],
+      { encoding: "utf8", timeout: 90_000, stdio: ["ignore", "pipe", "pipe"] },
+    );
+    return r.status === 0;
+  } catch {
+    return false;
+  }
+}
 
 /**
  * Kill the worker AND the tool grandchildren it spawned (`omp` runs bash,
@@ -343,13 +378,14 @@ function collectAssistantText(event: unknown, out: string[]): void {
   }
 }
 
-/** Real runner: `omp -p --mode json --cwd <dir> --no-session --auto-approve [--model m] <prompt>`. */
+/** Real runner: `omp -p --mode json --cwd <dir> --no-session --auto-approve [--model m] --thinking max <prompt>`. */
 export const runOmpWorker: WorkerRunner = (call, ctx) =>
   new Promise((resolve) => {
     const started = Date.now();
     const args = ["-p", "--mode", "json", "--cwd", ctx.projectDir, "--no-session", "--auto-approve"];
     if (ctx.workerModel) args.push("--model", ctx.workerModel);
     if (ctx.extraArgs) args.push(...ctx.extraArgs);
+    args.push(...thinkingArgs(ctx.extraArgs));
     args.push(call.prompt);
 
     // NOTE: stdin MUST be "ignore". Node/Bun default stdio pipes stdin, and
