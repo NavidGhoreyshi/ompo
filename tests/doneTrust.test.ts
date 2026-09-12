@@ -17,6 +17,10 @@ function sh(dir: string, args: string[]): void {
 function gitProject(): string {
   const dir = mkdtempSync(join(tmpdir(), "ompo-trust-"));
   sh(dir, ["init", "-b", "main"]);
+  // Repo-local identity: the loop's merge/commit path uses it, and CI runners
+  // carry no global git config.
+  sh(dir, ["config", "user.name", "ompo-test"]);
+  sh(dir, ["config", "user.email", "test@ompo.local"]);
   sh(dir, ["-c", "user.name=ompo", "-c", "user.email=ompo@local", "commit", "--allow-empty", "-m", "base"]);
   return dir;
 }

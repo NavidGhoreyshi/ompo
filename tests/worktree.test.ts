@@ -12,6 +12,10 @@ function git(dir: string, ...args: string[]): { exit: number; out: string } {
 function initRepo(): string {
   const dir = mkdtempSync(join(tmpdir(), "ompo-wt-"));
   git(dir, "init", "-q");
+  // Identity lives in the repo: the merge path commits with it, and a CI
+  // runner has no global git config to fall back on.
+  git(dir, "config", "user.name", "ompo-test");
+  git(dir, "config", "user.email", "test@ompo.local");
   writeFileSync(join(dir, ".gitignore"), "node_modules\n.env\n", "utf8");
   mkdirSync(join(dir, "node_modules"), { recursive: true });
   writeFileSync(join(dir, "node_modules", "stub.txt"), "deps", "utf8");
