@@ -16,9 +16,16 @@ function tmpProject(roadmap = MD): string {
   return dir;
 }
 
+/**
+ * Spawn the CLI with a pinned config home. Bun does not forward
+ * `process.env` mutations to children, so the preload's OMPO_CONFIG_HOME never
+ * reaches a spawned CLI — without this the child reads the developer's real
+ * ~/.config/ompo and live-probes their models (30s, network-dependent).
+ */
 function cli(dir: string, ...args: string[]): { exit: number; out: string } {
   const r = spawnSync("bun", ["src/cli.ts", ...args, "--project", dir], {
     encoding: "utf8",
+    env: { ...process.env, OMPO_CONFIG_HOME: join(dir, ".ompo-config") },
   });
   return { exit: r.status ?? 1, out: `${r.stdout ?? ""}${r.stderr ?? ""}` };
 }

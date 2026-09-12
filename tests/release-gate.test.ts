@@ -61,8 +61,16 @@ Effort: lo
 
 const MINI = "## [a] A\nDo A.\nVerify: true\nRetries: 0\n";
 
+/**
+ * Spawn the CLI with a pinned config home (bun does not forward
+ * `process.env` mutations to children, so the preload's isolation stops at
+ * the test process — a bare spawn would read the developer's real config).
+ */
 function cli(dir: string, ...args: string[]): { exit: number; out: string } {
-  const r = spawnSync("bun", ["src/cli.ts", ...args, "--project", dir], { encoding: "utf8" });
+  const r = spawnSync("bun", ["src/cli.ts", ...args, "--project", dir], {
+    encoding: "utf8",
+    env: { ...process.env, OMPO_CONFIG_HOME: join(dir, ".ompo-config") },
+  });
   return { exit: r.status ?? 1, out: `${r.stdout ?? ""}${r.stderr ?? ""}` };
 }
 
