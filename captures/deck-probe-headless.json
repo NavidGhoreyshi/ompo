@@ -1,0 +1,695 @@
+{
+  "probe": "deck-probe",
+  "roadmap": "docs/desktop-3d-roadmap.md#d00",
+  "at": "2026-09-12T14:37:50.053Z",
+  "webgl2": true,
+  "mode": "headless",
+  "headed": "headless",
+  "browser": {
+    "name": "chromium",
+    "version": "151.0.7922.34",
+    "executablePath": "/home/navid/.cache/ms-playwright/chromium-1234/chrome-linux64/chrome"
+  },
+  "sync": "gl.finish()+readPixels(1x1)",
+  "params": {
+    "repeat": 3,
+    "sampleMs": 900,
+    "warmupMs": 400,
+    "warmupFrames": 5,
+    "minFrames": 5,
+    "maxFrames": 20
+  },
+  "machine": {
+    "platform": "linux",
+    "arch": "x64",
+    "cpuModel": "Intel(R) Core(TM) i7-4500U CPU @ 1.80GHz",
+    "cpus": 4,
+    "memGB": 10.4,
+    "runtime": "bun 1.3.14"
+  },
+  "elapsedMs": 59955,
+  "renderer": {
+    "vendor": "Google Inc. (Google)",
+    "renderer": "ANGLE (Google, Vulkan 1.3.0 (SwiftShader Device (Subzero) (0x0000C0DE)), SwiftShader driver)",
+    "glVersion": "WebGL 2.0 (OpenGL ES 3.0 Chromium)",
+    "maxTextureSize": 8192,
+    "maxSamples": 4,
+    "devicePixelRatio": 1
+  },
+  "glError": 0,
+  "fills": [
+    {
+      "res": {
+        "w": 640,
+        "h": 360
+      },
+      "overdraw": 1,
+      "mpx": 0.23,
+      "ms": {
+        "min": 2.97,
+        "median": 2.99,
+        "max": 3.26
+      },
+      "runs": [
+        {
+          "frames": 20,
+          "warmupFrames": 5,
+          "mean": 2.99
+        },
+        {
+          "frames": 20,
+          "warmupFrames": 5,
+          "mean": 2.97
+        },
+        {
+          "frames": 20,
+          "warmupFrames": 5,
+          "mean": 3.26
+        }
+      ]
+    },
+    {
+      "res": {
+        "w": 640,
+        "h": 360
+      },
+      "overdraw": 2,
+      "mpx": 0.46,
+      "ms": {
+        "min": 5.03,
+        "median": 5.86,
+        "max": 5.98
+      },
+      "runs": [
+        {
+          "frames": 20,
+          "warmupFrames": 5,
+          "mean": 5.86
+        },
+        {
+          "frames": 20,
+          "warmupFrames": 5,
+          "mean": 5.03
+        },
+        {
+          "frames": 20,
+          "warmupFrames": 5,
+          "mean": 5.98
+        }
+      ]
+    },
+    {
+      "res": {
+        "w": 640,
+        "h": 360
+      },
+      "overdraw": 4,
+      "mpx": 0.92,
+      "ms": {
+        "min": 8.23,
+        "median": 8.89,
+        "max": 10.42
+      },
+      "runs": [
+        {
+          "frames": 20,
+          "warmupFrames": 5,
+          "mean": 8.89
+        },
+        {
+          "frames": 20,
+          "warmupFrames": 5,
+          "mean": 8.23
+        },
+        {
+          "frames": 20,
+          "warmupFrames": 5,
+          "mean": 10.42
+        }
+      ]
+    },
+    {
+      "res": {
+        "w": 640,
+        "h": 360
+      },
+      "overdraw": 8,
+      "mpx": 1.84,
+      "ms": {
+        "min": 15.5,
+        "median": 16.08,
+        "max": 21.21
+      },
+      "runs": [
+        {
+          "frames": 20,
+          "warmupFrames": 5,
+          "mean": 16.08
+        },
+        {
+          "frames": 20,
+          "warmupFrames": 5,
+          "mean": 21.21
+        },
+        {
+          "frames": 20,
+          "warmupFrames": 5,
+          "mean": 15.5
+        }
+      ]
+    },
+    {
+      "res": {
+        "w": 1280,
+        "h": 720
+      },
+      "overdraw": 1,
+      "mpx": 0.92,
+      "ms": {
+        "min": 9.45,
+        "median": 10.68,
+        "max": 11.76
+      },
+      "runs": [
+        {
+          "frames": 20,
+          "warmupFrames": 5,
+          "mean": 10.68
+        },
+        {
+          "frames": 20,
+          "warmupFrames": 5,
+          "mean": 11.76
+        },
+        {
+          "frames": 20,
+          "warmupFrames": 5,
+          "mean": 9.45
+        }
+      ]
+    },
+    {
+      "res": {
+        "w": 1280,
+        "h": 720
+      },
+      "overdraw": 2,
+      "mpx": 1.84,
+      "ms": {
+        "min": 17.44,
+        "median": 17.56,
+        "max": 18.64
+      },
+      "runs": [
+        {
+          "frames": 20,
+          "warmupFrames": 5,
+          "mean": 17.56
+        },
+        {
+          "frames": 20,
+          "warmupFrames": 5,
+          "mean": 17.44
+        },
+        {
+          "frames": 20,
+          "warmupFrames": 5,
+          "mean": 18.64
+        }
+      ]
+    },
+    {
+      "res": {
+        "w": 1280,
+        "h": 720
+      },
+      "overdraw": 4,
+      "mpx": 3.69,
+      "ms": {
+        "min": 29.09,
+        "median": 29.88,
+        "max": 33.62
+      },
+      "runs": [
+        {
+          "frames": 20,
+          "warmupFrames": 5,
+          "mean": 29.09
+        },
+        {
+          "frames": 20,
+          "warmupFrames": 5,
+          "mean": 29.88
+        },
+        {
+          "frames": 20,
+          "warmupFrames": 5,
+          "mean": 33.62
+        }
+      ]
+    },
+    {
+      "res": {
+        "w": 1280,
+        "h": 720
+      },
+      "overdraw": 8,
+      "mpx": 7.37,
+      "ms": {
+        "min": 71.53,
+        "median": 84.55,
+        "max": 90.29
+      },
+      "runs": [
+        {
+          "frames": 11,
+          "warmupFrames": 4,
+          "mean": 84.55
+        },
+        {
+          "frames": 10,
+          "warmupFrames": 5,
+          "mean": 90.29
+        },
+        {
+          "frames": 13,
+          "warmupFrames": 5,
+          "mean": 71.53
+        }
+      ]
+    },
+    {
+      "res": {
+        "w": 1920,
+        "h": 1080
+      },
+      "overdraw": 1,
+      "mpx": 2.07,
+      "ms": {
+        "min": 20.61,
+        "median": 22.63,
+        "max": 25.46
+      },
+      "runs": [
+        {
+          "frames": 20,
+          "warmupFrames": 5,
+          "mean": 20.61
+        },
+        {
+          "frames": 20,
+          "warmupFrames": 5,
+          "mean": 22.63
+        },
+        {
+          "frames": 20,
+          "warmupFrames": 5,
+          "mean": 25.46
+        }
+      ]
+    },
+    {
+      "res": {
+        "w": 1920,
+        "h": 1080
+      },
+      "overdraw": 2,
+      "mpx": 4.15,
+      "ms": {
+        "min": 41.54,
+        "median": 45.51,
+        "max": 72.25
+      },
+      "runs": [
+        {
+          "frames": 20,
+          "warmupFrames": 5,
+          "mean": 41.54
+        },
+        {
+          "frames": 20,
+          "warmupFrames": 5,
+          "mean": 45.51
+        },
+        {
+          "frames": 13,
+          "warmupFrames": 5,
+          "mean": 72.25
+        }
+      ]
+    },
+    {
+      "res": {
+        "w": 1920,
+        "h": 1080
+      },
+      "overdraw": 4,
+      "mpx": 8.29,
+      "ms": {
+        "min": 81.54,
+        "median": 90.34,
+        "max": 119.26
+      },
+      "runs": [
+        {
+          "frames": 8,
+          "warmupFrames": 4,
+          "mean": 119.26
+        },
+        {
+          "frames": 10,
+          "warmupFrames": 5,
+          "mean": 90.34
+        },
+        {
+          "frames": 12,
+          "warmupFrames": 5,
+          "mean": 81.54
+        }
+      ]
+    },
+    {
+      "res": {
+        "w": 1920,
+        "h": 1080
+      },
+      "overdraw": 8,
+      "mpx": 16.59,
+      "ms": {
+        "min": 166.55,
+        "median": 173.5,
+        "max": 294.64
+      },
+      "runs": [
+        {
+          "frames": 6,
+          "warmupFrames": 3,
+          "mean": 166.55
+        },
+        {
+          "frames": 6,
+          "warmupFrames": 3,
+          "mean": 173.5
+        },
+        {
+          "frames": 5,
+          "warmupFrames": 3,
+          "mean": 294.64
+        }
+      ]
+    },
+    {
+      "res": {
+        "w": 2560,
+        "h": 1440
+      },
+      "overdraw": 1,
+      "mpx": 3.69,
+      "ms": {
+        "min": 38.31,
+        "median": 38.53,
+        "max": 41.85
+      },
+      "runs": [
+        {
+          "frames": 20,
+          "warmupFrames": 5,
+          "mean": 38.53
+        },
+        {
+          "frames": 20,
+          "warmupFrames": 5,
+          "mean": 38.31
+        },
+        {
+          "frames": 20,
+          "warmupFrames": 5,
+          "mean": 41.85
+        }
+      ]
+    },
+    {
+      "res": {
+        "w": 2560,
+        "h": 1440
+      },
+      "overdraw": 4,
+      "mpx": 14.75,
+      "ms": {
+        "min": 138.4,
+        "median": 138.97,
+        "max": 153.92
+      },
+      "runs": [
+        {
+          "frames": 7,
+          "warmupFrames": 3,
+          "mean": 138.4
+        },
+        {
+          "frames": 7,
+          "warmupFrames": 3,
+          "mean": 138.97
+        },
+        {
+          "frames": 6,
+          "warmupFrames": 3,
+          "mean": 153.92
+        }
+      ]
+    }
+  ],
+  "instanced20k": {
+    "count": 20000,
+    "quadPx": 8,
+    "res": {
+      "w": 1280,
+      "h": 720
+    },
+    "fillMPx": 1.28,
+    "drawCalls": 1,
+    "ms": {
+      "min": 534.04,
+      "median": 850.54,
+      "max": 992.22
+    },
+    "runs": [
+      {
+        "frames": 5,
+        "warmupFrames": 1,
+        "mean": 992.22
+      },
+      {
+        "frames": 5,
+        "warmupFrames": 1,
+        "mean": 850.54
+      },
+      {
+        "frames": 5,
+        "warmupFrames": 1,
+        "mean": 534.04
+      }
+    ]
+  },
+  "objects": {
+    "res": {
+      "w": 1280,
+      "h": 720
+    },
+    "quadPx": 8,
+    "instanceSweep": [
+      {
+        "count": 64,
+        "fillMPx": 0,
+        "ms": {
+          "min": 4.07,
+          "median": 5.04,
+          "max": 5.24
+        },
+        "runs": [
+          {
+            "frames": 20,
+            "warmupFrames": 5,
+            "mean": 4.07
+          },
+          {
+            "frames": 20,
+            "warmupFrames": 5,
+            "mean": 5.24
+          },
+          {
+            "frames": 20,
+            "warmupFrames": 5,
+            "mean": 5.04
+          }
+        ]
+      },
+      {
+        "count": 256,
+        "fillMPx": 0.02,
+        "ms": {
+          "min": 12.85,
+          "median": 14.1,
+          "max": 16.38
+        },
+        "runs": [
+          {
+            "frames": 20,
+            "warmupFrames": 5,
+            "mean": 14.1
+          },
+          {
+            "frames": 20,
+            "warmupFrames": 5,
+            "mean": 16.38
+          },
+          {
+            "frames": 20,
+            "warmupFrames": 5,
+            "mean": 12.85
+          }
+        ]
+      },
+      {
+        "count": 2000,
+        "fillMPx": 0.13,
+        "ms": {
+          "min": 91.73,
+          "median": 103.48,
+          "max": 115.69
+        },
+        "runs": [
+          {
+            "frames": 9,
+            "warmupFrames": 5,
+            "mean": 103.48
+          },
+          {
+            "frames": 10,
+            "warmupFrames": 4,
+            "mean": 91.73
+          },
+          {
+            "frames": 8,
+            "warmupFrames": 4,
+            "mean": 115.69
+          }
+        ]
+      }
+    ],
+    "drawCallSweep": [
+      {
+        "calls": 10,
+        "ms": {
+          "min": 0.88,
+          "median": 1.13,
+          "max": 1.32
+        },
+        "runs": [
+          {
+            "frames": 20,
+            "warmupFrames": 5,
+            "mean": 0.88
+          },
+          {
+            "frames": 20,
+            "warmupFrames": 5,
+            "mean": 1.32
+          },
+          {
+            "frames": 20,
+            "warmupFrames": 5,
+            "mean": 1.13
+          }
+        ]
+      },
+      {
+        "calls": 100,
+        "ms": {
+          "min": 3.31,
+          "median": 3.71,
+          "max": 4.33
+        },
+        "runs": [
+          {
+            "frames": 20,
+            "warmupFrames": 5,
+            "mean": 4.33
+          },
+          {
+            "frames": 20,
+            "warmupFrames": 5,
+            "mean": 3.31
+          },
+          {
+            "frames": 20,
+            "warmupFrames": 5,
+            "mean": 3.71
+          }
+        ]
+      },
+      {
+        "calls": 1000,
+        "ms": {
+          "min": 28.31,
+          "median": 28.77,
+          "max": 41.81
+        },
+        "runs": [
+          {
+            "frames": 20,
+            "warmupFrames": 5,
+            "mean": 28.77
+          },
+          {
+            "frames": 20,
+            "warmupFrames": 5,
+            "mean": 41.81
+          },
+          {
+            "frames": 20,
+            "warmupFrames": 5,
+            "mean": 28.31
+          }
+        ]
+      }
+    ],
+    "batched": {
+      "quads": 20000,
+      "vertices": 120000,
+      "fillMPx": 1.28,
+      "ms": {
+        "min": 47.22,
+        "median": 48.11,
+        "max": 49.1
+      },
+      "runs": [
+        {
+          "frames": 20,
+          "warmupFrames": 5,
+          "mean": 47.22
+        },
+        {
+          "frames": 19,
+          "warmupFrames": 5,
+          "mean": 49.1
+        },
+        {
+          "frames": 19,
+          "warmupFrames": 5,
+          "mean": 48.11
+        }
+      ]
+    }
+  },
+  "tier": "minimal",
+  "tierBudget": {
+    "resolutionScale": 0.5,
+    "maxFps": 30,
+    "antialias": false,
+    "maxDrawCalls": 24,
+    "maxStations": 8,
+    "maxBeacons": 32,
+    "ambient": false
+  }
+}
