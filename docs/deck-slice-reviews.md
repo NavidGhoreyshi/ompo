@@ -1829,3 +1829,67 @@ scene contract it was.
 5. **`H` toggles the HUD and the help panel together**; the help panel is the overlay copy so the
    same binding works where no HUD exists.
 6. **M10 (five timed tasks) is still owed** — unchanged by this slice; `d03v` remains the real gate.
+
+## d11 — launcher and the `--print-url` handshake
+
+One additive flag, one contract line, and a launcher with no toolchain: the deck is one command away
+in a chrome-less window, and any future shell reads a deterministic URL instead of scraping a banner.
+
+### Outcome
+
+- **`ompo --no-open --print-url`** writes exactly one stdout line `url=http://127.0.0.1:<port>` once
+  bound (the resolved, auto-selected port) and moves the banner — `ompo dashboard: …`,
+  `press Ctrl-C to stop`, `ompo dashboard stopped` — to stderr. Without the flag both streams are
+  unchanged; on a non-dashboard command the flag is a stderr warning, not a parse error.
+- **`scripts/deck-open.ts`** spawns the handshake (self-relaunch: the compiled binary re-executes
+  itself, a source run re-invokes `bun src/cli.ts`, mirroring `resumeCommand()`), reads the line
+  under a 5 s budget, opens `<url>/?surface=deck`, and owns the child on every exit path.
+- **`deckLaunchPlan`** is pure over `env` + platform + an injected existence probe:
+  `$OMPO_DECK_BROWSER` → Chromium-family (`--app=<url> --window-size=1600,1000`) → Windows Edge
+  through the WSL interop mount → `xdg-open` / `open` / `cmd start` as a normal tab → `null`
+  (the launcher prints the URL and exits 1). Every plan's `cmd` is absolute.
+
+### Verification
+
+- `tests/deck-launch.test.ts` (17): the ordered preference list per platform, the app-window args
+  for each family, a non-Chromium override opening a plain tab, an unresolvable override falling
+  through, `null` when nothing exists, absolute `cmd`s, and `readUrlLine` (line split across chunks,
+  bounded timeout, EOF).
+- `tests/release-gate.test.ts` (3 new): exactly one stdout line + banner on stderr + SIGTERM exit 0
+  with the server live; the no-flag run keeping the banner on stdout with no `url=` line; a
+  non-dashboard command warning on stderr and exiting 0.
+- Manual no-orphan check (this box, `DISPLAY=:0`): `bun scripts/deck-open.ts` opened a real
+  chrome-less window — chromium argv carried `--app=http://127.0.0.1:41015/?surface=deck`, an
+  established TCP connection to the ompo port confirmed the page load — and SIGINT exited the
+  launcher 0 with zero `ompo` processes left (`pgrep -f "src/cli.ts"` empty). Re-run with a
+  recording fake browser proved the same cleanup returns the child count to its pre-launch value.
+- Gates: `bunx tsc --noEmit` clean; `bun test` **852 pass / 0 fail** (62 files); `git diff --check`
+  clean; the deck e2e files with `--workers=1` **54 passed**; `bun run test:e2e` **72 passed**.
+  `bun scripts/deck-perf.ts` was not re-run: `d11` touches no performance-sensitive subsystem (no
+  `web/src` change, so `web:build` was not needed either).
+
+### A finding from the handshake tests: the stop handlers ran after the banner
+
+The new gate test kills the dashboard the moment the banner line lands, and it intermittently saw the
+process die *by signal* (`close` code `null`) instead of stopping cleanly: `cmdDashboard` registered
+its SIGINT/SIGTERM handlers after printing the banner — and after the best-effort browser open. Any
+consumer that reacts immediately to the output could hit that gap (the launcher's own 5 s budget
+never would, but the contract should not depend on the consumer being slow). The handlers now
+register before the first byte is written; the immediate-kill test passed 5/5 repeats plus the suite
+runs. Material because it is the only place the new flag changed core sequencing.
+
+### What this does worse, and open findings
+
+1. **The window outlives Ctrl-C.** The launcher kills the ompo child it started but never the
+   browser (browser process semantics; on WSL the interop Edge window may belong to the operator's
+   running Edge). The launcher says `stop: Ctrl-C` once instead of implying it owns the window — the
+   roadmap chose the honest version.
+2. **`$OMPO_DECK_BROWSER` takes one executable, no arguments.** A browser needing flags to behave
+   (a kiosk profile, a specific user-data-dir) needs a wrapper script.
+3. **On this box the default plan is WSL interop Edge** (no Linux Chromium is installed); the real
+   app-window check therefore used the documented override with Playwright's chromium rather than
+   launching into the operator's live Edge session. The default resolution is asserted by a probe,
+   not by opening Edge.
+4. **`--print-url` is dashboard-only.** The flag with `--tui`/any other command warns on stderr and
+   is otherwise ignored; there is no machine-readable handshake for the TUI, and none is planned.
+5. **M10 (five timed tasks) is still owed** — unchanged by this slice; `d03v` remains the real gate.

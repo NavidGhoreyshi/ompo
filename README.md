@@ -121,6 +121,36 @@ ompo --tui            # TUI fallback: plan (if needed) → run → done in the t
   [`docs/web-dashboard-architecture.md`](docs/web-dashboard-architecture.md).
 
 
+## Deck (3D surface, `?surface=deck`)
+
+The dashboard ships a spatial operator surface — a 3D rail of the roadmap, live-worker stations and
+the bounded live window — at `?surface=deck` (a lazy chunk; the shell page pays nothing for it).
+One command opens it in a chrome-less app window:
+
+```bash
+bun scripts/deck-open.ts   # start ompo + open the deck in an app window (Ctrl-C stops the server)
+```
+
+- **Handshake.** `ompo --no-open --print-url` prints **exactly one** stdout line once bound —
+  `url=http://127.0.0.1:<port>` — and moves the human banner to stderr, so scripts and shells read
+  the resolved (auto-selected) port instead of scraping text. Without the flag the output is
+  unchanged; with a non-dashboard command the flag is ignored with a warning.
+- **Manual equivalent.**
+
+  ```bash
+  ompo --no-open --print-url        # → url=http://127.0.0.1:41237
+  google-chrome --app=http://127.0.0.1:41237/?surface=deck --window-size=1600,1000
+  ```
+
+- **Browser choice.** `scripts/deck-open.ts` prefers `$OMPO_DECK_BROWSER` (an executable path or
+  command name), then a Chromium-family binary, then Windows Edge through the WSL interop mount,
+  then the platform opener (`xdg-open` / `open` / `cmd start`) as a normal tab. It prints what it
+  opened, once; if nothing is found it prints the URL and exits 1.
+- **Stopping.** Ctrl-C in the terminal kills the ompo server it started (no orphans). Closing the
+  window does not stop ompo — browser process semantics — which is why the launcher prints
+  `stop: Ctrl-C` once rather than pretending otherwise.
+
+
 ## Adopt a foreign roadmap (any template, mid-progress)
 
 ```bash

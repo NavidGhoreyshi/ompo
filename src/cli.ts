@@ -53,7 +53,8 @@ function help(): string {
   return `ompo ${VERSION} — long-horizon roadmap orchestrator for stock omp
 
 USAGE
-  ompo [--port N] [--no-open]              local dashboard: serve the web UI + API on 127.0.0.1 (auto port)
+  ompo [--port N] [--no-open] [--print-url]
+                                            local dashboard: serve the web UI + API on 127.0.0.1 (auto port)
   ompo --tui [RUN FLAGS]                   unified TUI: plan (if needed) → run → done
   ompo setup                               global model roles (deep + fast slots) → ~/.config/ompo/config.yml
   ompo init [--project DIR] [--roadmap PATH] [--replan] [--template] [--model M]
@@ -126,6 +127,8 @@ WEB FLAGS (bare ompo dashboard)
   --port N           dashboard port (default: automatically selected available localhost port)
   --host H           dashboard bind host (default 127.0.0.1; 0.0.0.0 prints a warning, no auth)
   --no-open          start the server without launching a browser
+  --print-url        print exactly one stdout line \`url=<url>\` once bound (banner moves to stderr;
+                      the handshake scripts and desktop shells consume, see scripts/deck-open.ts)
   --tui              run the unified terminal UI instead of the dashboard
 
 FORENSICS FLAGS (show/diff/shell/logs/retry/skip/accept-secret/worktrees/checklist/fill/stats/query/export/replay/doctor/config)
@@ -216,6 +219,8 @@ interface Args {
   host?: string;
   /** Bare dashboard: start the server without launching a browser. */
   noOpen?: boolean;
+  /** Bare dashboard: print exactly one stdout line `url=<url>` (banner goes to stderr). */
+  printUrl?: boolean;
   /** Bare flags only: run the unified TUI instead of the dashboard. */
   tui?: boolean;
 }
@@ -304,6 +309,7 @@ function parseArgs(argv: string[]): Args {
     else if (t === "--port" && argv[i + 1]) a.port = parsePositiveInt(argv[++i]!, "--port");
     else if (t === "--host" && argv[i + 1]) a.host = argv[++i]!;
     else if (t === "--no-open") a.noOpen = true;
+    else if (t === "--print-url") a.printUrl = true;
     else if (t === "--tui") a.tui = true;
     else if (!t.startsWith("-") && a.sub === undefined) a.sub = t;
     else if (!t.startsWith("-")) a.rest.push(t);
@@ -1279,15 +1285,27 @@ async function cmdDashboard(a: Args): Promise<number> {
   }
   try {
     const server = startDashboardServer({ projectDir: a.project, port: a.port ?? 0, host });
-    console.log(`ompo dashboard: ${server.url}  (project ${a.project}, assets: ${server.assetMode})`);
-    console.log("press Ctrl-C to stop");
-    if (!a.noOpen) await openBrowser(server.url);
-    await new Promise<void>((resolve) => {
+    // Stop handlers first: a `--print-url` consumer may kill the process the
+    // moment the banner/url line lands, and a SIGTERM in the gap would take
+    // the default disposition (exit by signal) instead of the clean stop.
+    const stopped = new Promise<void>((resolve) => {
       process.on("SIGINT", () => resolve());
       process.on("SIGTERM", () => resolve());
     });
+    // `--print-url` (d11): stdout carries exactly one line — the handshake a
+    // launcher reads — so the human banner moves to stderr. Without the flag
+    // both streams are byte-identical to the pre-d11 behaviour.
+    const say = (line: string): void => {
+      if (a.printUrl) console.error(line);
+      else console.log(line);
+    };
+    if (a.printUrl) process.stdout.write(`url=${server.url}\n`);
+    say(`ompo dashboard: ${server.url}  (project ${a.project}, assets: ${server.assetMode})`);
+    say("press Ctrl-C to stop");
+    if (!a.noOpen) await openBrowser(server.url);
+    await stopped;
     server.stop();
-    console.log("ompo dashboard stopped");
+    say("ompo dashboard stopped");
     return 0;
   } catch (err) {
     console.error(`dashboard failed: ${String((err as Error).message)}`);
@@ -1309,6 +1327,11 @@ async function main(): Promise<number> {
   // Explicit --help/-h still prints help.
   const raw = process.argv.slice(2);
   if ((raw.length === 0 || raw[0]!.startsWith("-")) && a.cmd !== "--help") a.cmd = a.tui ? "tui" : "web";
+  // `--print-url` is the dashboard's handshake (d11); elsewhere it is a
+  // no-op the operator should hear about rather than a parse error.
+  if (a.printUrl && a.cmd !== "web" && a.cmd !== "--help") {
+    console.error("warning: --print-url applies to the bare dashboard only — ignored");
+  }
   switch (a.cmd) {
     case "web":
       return cmdDashboard(a);

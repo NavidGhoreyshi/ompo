@@ -74,6 +74,15 @@ function cli(dir: string, ...args: string[]): { exit: number; out: string } {
   return { exit: r.status ?? 1, out: `${r.stdout ?? ""}${r.stderr ?? ""}` };
 }
 
+/** Same spawn as `cli()`, but with stdout and stderr kept apart (stream contracts). */
+function cliStreams(dir: string, ...args: string[]): { exit: number; stdout: string; stderr: string } {
+  const r = spawnSync("bun", ["src/cli.ts", ...args, "--project", dir], {
+    encoding: "utf8",
+    env: { ...process.env, OMPO_CONFIG_HOME: join(dir, ".ompo-config") },
+  });
+  return { exit: r.status ?? 1, stdout: r.stdout ?? "", stderr: r.stderr ?? "" };
+}
+
 async function fetchJSON(
   url: string,
   init?: RequestInit,
@@ -196,6 +205,100 @@ describe("release gate: browser smoke (dashboard server)", () => {
       });
     }
   }, 30_000);
+});
+
+describe("release gate: --print-url handshake (roadmap d11)", () => {
+  /**
+   * Spawn the bare dashboard with both streams apart and splits stdout into
+   * lines as they arrive — the handshake is a line contract, so the test reads
+   * lines, not chunks. `closed` resolves after both pipes are drained, which
+   * is the only place a "stdout carried nothing else" claim is deterministic.
+   */
+  function boot(dir: string, ...extra: string[]) {
+    const child = spawn("bun", ["src/cli.ts", "--no-open", ...extra, "--project", dir], {
+      stdio: ["ignore", "pipe", "pipe"],
+      env: { ...process.env, OMPO_CONFIG_HOME: join(dir, ".ompo-config") },
+    });
+    let err = "";
+    let buffer = "";
+    const lines: string[] = [];
+    let sawUrl: (url: string) => void = () => {};
+    let sawBanner: (url: string) => void = () => {};
+    const urlLine = new Promise<string>((resolve) => {
+      sawUrl = resolve;
+    });
+    const bannerLine = new Promise<string>((resolve) => {
+      sawBanner = resolve;
+    });
+    child.stdout!.on("data", (d) => {
+      buffer += String(d);
+      const parts = buffer.split("\n");
+      buffer = parts.pop() ?? "";
+      for (const line of parts) {
+        lines.push(line);
+        const url = /^url=(http:\/\/\S+)$/.exec(line);
+        if (url) sawUrl(url[1]!);
+        const banner = /^ompo dashboard: (http:\/\/\S+)/.exec(line);
+        if (banner) sawBanner(banner[1]!);
+      }
+    });
+    child.stderr!.on("data", (d) => {
+      err += String(d);
+    });
+    const closed = new Promise<number | null>((resolve) => child.on("close", (code) => resolve(code)));
+    return { child, urlLine, bannerLine, lines: () => lines, err: () => err, closed };
+  }
+
+  async function terminate(child: ReturnType<typeof spawn>, closed: Promise<number | null>): Promise<number | null> {
+    child.kill("SIGTERM");
+    return closed;
+  }
+
+  test("stdout carries exactly the url= line, the banner moves to stderr, SIGTERM exits 0", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "ompo-gate-printurl-"));
+    failedRun(dir, "r1");
+    const { child, urlLine, lines, err, closed } = boot(dir, "--print-url");
+    try {
+      const url = await urlLine;
+      expect(url).toMatch(/^http:\/\/127\.0\.0\.1:\d+$/);
+      // The line names a server that is actually up.
+      expect((await fetchJSON(`${url}/api/health`)).status).toBe(200);
+      expect(child.exitCode).toBeNull();
+      expect(await terminate(child, closed)).toBe(0);
+      // The handshake is exactly one line; the banner and the shutdown notice
+      // are stderr's. Asserted after close, when both pipes are drained.
+      expect(lines()).toEqual([`url=${url}`]);
+      expect(err()).toContain("ompo dashboard:");
+      expect(err()).toContain("press Ctrl-C to stop");
+      expect(err()).toContain("ompo dashboard stopped");
+    } finally {
+      child.kill("SIGKILL");
+    }
+  }, 30_000);
+
+  test("without the flag the banner stays on stdout and no url= line appears", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "ompo-gate-banner-"));
+    failedRun(dir, "r1");
+    const { child, bannerLine, lines, err, closed } = boot(dir);
+    try {
+      expect(await bannerLine).toMatch(/^http:\/\/127\.0\.0\.1:\d+$/);
+      expect(await terminate(child, closed)).toBe(0);
+      expect(lines().some((line) => line.includes("press Ctrl-C to stop"))).toBe(true);
+      expect(lines().some((line) => line.startsWith("url="))).toBe(false);
+      expect(err()).not.toContain("ompo dashboard:");
+    } finally {
+      child.kill("SIGKILL");
+    }
+  }, 30_000);
+
+  test("on a non-dashboard command the flag is a stderr warning, never a failure", () => {
+    const dir = mkdtempSync(join(tmpdir(), "ompo-gate-printurl-ignored-"));
+    failedRun(dir, "r1");
+    const r = cliStreams(dir, "status", "--print-url");
+    expect(r.exit).toBe(0);
+    expect(r.stdout).not.toContain("url=");
+    expect(r.stderr).toContain("--print-url applies to the bare dashboard only");
+  });
 });
 
 describe("release gate: --tui smoke", () => {
