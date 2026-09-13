@@ -126,12 +126,49 @@ export interface RailNode {
   /**
    * Pipeline stage index for a live slice (`currentStageIndex` over
    * `buildPipelineStages`), `-1` for a slice with no observed phase or for a
-   * non-live pad. The station's shaft fills one segment per stage step; the
+   * non-live pad. The station's column fills one mark per stage step; the
    * scene reads this number, never the stage names.
    */
   stage: number;
   /** Stage label for the DOM (`buildPipelineStages[stage].label`, "" when none). */
   stageLabel: string;
+  /**
+   * `AgentRow.lane` for this slice, or `null` when `/agents` has not reported
+   * it (`d04`). A live worker's station slot is derived from it; a non-live
+   * slice never has one.
+   */
+  lane: number | null;
+  /**
+   * `AgentRow.wedged` — live but silent past the server's wedge threshold
+   * (`d04`). Scene-visible: a wedged station draws its column with a static
+   * break, so "stalled" survives greyscale.
+   */
+  wedged: boolean;
+}
+
+/**
+ * One live worker's station (`d04`). A station is the deck's answer to "who is
+ * running": a column above the worker's own pad, its marks the pipeline stage,
+ * its brightness the operator's focus. `slot`/`stack` come from the pure policy
+ * in `lanes.ts` — the renderer never decides placement, and the slot is a pool
+ * entry, never a coordinate.
+ */
+export interface DeckStation {
+  id: string;
+  /** Pool entry this station is drawn from (`0 … maxStations-1`). */
+  slot: number;
+  /** `0` when the station is drawn; `1…n` when the pool is full (overflow). */
+  stack: number;
+  /** Pipeline stage index, `-1` when no phase has been observed yet. */
+  stage: number;
+  /** `AgentRow.wedged` — drawn as a static break, not a colour change. */
+  wedged: boolean;
+  /** `AgentRow.lane`, or `null` before the worker is reported. */
+  lane: number | null;
+  /** The slice that needs eyes (`preferredSliceId`), independent of focus. */
+  primary: boolean;
+  /** The worker the operator is pointed at (`focusId`). */
+  focused: boolean;
 }
 
 /** Alert kinds the scene can draw as of `d02`; `d05` extends this union. */
@@ -172,11 +209,26 @@ export interface DeckModel {
   /** The slice that needs eyes (`preferredSliceId`), independent of selection. */
   primaryId: string | null;
   /**
-   * Live workers (`liveSliceIds`) in board order — the lane strip, the `[`/`]`
-   * cycle and the HUD's `live: N`. Pads carry the same fact per node; this is
-   * the ordered projection of it, so the overlay never re-derives the order.
+   * Live workers in station order (lane order, ties in board order) — the lane
+   * strip, the `[`/`]` cycle and the HUD's `live: N`. Pads carry the same fact
+   * per node; this is the ordered projection of it, so the overlay never
+   * re-derives the order. `stations` carries the same ids with their slots.
    */
   liveIds: string[];
+  /**
+   * The live workers as stations (`d04`), every live id exactly once: the
+   * pooled ones in slot order, then the overflow ones the tier cannot draw.
+   * The scene draws this array and nothing else; the lane list lists it.
+   */
+  stations: DeckStation[];
+  /** Workers the station pool cannot hold (HUD count; `0` when everything fits). */
+  stationOverflow: number;
+  /**
+   * Inputs the slot policy had to repair (a malformed lane, a collision, a
+   * duplicate live id). Empty in normal operation; rendered in the HUD so a
+   * repair is never silent.
+   */
+  warnings: string[];
   /**
    * The worker in front of the operator (`focusTarget`): the pin when one is
    * set, else the live primary, else the overall primary. `null` on an empty
@@ -195,9 +247,9 @@ export interface DeckModel {
 
 /**
  * Everything the projection reads. `events`, `agents` and `prefs` are part of
- * the contract for the slices that consume them (`d03` focus/live window);
- * `d02`'s rail is a function of `detail` + `selected` + `runId` only, which is
- * why an event or worker churn cannot touch the scene.
+ * the contract for the slices that consume them (`d03` focus/live window,
+ * `d04` stations); the rail itself is a function of `detail` + `selected` +
+ * `runId` only, which is why an event or worker churn cannot touch the scene.
  */
 export interface DeckInput {
   runId: string | null;
@@ -216,6 +268,12 @@ export interface DeckInput {
   pinnedId: string | null;
   prefs: DeckPrefs;
   live: boolean;
+  /**
+   * How many stations the operator's tier can draw (`TIER_BUDGETS[tier].maxStations`).
+   * The projection, not the renderer, decides which workers get a slot, so the
+   * overflow count and the lane list agree with the scene by construction.
+   */
+  maxStations: number;
 }
 
 /** Props the shell hands the deck. Fetching stays in `App.tsx`. */
@@ -266,9 +324,19 @@ export interface RenderStats {
   /** `pixels × fullScreenLayers + linePixels`. */
   shadedPixels: number;
   /**
-   * Filled shaft segments of the focused station (`d03`) — 0 when nothing is
-   * framed or the framed slice is not live. Read from the model, so it is
-   * correct before the frame that draws it.
+   * Stations drawn (`d04`): one per live worker the tier's pool holds, each
+   * `SHAFT_SEGMENTS` marks at most. Independent of focus, so switching the
+   * focused worker costs no instances.
+   */
+  stations: number;
+  /** Instances those stations occupy (their filled stage marks). */
+  stationMarks: number;
+  /** Alert markers drawn (failed / blocked-env beacons) — `d02`, counted here. */
+  markers: number;
+  /**
+   * Filled marks of the *focused* station (`d03`) — 0 when nothing is framed
+   * or the framed slice is not live. Read from the model, so it is correct
+   * before the frame that draws it.
    */
   stationSegments: number;
   /** Frames per second actually rendered, refreshed on read (`info()`). */
@@ -294,7 +362,7 @@ export const DECK_KEYS: DeckKey[] = [
   { key: "Esc", codes: ["Escape"], effect: "Release the pin, re-follow the primary", slice: "d03" },
   { key: "Space", codes: [" "], effect: "Freeze / resume the live window", slice: "d03" },
   { key: "E", codes: ["e"], effect: "Expand the live window to the raw transcript", slice: "d03" },
-  { key: "[ / ]", codes: ["[", "]"], effect: "Previous / next live worker", slice: "d03" },
+  { key: "[ / ]", codes: ["[", "]"], effect: "Previous / next live worker (focus only — F frames it)", slice: "d04" },
   { key: "arrow keys", codes: ["ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight"], effect: "Pan the camera along the floor", slice: "d03" },
   { key: "wheel / + / -", codes: ["+", "=", "-"], effect: "Zoom the camera", slice: "d03" },
   { key: "C", codes: ["c"], effect: "Cycle camera preset (command ↔ rail)", slice: "d03" },
@@ -334,9 +402,17 @@ export interface DeckDebugHook {
   cameraPreset: "command" | "rail";
   /** Live workers the deck can see (lane strip length, HUD `live: N`). */
   liveCount: number;
+  /** Stations the pool drew (`d04`), their instances, and the workers it could not hold. */
+  stations: number;
+  stationMarks: number;
+  /** Alert markers drawn — half of the `instances` identity the specs assert. */
+  markers: number;
+  stationOverflow: number;
+  /** Live workers with no on-screen station, by id (`d04` edge markers). */
+  offScreen: string[];
   /** Camera state last written to the renderer (view state, for the specs). */
   camera: DeckCamera;
-  /** Filled shaft segments of the focused station (`0` when nothing is framed). */
+  /** Filled marks of the focused station (`0` when nothing is framed). */
   stationSegments: number;
   /** Rows in the live window and raw lines behind it — the bounded-window evidence. */
   liveRows: number;

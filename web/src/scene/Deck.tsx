@@ -21,7 +21,8 @@ import { describeEvent } from "../lib/events.ts";
 import { buildDeckModel } from "./model.ts";
 import DeckOverlay from "./DeckOverlay.tsx";
 import { focusTarget, nextLiveId } from "./focus.ts";
-import { applyCameraIntent, focusIntent, lerpCamera, type CameraIntent } from "./camera.ts";
+import { applyCameraIntent, edgeAnchor, focusIntent, lerpCamera, offScreenIds, type CameraIntent, type EdgeMarker } from "./camera.ts";
+import { stationCountLabel } from "./lanes.ts";
 import { createFrameLoop, type FrameLoop } from "./loop.ts";
 import { createDeckRenderer, probeRendererString, type DeckRenderer } from "./renderer.ts";
 import { instrument } from "./instrument.ts";
@@ -59,6 +60,7 @@ interface HudReadout {
   fps: number;
   drawCalls: number;
   objects: number;
+  stations: number;
   lines: number;
   vertices: number;
   pixels: number;
@@ -165,6 +167,11 @@ function deckHook(): DeckDebugHook {
       frozen: null,
       cameraPreset: "command",
       liveCount: 0,
+      stations: 0,
+      stationMarks: 0,
+      markers: 0,
+      stationOverflow: 0,
+      offScreen: [],
       camera: { ...DEFAULT_CAMERA, target: { ...DEFAULT_CAMERA.target } },
       stationSegments: 0,
       liveRows: 0,
@@ -191,6 +198,7 @@ export default function Deck({ runId, detail, events, agents, selected, sliceDet
   /** `command` follows the work; `rail` is the operator's whole-run overview. */
   const [preset, setPreset] = useState<DeckCameraPreset>("command");
   const containerRef = useRef<HTMLDivElement | null>(null);
+  const hudRef = useRef<HTMLDivElement | null>(null);
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const rendererRef = useRef<DeckRenderer | null>(null);
   const loopRef = useRef<FrameLoop | null>(null);
@@ -229,6 +237,8 @@ export default function Deck({ runId, detail, events, agents, selected, sliceDet
   // The projection: application state in, an immutable model out. `events`,
   // `agents` and `prefs` are inputs the later slices consume; the rail is a
   // function of `detail` + `selected`, so their churn leaves the digest intact.
+  // `maxStations` is the tier's cap: which workers get a station is a
+  // projection decision, so the scene, the HUD count and the lane list agree.
   const projected = useMemo(
     () =>
       buildDeckModel({
@@ -241,8 +251,9 @@ export default function Deck({ runId, detail, events, agents, selected, sliceDet
         pinnedId,
         prefs,
         live,
+        maxStations: budget.maxStations,
       }),
-    [runId, detail, events, agents, selected, sliceDetail, pinnedId, prefs, live],
+    [runId, detail, events, agents, selected, sliceDetail, pinnedId, prefs, live, budget.maxStations],
   );
   const lastModelRef = useRef<DeckModel | null>(null);
   // A run switch that is still loading keeps the previous pads on the floor
@@ -266,6 +277,10 @@ export default function Deck({ runId, detail, events, agents, selected, sliceDet
   if (!projected.loading) lastModelRef.current = projected;
   const modelRef = useRef(model);
   modelRef.current = model;
+  // How many workers the tier's pool holds. `stations` also lists the workers
+  // it cannot (so the lane list stays complete); the difference is the HUD's
+  // overflow and what the scene folds into its stack marker.
+  const pooledStations = model.stations.length - model.stationOverflow;
 
   /**
    * The deck subtree is the mutation/layout subject the instrument watches —
@@ -289,6 +304,45 @@ export default function Deck({ runId, detail, events, agents, selected, sliceDet
     return size.height > 0 ? size.width / size.height : 1;
   }, []);
 
+  /**
+   * Off-screen live workers (`d04`): recomputed when the camera settles or the
+   * world changes, never per frame — a marker is where a worker *is*, so it
+   * moves only when the camera stops moving. The key guard means a settled
+   * camera (and an unchanged live set) commits nothing at all.
+   */
+  const [edgeMarkers, setEdgeMarkers] = useState<EdgeMarker[]>([]);
+  const edgeKeyRef = useRef("");
+  const refreshEdgeMarkers = useCallback((): void => {
+    const renderer = rendererRef.current;
+    const current = modelRef.current;
+    if (!renderer) {
+      // The flat path has no camera, so nothing is off screen — the notice
+      // says what is missing instead (`d09` builds the real fallback).
+      if (edgeKeyRef.current !== "") {
+        edgeKeyRef.current = "";
+        setEdgeMarkers([]);
+      }
+      return;
+    }
+    const camera = cameraRef.current;
+    const view = aspect();
+    const hidden = new Set(offScreenIds(camera, current.nodes, view));
+    const nodeById = new Map(current.nodes.map((node) => [node.id, node]));
+    const markers: EdgeMarker[] = [];
+    for (const id of current.liveIds) {
+      const node = hidden.has(id) ? nodeById.get(id) : undefined;
+      if (node === undefined) continue;
+      markers.push({ id, ...edgeAnchor(camera, node, view) });
+    }
+    const key = markers
+      .map((marker) => `${marker.id}@${marker.x.toFixed(3)},${marker.y.toFixed(3)},${marker.angle.toFixed(3)}${marker.behind ? "b" : ""}`)
+      .join("|");
+    if (key === edgeKeyRef.current) return;
+    edgeKeyRef.current = key;
+    deckHook().offScreen = markers.map((marker) => marker.id);
+    setEdgeMarkers(markers);
+  }, [aspect]);
+
   /** Write a camera state through to the renderer and publish it to the hook. */
   const applyCamera = useCallback((renderer: DeckRenderer, next: DeckCamera): void => {
     cameraRef.current = next;
@@ -310,12 +364,13 @@ export default function Deck({ runId, detail, events, agents, selected, sliceDet
       if (immediate || reducedMotion) {
         tweenRef.current = null;
         applyCamera(renderer, to);
+        refreshEdgeMarkers();
       } else {
         tweenRef.current = { from: cameraRef.current, to, startedAt: performance.now(), durationMs: CAMERA_LERP_MS };
       }
       loopRef.current?.request();
     },
-    [applyCamera, reducedMotion],
+    [applyCamera, refreshEdgeMarkers, reducedMotion],
   );
 
   /** Frame one slice id, from the model's own node list. */
@@ -347,6 +402,10 @@ export default function Deck({ runId, detail, events, agents, selected, sliceDet
       hook.liveCount = next.liveIds.length;
       const info = renderer.info();
       hook.instances = info.instances;
+      hook.stations = info.stations;
+      hook.stationMarks = info.stationMarks;
+      hook.markers = info.markers;
+      hook.stationOverflow = next.stationOverflow;
       hook.stationSegments = info.stationSegments;
       hook.positions = next.nodes.map((node) => ({ id: node.id, x: node.x, z: node.z }));
       // The model reached the scene; the frame that draws it is the scene stage.
@@ -356,6 +415,26 @@ export default function Deck({ runId, detail, events, agents, selected, sliceDet
     },
     [],
   );
+
+  // The station line and the lane strip hang under the HUD, whose height
+  // depends on how many chips the operator's window fits on one line. It is
+  // measured, not assumed: a lane row covered by the HUD strip would hide the
+  // primary worker, which is the one thing this surface may never do.
+  useEffect(() => {
+    const hud = hudRef.current;
+    const section = containerRef.current;
+    if (!hud || !section || typeof ResizeObserver !== "function") return;
+    const measure = (): void => {
+      section.style.setProperty("--omp-deck-hud-h", `${Math.ceil(hud.getBoundingClientRect().height)}px`);
+    };
+    measure();
+    const observer = new ResizeObserver(measure);
+    observer.observe(hud);
+    return () => {
+      observer.disconnect();
+      section.style.removeProperty("--omp-deck-hud-h");
+    };
+  }, [ready, rendererString, contextFailed]);
 
   // Size first: a zero-size container gets no renderer at all (a 0-width
   // projection matrix is not a recoverable state, it is a bug).
@@ -373,6 +452,7 @@ export default function Deck({ runId, detail, events, agents, selected, sliceDet
       if (renderer) {
         renderer.setSize(rect.width, rect.height);
         loopRef.current?.request();
+        refreshEdgeMarkers();
       } else {
         setReady(true);
       }
@@ -391,7 +471,7 @@ export default function Deck({ runId, detail, events, agents, selected, sliceDet
       if (timer !== null) window.clearTimeout(timer);
       observer.disconnect();
     };
-  }, []);
+  }, [refreshEdgeMarkers]);
 
   // Renderer + loop lifecycle: one WebGL context per mount. Creating contexts
   // is the expensive, fragile part on a software rasterizer (measured: a second
@@ -423,7 +503,11 @@ export default function Deck({ runId, detail, events, agents, selected, sliceDet
       if (tween) {
         const t = Math.min(1, (performance.now() - tween.startedAt) / tween.durationMs);
         applyCamera(active, lerpCamera(tween.from, tween.to, t * t * (3 - 2 * t)));
-        if (t >= 1) tweenRef.current = null;
+        if (t >= 1) {
+          tweenRef.current = null;
+          // The camera has stopped: the off-screen set is what it is now.
+          refreshEdgeMarkers();
+        }
       }
       const started = performance.now();
       const stats = active.render();
@@ -459,6 +543,7 @@ export default function Deck({ runId, detail, events, agents, selected, sliceDet
     // animated first approach would be motion the operator did not ask for.
     frameSlice(modelRef.current.focusId, true);
     framingRef.current = { focusId: modelRef.current.focusId, shape: boundsShape(modelRef.current.bounds) };
+    refreshEdgeMarkers();
     hook.screenPosition = (id: string) => {
       const node = modelRef.current.nodes.find((candidate) => candidate.id === id);
       const active = rendererRef.current;
@@ -482,6 +567,7 @@ export default function Deck({ runId, detail, events, agents, selected, sliceDet
       loopRef.current = null;
       hook.disposed++;
       hook.screenPosition = null;
+      hook.offScreen = [];
     };
     // `tier` and `prefs.tier` are read for the initial values only; later changes
     // go through the parameter effect below, which never rebuilds the context.
@@ -489,12 +575,14 @@ export default function Deck({ runId, detail, events, agents, selected, sliceDet
 
   // Model changes: rewrite the rail's buffers (in place; the renderer diffs on
   // the digest) and ask for one frame. An unchanged digest — an event, a log
-  // line, a worker row — asks for nothing at all.
+  // line, a worker row — asks for nothing at all. The live set is what the
+  // edge markers are about, so they are refreshed here too.
   useEffect(() => {
     const renderer = rendererRef.current;
     if (!renderer) return;
     applyToScene(renderer, model);
-  }, [model, applyToScene]);
+    refreshEdgeMarkers();
+  }, [model, applyToScene, refreshEdgeMarkers]);
 
   /**
    * The camera policy — the only place that decides a framing without the
@@ -579,6 +667,7 @@ export default function Deck({ runId, detail, events, agents, selected, sliceDet
         fps: stats.fps,
         drawCalls: stats.drawCalls,
         objects: stats.objects,
+        stations: stats.stations,
         lines: stats.lines,
         vertices: stats.vertices,
         pixels: stats.pixels,
@@ -668,15 +757,17 @@ export default function Deck({ runId, detail, events, agents, selected, sliceDet
   );
 
   /**
-   * Point the deck at one worker: the pin (so auto-follow stops), the shared
+   * Point the deck at one worker: the pin (so auto-follow stops) and the shared
    * selection (the dashboard's Inspector and the shell's slice-detail fetch
-   * follow it, which is what gives the station its stage), and the framing.
+   * follow it, which is what gives the station its stage). The camera moves
+   * only when the caller asks: `[`/`]` and a lane click are pointer changes,
+   * while `F` and an edge marker are a "take me there".
    */
   const focusOn = useCallback(
-    (sliceId: string): void => {
+    (sliceId: string, frame: boolean): void => {
       setPinnedId(sliceId);
       onSelect(sliceId);
-      frameSlice(sliceId);
+      if (frame) frameSlice(sliceId);
     },
     [frameSlice, onSelect],
   );
@@ -687,11 +778,15 @@ export default function Deck({ runId, detail, events, agents, selected, sliceDet
     (event: React.KeyboardEvent<HTMLDivElement>) => {
       if (event.target instanceof HTMLElement) {
         const tag = event.target.tagName;
-        // Never hijack a control that answers the key itself (the mirror rows,
-        // the HUD buttons, the window's freeze/resume) or a text field.
-        if (event.target.isContentEditable || tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT" || tag === "BUTTON" || tag === "A") {
+        // Never hijack a control that answers the key itself (a text field, a
+        // link) — and a focused button owns Space/Enter, which is how the lane
+        // rows and the edge markers stay keyboard-reachable. Every other deck
+        // key still works from a focused button, so `]` keeps cycling after a
+        // click (d04).
+        if (event.target.isContentEditable || tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT" || tag === "A") {
           return;
         }
+        if (tag === "BUTTON" && (event.key === " " || event.key === "Enter")) return;
       }
       const key = event.key.toLowerCase();
       const model = modelRef.current;
@@ -718,7 +813,7 @@ export default function Deck({ runId, detail, events, agents, selected, sliceDet
       } else if (key === "f") {
         // Frame the selection — the operator's explicit "watch this one".
         const target = model.nodes.find((node) => node.selected)?.id ?? model.focusId;
-        if (target !== null) focusOn(target);
+        if (target !== null) focusOn(target, true);
       } else if (event.key === "Escape") {
         // Release the pin: follow the primary again, from wherever we are.
         setPinnedId(null);
@@ -738,8 +833,10 @@ export default function Deck({ runId, detail, events, agents, selected, sliceDet
       } else if (event.key === "0") {
         framePreset(preset);
       } else if (event.key === "[" || event.key === "]") {
+        // Focus only: `]` walks the live set the way the lane list reads,
+        // and the camera stays where the operator put it (`F` frames).
         const next = nextLiveId(model.liveIds, model.focusId, event.key === "]" ? 1 : -1);
-        if (next !== null) focusOn(next);
+        if (next !== null) focusOn(next, false);
       } else if (event.key.startsWith("Arrow")) {
         const step = event.shiftKey ? PAN_STEP * 3 : PAN_STEP;
         const right = event.key === "ArrowRight" ? step : event.key === "ArrowLeft" ? -step : 0;
@@ -800,6 +897,7 @@ export default function Deck({ runId, detail, events, agents, selected, sliceDet
           onFrozenChange={(next) => setFrozenId(next ? (model.focusId ?? null) : null)}
           expanded={expanded}
           onExpandedChange={setExpanded}
+          edgeMarkers={edgeMarkers}
           onFocus={focusOn}
           onSelect={onSelect}
         />
@@ -838,10 +936,11 @@ export default function Deck({ runId, detail, events, agents, selected, sliceDet
         onFrozenChange={(next) => setFrozenId(next ? (model.focusId ?? null) : null)}
         expanded={expanded}
         onExpandedChange={setExpanded}
+        edgeMarkers={edgeMarkers}
         onFocus={focusOn}
         onSelect={onSelect}
       />
-      <div className="omp-deck-hud">
+      <div className="omp-deck-hud" ref={hudRef}>
         <div className="omp-deck-row">
           <span className="omp-deck-chip" data-tier={tier}>
             {tier}
@@ -861,10 +960,15 @@ export default function Deck({ runId, detail, events, agents, selected, sliceDet
           <span className="omp-deck-metric" data-live={live ? "true" : "false"}>
             {live ? "live" : "quiescent"}
           </span>
-          <span className="omp-deck-metric" data-live-count={model.liveIds.length}>
-            live: {model.liveIds.length} · showing {model.focusId ?? "—"}
+          <span className="omp-deck-metric" data-live-count={model.liveIds.length} data-station-count={pooledStations}>
+            {stationCountLabel(model.liveIds.length, pooledStations)} · showing {model.focusId ?? "—"}
             {pinnedId !== null ? ` · pinned` : ""}
           </span>
+          {model.warnings.length > 0 && (
+            <span className="omp-deck-warn" data-slot-warnings={model.warnings.length}>
+              {model.warnings.length} slot warning{model.warnings.length === 1 ? "" : "s"}
+            </span>
+          )}
           {lastEvent && (
             <span className="omp-deck-event" ref={(element) => markRendered(element, lastEvent.seq)}>
               {lastEvent.type}
@@ -884,6 +988,11 @@ export default function Deck({ runId, detail, events, agents, selected, sliceDet
               budget: {budget.resolutionScale}× backing · {budget.maxFps} fps cap · ≤{budget.maxDrawCalls} calls · ≤{budget.maxStations}{" "}
               stations · ≤{budget.maxBeacons} beacons
             </p>
+            {model.warnings.length > 0 && (
+              <p className="omp-deck-subject" data-slot-warnings={model.warnings.length}>
+                slot policy: {model.warnings.join("; ")}
+              </p>
+            )}
             <dl className="omp-deck-costs">
               <div>
                 <dt>frame</dt>
@@ -903,6 +1012,13 @@ export default function Deck({ runId, detail, events, agents, selected, sliceDet
                 <dd>
                   {readout?.vertices ?? 0} verts · {readout?.lines ?? 0} lines · {readout?.drawCalls ?? 0} draw calls ·{" "}
                   {readout?.objects ?? 0} objects
+                </dd>
+              </div>
+              <div>
+                <dt>stations</dt>
+                <dd>
+                  {readout?.stations ?? 0} drawn · {model.liveIds.length} live
+                  {model.stationOverflow > 0 ? ` · ${model.stationOverflow} over the tier's cap` : ""}
                 </dd>
               </div>
               <div>

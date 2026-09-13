@@ -132,6 +132,9 @@ describe("computeSample", () => {
       fullScreenLayers: 2,
       linePixels: 13_000,
       shadedPixels: 473_800,
+      stations: 3,
+      stationMarks: 7,
+      markers: 3,
       stationSegments: 4,
       fps: 30,
     };

@@ -3762,6 +3762,10 @@ button[data-slot="select-trigger"] {
   position: relative;
   flex: 1;
   min-height: 0;
+  /* Height of the HUD strip, measured by the deck (`Deck.tsx`); the overlay
+   * band below it (station line, lane strip) is placed from this, so a HUD
+   * that wraps onto two lines never covers a worker. */
+  --omp-deck-hud-h: 34px;
   min-width: 0;
   overflow: hidden;
   background: #0a0e14;
@@ -4090,7 +4094,7 @@ button[data-slot="select-trigger"] {
 .omp-deck-station {
   position: absolute;
   left: 10px;
-  top: 44px;
+  top: calc(10px + var(--omp-deck-hud-h) + 8px);
   display: flex;
   align-items: center;
   gap: 8px;
@@ -4131,14 +4135,14 @@ button[data-slot="select-trigger"] {
   color: var(--omp-muted);
 }
 
-/* The lane strip: every live worker, in board order, one row each. It is the
- * "never lose awareness of another worker" guarantee in text, and the
- * keyboard/click path onto any of them. */
+/* The lane strip: every live worker, in station order (lane order), one row
+ * each. It is the "never lose awareness of another worker" guarantee in text,
+ * and the keyboard/click path onto any of them. */
 .omp-deck-lanes {
   position: absolute;
-  top: 44px;
+  top: calc(10px + var(--omp-deck-hud-h) + 8px);
   right: 10px;
-  width: min(360px, 40%);
+  width: min(430px, 46%);
   max-height: 45%;
   overflow-y: auto;
   margin: 0;
@@ -4158,7 +4162,7 @@ button[data-slot="select-trigger"] {
 
 .omp-deck-lane {
   display: grid;
-  grid-template-columns: 12ch 9ch 7ch minmax(0, 1fr);
+  grid-template-columns: 1ch 12ch 8ch 9ch auto minmax(0, 1fr);
   gap: 8px;
   align-items: baseline;
   text-align: left;
@@ -4185,6 +4189,19 @@ button[data-slot="select-trigger"] {
   border-color: var(--omp-cyan);
 }
 
+.omp-deck-lane-dot {
+  color: var(--omp-muted);
+}
+
+.omp-deck-lane[data-focused="true"] .omp-deck-lane-dot {
+  color: var(--omp-cyan);
+}
+
+/* Over the tier's station cap: listed and counted, just not drawn. */
+.omp-deck-lane[data-overflow="true"] .omp-deck-lane-id {
+  color: var(--omp-secondary);
+}
+
 .omp-deck-lane-id {
   color: var(--omp-text);
   overflow: hidden;
@@ -4201,9 +4218,80 @@ button[data-slot="select-trigger"] {
   white-space: nowrap;
 }
 
+.omp-deck-lane-tail {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  min-width: 0;
+}
+
+.omp-deck-lane-action {
+  color: var(--omp-muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .omp-deck-lane-warn {
   color: var(--omp-amber, var(--omp-muted));
   font-weight: 600;
+  flex: none;
+}
+
+/* Off-screen workers (slice d04): one marker where the worker's direction
+ * leaves the viewport. A real button, so an off-screen worker stays reachable
+ * by click and by keyboard; the lane strip lists every live worker anyway. */
+.omp-deck-edges {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+}
+
+.omp-deck-edge {
+  position: absolute;
+  transform: translate(-50%, -50%);
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  max-width: 24ch;
+  padding: 3px 8px;
+  font: inherit;
+  font-family: var(--omp-mono);
+  font-size: 11px;
+  color: var(--omp-secondary);
+  background: color-mix(in srgb, var(--omp-panel) 92%, transparent);
+  border: 1px solid var(--omp-border);
+  border-radius: 999px;
+  cursor: pointer;
+  pointer-events: auto;
+}
+
+.omp-deck-edge:hover,
+.omp-deck-edge:focus-visible {
+  color: var(--omp-text);
+  border-color: var(--omp-cyan);
+  background: var(--omp-panel-2);
+}
+
+/* Behind the camera: the marker mirrors the direction, and the dashed edge
+ * says so without a second colour. */
+.omp-deck-edge[data-behind="true"] {
+  border-style: dashed;
+}
+
+.omp-deck-edge-arrow {
+  width: 0;
+  height: 0;
+  flex: none;
+  border-left: 7px solid currentColor;
+  border-top: 4px solid transparent;
+  border-bottom: 4px solid transparent;
+}
+
+.omp-deck-edge-id {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 /* The live window, docked bottom-left and never over the HUD: the same

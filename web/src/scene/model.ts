@@ -1,5 +1,5 @@
 /**
- * The deck's scene model (roadmap slice `d02`).
+ * The deck's scene model (roadmap slices `d02`–`d04`).
  *
  * `buildDeckModel` is a deterministic projection of application state into
  * presentation data: DTOs in, an immutable `DeckModel` out. It owns no state,
@@ -9,10 +9,10 @@
  * output; there is no second path from state to pixels.
  *
  * Reuse, not re-derivation (M1): the layout, its depths, ready/blocked flags,
- * cycle membership, dependency satisfaction and the "which slice needs eyes"
- * ranking all come from `web/src/lib/**`. This file only decides which of those
- * values the scene is allowed to see, and joins them with the DTO fields the
- * overlay needs.
+ * cycle membership, dependency satisfaction, the "which slice needs eyes"
+ * ranking and the station slot policy all come from `web/src/lib/**` and
+ * `lanes.ts`. This file only decides which of those values the scene is
+ * allowed to see, and joins them with the DTO fields the overlay needs.
  *
  * Pure module: no `three`, no DOM, no fetching.
  */
@@ -21,6 +21,7 @@ import { depSatisfied, layoutDag } from "../lib/dag.ts";
 import { buildPipelineStages, currentStageIndex } from "../lib/pipeline.ts";
 import { isLiveStatus, preferredSliceId } from "../lib/selection.ts";
 import { focusTarget, liveSliceIds } from "./focus.ts";
+import { stationSlots } from "./lanes.ts";
 import { railBounds, railPositions } from "./rail.ts";
 import type { SliceDetail, SliceSummary } from "../api.ts";
 import type {
@@ -28,6 +29,7 @@ import type {
   DeckCounts,
   DeckInput,
   DeckModel,
+  DeckStation,
   RailEdge,
   RailNode,
 } from "./types.ts";
@@ -63,6 +65,7 @@ function digestOf(
   focusId: string | null,
   nodes: RailNode[],
   edges: RailEdge[],
+  stations: DeckStation[],
 ): string {
   const parts: string[] = [runId ?? "", live ? "live" : "idle", focusId ?? ""];
   for (const n of nodes) {
@@ -73,6 +76,15 @@ function digestOf(
   }
   for (const e of edges) {
     parts.push(`${e.key}\u0001${e.satisfied ? 1 : 0}${e.unknown ? 1 : 0}${e.inCycle ? 1 : 0}`);
+  }
+  // Stations: the stage marks a worker draws, its wedge pattern, and whether
+  // the pool could hold it — everything the station mesh shows. `slot` and
+  // `lane` are deliberately absent: a pool entry is not a coordinate, and a
+  // worker whose slot moves (a lane re-index upstream) must not repaint the
+  // scene. Array order is in it, because that is the order the marks are
+  // written.
+  for (const s of stations) {
+    parts.push(`${s.id}\u0001${s.stack}\u0001${s.stage}\u0001${s.wedged ? 1 : 0}`);
   }
   return parts.join("\u0002");
 }
@@ -88,6 +100,9 @@ function emptyModel(runId: string | null, live: boolean): DeckModel {
     counts: { ...ZERO_COUNTS },
     primaryId: null,
     liveIds: [],
+    stations: [],
+    stationOverflow: 0,
+    warnings: [],
     focusId: null,
     bounds: railBounds([]),
     digest: `${runId ?? ""}\u0002loading`,
@@ -129,6 +144,8 @@ export function buildDeckModel(input: DeckInput): DeckModel {
   // but the stage index, and only for the slice it actually belongs to.
   const sliceDetail = input.sliceDetail;
 
+  const agentById = new Map(input.agents.map((row) => [row.id, row]));
+
   const nodes: RailNode[] = layout.nodes.map((n) => {
     const slice = byId.get(n.id);
     const position = positions.get(n.id) ?? { x: 0, y: 0, z: 0 };
@@ -154,6 +171,8 @@ export function buildDeckModel(input: DeckInput): DeckModel {
       live: isLiveStatus(n.status),
       stage: stage.stage,
       stageLabel: stage.label,
+      lane: agentById.get(n.id)?.lane ?? null,
+      wedged: agentById.get(n.id)?.wedged === true,
     };
   });
 
@@ -176,6 +195,29 @@ export function buildDeckModel(input: DeckInput): DeckModel {
 
   const pinnedId = input.pinnedId ?? null;
   const focusId = focusTarget(slices, pinnedId);
+  const primaryId = preferredSliceId(slices);
+  // Stations: the live set through the slot policy (`lanes.ts`), each worker
+  // joined with its own node — stage and wedge come from the same projection,
+  // so the scene and the lane list cannot disagree about a worker.
+  const stationLayout = stationSlots(
+    nodes.map((node) => ({ id: node.id, lane: node.lane })),
+    liveSliceIds(slices),
+    input.maxStations,
+  );
+  const nodeById = new Map(nodes.map((node) => [node.id, node]));
+  const stations: DeckStation[] = stationLayout.stations.map((slot) => {
+    const node = nodeById.get(slot.id);
+    return {
+      id: slot.id,
+      slot: slot.slot,
+      stack: slot.stack,
+      stage: node?.stage ?? -1,
+      wedged: node?.wedged === true,
+      lane: node?.lane ?? null,
+      primary: slot.id === primaryId,
+      focused: slot.id === focusId,
+    };
+  });
   return {
     runId: detail.runId,
     live: input.live,
@@ -183,10 +225,13 @@ export function buildDeckModel(input: DeckInput): DeckModel {
     nodes,
     edges,
     counts: { ...detail.counts },
-    primaryId: preferredSliceId(slices),
-    liveIds: liveSliceIds(slices),
+    primaryId,
+    liveIds: stations.map((station) => station.id),
+    stations,
+    stationOverflow: stationLayout.overflow,
+    warnings: stationLayout.warnings,
     focusId,
     bounds: railBounds(positions.values()),
-    digest: digestOf(detail.runId, input.live, focusId, nodes, edges),
+    digest: digestOf(detail.runId, input.live, focusId, nodes, edges, stations),
   };
 }

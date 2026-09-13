@@ -1,4 +1,4 @@
-# Deck slice reviews (d00–d03v)
+# Deck slice reviews (d00–d04)
 
 Performance observations per slice, in the terms the operator cares about: what a frame costs, what
 an event costs, what the DOM does while nobody is looking, and whether the surface is still usable
@@ -587,3 +587,234 @@ other two candidates, are not yet built here (`d05`, `d07`), so today the spatia
 measurable contribution is comprehension of concurrency and focus — worth continuing for an operator
 who watches several workers at once, and worth nothing much for an operator who watches one worker
 and reads its log.
+
+---
+
+## d04 — multi-worker command centre
+
+Reproduce everything below with:
+
+```bash
+bun run web:build
+bunx playwright test tests/e2e/deck.e2e.ts --workers=1 --reporter=list      # the numbers the specs print
+DECK_IDLE_MS=20000 bunx playwright test tests/e2e/deck.e2e.ts -g "idle deck" --reporter=list
+bun test tests/deck-lanes.test.ts tests/deck-model.test.ts tests/deck-focus.test.ts
+bun run test:e2e                                                            # all surfaces, parallel
+```
+
+Raw artifacts: `captures/deck-validation/d04-stations.json` (hook snapshot: stations, lanes, focus
+switch, pan, marker activation), `captures/deck-d04-stations.png` (three live workers),
+`captures/deck-d04-focus-switch.png`, `captures/deck-d04-markers.png` (all three off screen, three
+markers), `captures/deck-d04-marker-focus.png`. The artifacts are taken with a throwaway Playwright
+script against the same fixture server (`bun tests/e2e/serve.ts`) the specs use; the numbers in
+them are the ones the specs assert, and the script is not part of the suite.
+
+### Bundle
+
+| Artifact | d03 | d04 | Δ |
+|---|---|---|---|
+| `assets/Deck-*.js` (the deck + `three`) | 566.64 kB / 145.05 kB gzip | 572.43 kB / 147.04 kB gzip | **+5.8 kB / +2.0 kB gzip** |
+| `assets/index-*.js` (the dashboard shell) | 455.25 kB / 137.36 kB gzip | 455.25 kB / 137.36 kB gzip | **0** — the dashboard is untouched |
+| `assets/index-*.css` | 85.61 kB / 15.24 kB gzip | 86.83 kB / 15.40 kB gzip | +1.2 kB (markers, lane-row columns, the measured HUD offset) |
+
+The dashboard's chunk and the shell's behaviour are byte-identical to `d03`: this slice is additive
+by construction (one pure module, `scene/lanes.ts`, plus the scene and overlay work it drives).
+
+The `d03` product run (`tests/e2e/deck-workflow.e2e.ts`, its own harness and its own run) re-ran
+green against the `d04` bundle in both venues — its per-step numbers are in the `deck-d03 step N ok`
+lines of that run, and they are unchanged in shape (station stage grows across the handoff, the
+window stays bounded, 2 038 lines render 0 frames). Its committed artifacts
+(`captures/deck-validation/d03-*.json`, `captures/deck-d03-workflow.png`) are deliberately left at
+the run they were reviewed with, so the `d03` record does not drift; the spec rewrites them on every
+run.
+
+### 1. N workers as N stations (brief §1)
+
+`AgentRow.lane` is the server's dense index over the live set in board order (`src/server.ts`), so
+"lane order" and "board order" are the same order, and the primary is by definition first in it.
+The fixture run has three live workers; measured through the debug hook and the DOM:
+
+| Property | Measured |
+|---|---|
+| stations drawn | `stations` 3 · `stationMarks` 7 · `stationOverflow` 0 · `liveCount` 3 |
+| the marks are the workers' stages | `longtitle` 2 (Work), `verifying` 3 (Verify), `running` 2 (Work) — `stageSegments`, from `buildPipelineStages`/`currentStageIndex` |
+| identity per row | `● longtitle running Work L0 · g0 · a1` + its `heroAction` line, then `○ verifying verify… Verify L1 …`, `○ running running Work L2 …` (screenshot crop, 2× scale) |
+| one primary, unmistakable | the focused station's pad and column at full brightness + the selection ring + `command` framing; the two secondaries at 0.6 in colour only (`d03`'s rule: height is status information) |
+| HUD | `live: 3 · showing longtitle` |
+| every worker accounted for | `.omp-deck-lane` count = `liveCount`, and after panning the camera off the rail: `offScreen` = all three ids, one `.omp-deck-edge[data-slice-id=…]` button each |
+| a marker is actionable | clicking `longtitle`'s marker → `focused` = `longtitle`, `cameraPreset` back to `command`, `target` = that station's own `(x, z)`, `screenPosition("longtitle")` non-null, the marker gone |
+
+What the scene gained over `d03`: the station column is now drawn for **every** live worker, not
+just the focused one, so "how many are running" and "how far along is each" are readable from the
+floor itself. The instance count is therefore independent of focus (`d03`'s finding 3, closed):
+switching focus rewrites colours and nothing else.
+
+### 2. Focus is not camera (brief §2)
+
+`d03` fused them: `[`/`]` and a lane click pinned *and* framed. `d04` splits them — lane rows and
+`[`/`]` move the focus, `F` and an edge marker move the camera. Measured:
+
+| Action | Result |
+|---|---|
+| `]` (focus → the next live worker) | `focused` changed, the live window followed (`aria-label` ends in the new id), `.omp-deck-lane[data-focused="true"]` moved — and the camera JSON is **byte-identical** to before the keypress |
+| the same switch, scene cost | `instances` 19 → 19, `stationMarks` 7 → 7, `geometries` 7 → 7, draw calls ≤ 8; 1 frame (2.9–27.8 ms across runs) |
+| `F` afterwards | camera flies to that station: `target` = its `(x, z)` within 1e-3, distance < 20 |
+| pan (`Shift+ArrowRight` × 10) | no pad moved (`positions` identical), `offScreen` grew to the 3 live workers, 3 marker buttons appeared |
+| marker click | focus + frame in one action, and the marker disappears once the worker is on screen again |
+
+The camera policy is unchanged otherwise: it still auto-frames the primary when nothing is pinned
+(`d03` restriction 4), and `Esc`/`F`/`C`/`0` remain the ways to take it back.
+
+### 3. The tier cap, and what happens past it (brief §5)
+
+`stationSlots` (pure, `tests/deck-lanes.test.ts`) assigns one pool entry per live worker in lane
+order, clamps a malformed lane, resolves a collision by walking to the next free entry, and turns
+workers past `tier.maxStations` into `stack` entries. The model reports both the count
+(`stationOverflow`) and any repair it had to make (`warnings`, rendered in the HUD). The scene draws
+one dim mark per overflow worker beside the last pool entry, capped at 4, so a full pool still says
+"there are more" on the floor.
+
+**Honest limit:** every part of that path is proven at the unit/model level and in the HUD's
+rendering code — not in a browser, because the fixture has three live workers and the smallest tier
+holds eight. `stationCountLabel(live, pooled)` is unit-tested; the browser evidence for the cap is
+`stationOverflow` 0 with `stations` 3 (i.e. "no overflow happened here"). A run with more workers
+than the tier holds has never been rendered on this machine.
+
+### 4. What the capture caught: the HUD covered the primary lane row
+
+The first capture of a *three-worker* deck (not of a one-worker one) showed the lane strip's first
+row — the focused worker — behind the HUD's second line: the HUD row wraps when the window is
+narrower than its chips, and the station line and lane strip were placed at a fixed `top: 44px`
+that assumed a 34 px HUD. Measured after the fix (`getBoundingClientRect` in the same fixture):
+HUD height 68 px, HUD bottom at y = 143, lane strip top at y = 151, first row fully visible. The
+offset is now `calc(10px + var(--omp-deck-hud-h) + 8px)`, where the deck measures the HUD with a
+`ResizeObserver` and writes the value on the section. Cost: one style write per HUD height change
+(never per frame, never while idle).
+
+This is the kind of defect a single-worker review cannot see: with `liveCount` 1 the strip is one
+row and the overlap looks like a margin.
+
+### 5. Cost on the minimal tier (brief §8)
+
+Minimal (SwiftShader, 0.5× backing, 30 fps cap), 1440 × 900 CSS, three live workers:
+
+| Window | frames | frame p50 / p95 / worst | commits/s | mutations/s | long tasks |
+|---|---|---|---|---|---|
+| idle 2 s | **0** | — | 0.2 | 0 | 0 |
+| idle 20 s | **0** | — | 0.29 | 0 | 0 |
+| interaction (resize + HUD) | 4 | 0.9 / 5.0 / 5.0 ms | 2.77 | 10.7 | 12 (209 ms) |
+| one real status change | 1 | 1.6 ms | — | 5 | 1 (90 ms) |
+| focus switch (`]`) | 1 | 7.8 ms | — | — | — |
+| 5 s of transcript growth (fixture quiet) | **0** | — | 0.38 | 0 | 0 |
+| the three live workers | — | — | — | — | instances 19 (= 9 pads + 3 markers + 7 station marks), objects 26, draw calls 7, geometries 7, 564 vertices, 238 068 px canvas |
+
+Spread, two serial runs (the box was also running a foreign `ompo -p` worker during both, load
+average 6–11 — this is a shared machine, and the review quotes the run it can point at): interaction
+p50 0.9–1.5 ms, p95 2.0–5.0 ms, long tasks 1–12; the focus-switch frame 2.9–27.8 ms (one frame per
+keypress, decided by box load); the idle windows **0 frames in every run**. The frame budget
+(`minimal`: p50 ≤ 33 ms, p95 ≤ 45 ms) held in every window with an order of magnitude to spare.
+
+`d03`'s fixture drew 14 instances / 21 objects; `d04` draws 19 / 26 for the same roadmap because the
+two other live workers now carry their own stage marks (+7 marks, −2 for the single focused shaft).
+At the measured ≈53 µs per object that is ≈ +0.15 ms of frame cost on a 22 ms allowance, and the
+budget document's worst case is updated accordingly (stations ≤ 8 × 4 + 4 objects on `minimal`).
+
+The `]`-switch frame is the largest single frame this slice produces (2.9–27.8 ms across two runs:
+it rewrites the station instances' colours and re-renders the readout). It is one frame per
+keypress, not a trend, and the p95 of the whole interaction window stays at or below 5.0 ms.
+
+### 6. Degraded operation (brief §9)
+
+| Case | Result |
+|---|---|
+| runtime tier change (`T` → `standard`) | same GL context (`mounted` unchanged), same stations, `instances` 19 → 19, `stationSegments` unchanged; the pool is allocated once for the `high` cap, so a tier change re-caps what is drawn, never what is allocated |
+| no WebGL2 at all | the notice says what is lost; the station line, the complete lane list (3 rows) and the window survive; `offScreen` is empty because there is no camera (the flat projection is `d09`'s) |
+| tier `minimal` at 0.5× | the lane rows, the station line, the columns and the markers are all readable at 612 × 389 backing (screenshots) |
+
+### 7. Where the deck wins, where it loses (brief §6)
+
+**Wins (measured).** Concurrency as simultaneous presence: three workers are three objects in one
+view, one of them framed, with per-worker stage marks and no list scrolling; the operator can move
+between them without losing the view they were reading (`]` leaves the camera alone); a worker the
+camera cannot see still has a marker pointing at it, and clicking the marker is one action.
+
+**Losses (measured or structural).**
+
+- The lane list is a list, and at three workers it is *denser* in the dashboard: `WorkerLanes` shows
+  the same facts in the same order and does not need a camera. The deck's advantage is the floor,
+  not the rows; the rows exist so the floor is never the only way to reach a worker.
+- Markers only exist for **live** workers. A pinned terminal slice that is off screen has no marker
+  and no lane row — its only handles are the pad list and the camera keys. Same for any slice that
+  is not live: the deck's edge layer is a worker-awareness device, not a "find anything" device.
+- The station column encodes the stage in four marks over seven pipeline steps, so it says "how far
+  along", not "which phase". The exact phase is the lane row's (and the station line's) job.
+- A verifying worker's marks are amber (live phase colour) while its pad is cyan (status colour):
+  deliberate, since the pad must keep the roadmap's palette, but it is two colours for one worker.
+- `AgentRow.lane` is a per-poll index, not a durable id. The deck orders stations by it (and hence
+  by board order); if the server ever redefines lanes, the deck's order follows the dashboard's
+  lane strip rather than inventing its own — the intended coupling, but it is a coupling.
+- Everything in `d03`'s loss column that `d06`/`d07` own is unchanged: diffs, gate output, review
+  findings, prompts, event history.
+
+### 8. Open findings (carried into `d05`)
+
+1. **The overflow path has no browser evidence** (§3). The cheapest fix is a fixture with more live
+   workers than `minimal` holds (9+), which is a fixture change, not a scene change.
+2. **The station column has no "appeared/disappeared" transition.** The roadmap's `d04` sketch asked
+   for a ≤ 200 ms scale+opacity tween; this slice deliberately does not animate state changes (the
+   handoff's transport-latency restriction: animation must not fabricate state), so a worker
+   appearing is an instant appearance. `d05` owns transitions and the reduced-motion rule for them.
+3. **A wedged station's pattern is one displaced mark** (its top mark steps sideways, in amber). It
+   survives greyscale and costs no instance, but it has not been seen in a real run: the fixture has
+   no wedged worker (the server flags one after 10 minutes of transcript silence).
+4. **The HUD/lane overlap was found by capture, not by test** (§4). A layout assertion (no overlay
+   rectangle covered by the HUD) would catch the next one; today the guard is the screenshot.
+5. `d03` restriction 4 stands: the camera still follows the primary when unpinned.
+
+### Acceptance criteria (d04)
+
+| Criterion | Result |
+|---|---|
+| 1. Three live slices → three stations, HUD `live: 3`, lane list in `AgentRow.lane` order | ✔ `stations` 3 · `stationMarks` 7 · `liveCount` 3; rows `longtitle`/`verifying`/`running` (L0/L1/L2); HUD `live: 3 · showing longtitle` |
+| 2. Focus switch updates the window and the highlight, `geometries`/`objects` unchanged | ✔ `aria-label` + `[data-focused]` follow the focus; `instances` 19 → 19, `stationMarks` 7 → 7, `geometries` 7 → 7 (the `d03` deviation is gone) |
+| 3. The camera moves only on `F`, a primary change while unpinned, or operator input | ✔ `]` → camera JSON byte-identical; `F` → target = the station's own coordinates; pan/zoom are the operator's |
+| 4. Every off-screen live worker has a marker or a lane row | ✔ after panning: `offScreen` = 3/3, one marker button each, all three lane rows present; marker click focuses and frames |
+| 5. Over the tier budget: HUD reports the overflow, no allocation past the pool | ✔ at the model/unit level (`stationOverflow`, `stationCountLabel`, `stationSlots` overflow tests, one pooled buffer sized once); no browser run has exercised it (finding 1) |
+| 6. Gates clean | ✔ `bunx tsc --noEmit`, `bun test` (719), `git diff --check`, `bunx playwright test tests/e2e/deck.e2e.ts --workers=1` (25 passed), `bun run test:e2e` (44 passed), workflow spec (2 passed) |
+
+### Verdict
+
+**PASS — recommendation, not a decision** (`docs/desktop-3d-roadmap.md` §0.5 rule 1: the operator
+fills in the decision block at `d03v`). Multi-worker concurrency is what the spatial representation
+was for, and it holds at the scale this machine can run: three stations, one primary, per-worker
+stage marks, focus that moves without the camera, and no worker that can be lost off screen. The
+scene's cost grows with the worker count in instances only (one pooled mesh, ≤ 4 marks each) and
+the focus path is now free of geometry churn.
+
+Restrictions, in the order they would bite:
+
+1. **The overflow path is unproven in a browser** (finding 1): it is a policy with unit tests, not
+   a behaviour anyone has seen. A `--jobs 9` run (or a fixture that claims nine slices) is what
+   turns it into evidence.
+2. **Transitions are still absent on purpose** (finding 2): a worker appearing, changing stage or
+   finishing is an instant change. `d05` owns the choreography, and it must respect the transport
+   constraint: animate the transition, never the state.
+3. **Alert visibility is still `d05`'s**: the wedge pattern and the `stalled` row are the only
+   failure-ish signals a live worker can show, and they are not yet the unmissable alert stack.
+4. **M10 is still owed** (`d03v`): this slice did not run the timed workflow comparison, and the
+   concurrency claim here is structural + instrumented, not human-timed.
+
+Continue to `d05` (lifecycle choreography and alerts) under those restrictions: the scene now knows
+who is running and who is pointed at; the next question is what a change *looks* like.
+
+### What a polished 2D dashboard would lose
+
+A 2D dashboard can list concurrent workers better than the deck can — `WorkerLanes` already does,
+densely and in the same order. What it cannot do is make concurrency *spatial*: three workers as
+three objects standing on the roadmap they are working through, one of them framed, the others
+still present in the same view, with a marker pointing at whichever one is out of shot. The
+operator's question "how many are running, and where" is answered by looking, not by reading a
+count and then locating each id on a board. That advantage is bounded and honest: it needs a
+camera, it needs the pads to be legible at 0.5×, and it is worth nothing for a one-worker run —
+which is exactly why the lane list, the station line and the live window are DOM and behave like
+the dashboard's own.

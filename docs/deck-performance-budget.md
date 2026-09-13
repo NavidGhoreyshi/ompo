@@ -151,9 +151,17 @@ What the caps cost on this machine, at the model above:
 
 | tier | worst-case fill | worst-case objects | verdict on this machine |
 |---|---|---|---|
-| minimal | 640×360 (0.23 MPx), 4 layers = 9.2 ms | 24 + 8 + 32 = 64 objects = 3.4 ms | 0.9 + 9.2 + 3.4 = **13.5 ms** vs the 22 ms allowance (33 ms p50 ÷ 1.5) → fits with 1.6× spare |
-| standard | 1280×720 (0.92 MPx) = 9.9 ms for **one** layer | 48 + 16 + 64 = 128 objects = 3.8 ms | one layer costs 14.6 ms against an 11.1 ms allowance (16.7 ms ÷ 1.5) → needs hardware GL |
-| high | 1280×720 with MSAA, i.e. more pixels per layer than `standard` | 96 + 32 + 128 = 256 objects = 7.7 ms | not selectable on this machine and never guessed from a vendor string; the tier exists for hardware GL |
+| minimal | 640×360 (0.23 MPx), 4 layers = 9.2 ms | 24 + 36 + 32 = 92 objects = 4.6 ms | 0.9 + 9.2 + 4.6 = **14.7 ms** vs the 22 ms allowance (33 ms p50 ÷ 1.5) → fits with ≈ 1.5× spare |
+| standard | 1280×720 (0.92 MPx) = 9.9 ms for **one** layer | 48 + 36 + 64 = 148 objects = 4.9 ms | one layer costs 15.7 ms against an 11.1 ms allowance (16.7 ms ÷ 1.5) → needs hardware GL |
+| high | 1280×720 with MSAA, i.e. more pixels per layer than `standard` | 96 + 36 + 128 = 260 objects = 7.8 ms | not selectable on this machine and never guessed from a vendor string; the tier exists for hardware GL |
+
+The station term (`d04`) is the one cap that is not one object per worker: every live worker draws
+its own column of stage marks (≤ `SHAFT_SEGMENTS` = 4 instances, all in one pooled
+`InstancedMesh`), plus ≤ 4 marks for the workers the pool cannot hold. On `minimal` that is
+≤ 8 × 4 + 4 = 36 objects; the fixture the slice reviews measure (3 live workers, 7 filled marks)
+draws 7. The marks are one instanced mesh across all workers, so the cap costs instances, never
+draw calls or geometries, and nothing is allocated per worker beyond the one pooled buffer sized
+for the `high` tier (`STATION_POOL`).
 
 ### 4.3 Decision rules (binding for `d01`–`d14`)
 

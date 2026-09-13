@@ -126,54 +126,134 @@ export function lerpCamera(a: CameraState, b: CameraState, t: number): CameraSta
 }
 
 /**
+ * The camera's floor basis, its eye and its frustum tangents — computed once
+ * per query by `visibleSliceIds` and `edgeAnchor`. Both use this one basis
+ * (the same one `renderer.ts`'s `cameraPose` + the shared FOV describe), so
+ * "what is on screen" and "which way is this off-screen node" cannot drift.
+ */
+function cameraBasis(state: CameraState, aspect: number): {
+  eyeX: number; eyeY: number; eyeZ: number;
+  fx: number; fy: number; fz: number;
+  rx: number; rz: number;
+  ux: number; uy: number; uz: number;
+  tanX: number; tanY: number;
+} {
+  const fitAspect = Number.isFinite(aspect) && aspect > 0 ? aspect : 1;
+  const tanY = Math.tan((CAMERA_FOV * Math.PI) / 360);
+  const cosE = Math.cos(state.elevation);
+  const sinE = Math.sin(state.elevation);
+  const sinA = Math.sin(state.azimuth);
+  const cosA = Math.cos(state.azimuth);
+  return {
+    eyeX: state.target.x + state.distance * cosE * sinA,
+    eyeY: state.target.y + state.distance * sinE,
+    eyeZ: state.target.z + state.distance * cosE * cosA,
+    // Camera-space basis, matching three's `lookAt` exactly:
+    //   z = normalize(eye − target), x = normalize(cross(up, z)), y = cross(z, x)
+    // with up = +Y. Closed forms (the camera's own constants are the only inputs).
+    fx: -cosE * sinA,
+    fy: -sinE,
+    fz: -cosE * cosA,
+    rx: cosA,
+    rz: -sinA,
+    ux: -sinE * sinA,
+    uy: cosE,
+    uz: -sinE * cosA,
+    tanX: tanY * fitAspect,
+    tanY,
+  };
+}
+
+/**
  * Which slice ids a camera can see, from the same basis the renderer uses
  * (`cameraPose` + the shared FOV): a node is visible when its pad centre
  * projects inside the frustum and in front of the camera.
  *
- * `d04` builds its off-screen markers on this; `d03` uses it to prove the
- * focused station is on screen after an auto-frame.
+ * `d04` builds its off-screen markers on this, through `offScreenIds`.
  */
 export function visibleSliceIds(
   state: CameraState,
   nodes: readonly { id: string; x: number; z: number }[],
   aspect: number,
 ): string[] {
-  const fitAspect = Number.isFinite(aspect) && aspect > 0 ? aspect : 1;
-  const halfY = (CAMERA_FOV * Math.PI) / 360;
-  const tanY = Math.tan(halfY);
-  const tanX = tanY * fitAspect;
-
-  const cosE = Math.cos(state.elevation);
-  const sinE = Math.sin(state.elevation);
-  const sinA = Math.sin(state.azimuth);
-  const cosA = Math.cos(state.azimuth);
-  const eye = {
-    x: state.target.x + state.distance * cosE * sinA,
-    y: state.target.y + state.distance * sinE,
-    z: state.target.z + state.distance * cosE * cosA,
-  };
-  // Camera-space basis, matching three's `lookAt` exactly:
-  //   z = normalize(eye − target), x = normalize(cross(up, z)), y = cross(z, x)
-  // with up = +Y. Closed forms (the camera's own constants are the only inputs).
-  const fx = -cosE * sinA;
-  const fy = -sinE;
-  const fz = -cosE * cosA;
-  const rx = cosA;
-  const rz = -sinA;
-  const ux = -sinE * sinA;
-  const uy = cosE;
-  const uz = -sinE * cosA;
-
+  const basis = cameraBasis(state, aspect);
   const visible: string[] = [];
   for (const node of nodes) {
-    const dx = node.x - eye.x;
-    const dy = PAD_EYE_Y - eye.y;
-    const dz = node.z - eye.z;
-    const depth = dx * fx + dy * fy + dz * fz;
+    const dx = node.x - basis.eyeX;
+    const dy = PAD_EYE_Y - basis.eyeY;
+    const dz = node.z - basis.eyeZ;
+    const depth = dx * basis.fx + dy * basis.fy + dz * basis.fz;
     if (depth <= 0.1 || depth >= 500) continue;
-    const x = dx * rx + dz * rz;
-    const y = dx * ux + dy * uy + dz * uz;
-    if (Math.abs(x) <= depth * tanX && Math.abs(y) <= depth * tanY) visible.push(node.id);
+    const x = dx * basis.rx + dz * basis.rz;
+    const y = dx * basis.ux + dy * basis.uy + dz * basis.uz;
+    if (Math.abs(x) <= depth * basis.tanX && Math.abs(y) <= depth * basis.tanY) visible.push(node.id);
   }
   return visible;
+}
+
+/** The live workers a camera cannot see — the set that owns edge markers. */
+export function offScreenIds(
+  state: CameraState,
+  nodes: readonly { id: string; x: number; z: number }[],
+  aspect: number,
+): string[] {
+  const visible = new Set(visibleSliceIds(state, nodes, aspect));
+  return nodes.filter((node) => !visible.has(node.id)).map((node) => node.id);
+}
+
+/**
+ * Where an off-screen node's direction leaves the viewport (`d04`'s edge
+ * markers). Viewport fractions in `0..1`, inset by `EDGE_INSET` so the marker
+ * is not half outside the frame; `angle` is the CSS rotation of an arrow that
+ * points from the middle of the viewport toward the node.
+ *
+ * A node behind the camera (`depth <= 0.1`) has no projection at all: its
+ * direction is mirrored, which is the way the operator has to turn to find it.
+ */
+export interface EdgeAnchor {
+  x: number;
+  y: number;
+  angle: number;
+  behind: boolean;
+}
+
+/** How far inside the viewport edge a marker is placed, as a fraction. */
+export const EDGE_INSET = 0.06;
+
+/** One off-screen live worker's marker: its anchor plus the id it points at. */
+export interface EdgeMarker extends EdgeAnchor {
+  id: string;
+}
+
+export function edgeAnchor(
+  state: CameraState,
+  node: { x: number; z: number },
+  aspect: number,
+): EdgeAnchor {
+  const basis = cameraBasis(state, aspect);
+  const dx = node.x - basis.eyeX;
+  const dy = PAD_EYE_Y - basis.eyeY;
+  const dz = node.z - basis.eyeZ;
+  const rawDepth = dx * basis.fx + dy * basis.fy + dz * basis.fz;
+  const behind = rawDepth <= 0.1;
+  // A point in front projects as itself; a point behind the camera has no
+  // projection, so the anchor is the antipode of its camera-space direction —
+  // the way the operator has to turn to bring it into view. One division by a
+  // positive depth does both (the frustum is symmetric), so there is no branch
+  // here to disagree with the sign convention.
+  const depth = Math.max(Math.abs(rawDepth), 0.1);
+  const ndcX = (dx * basis.rx + dz * basis.rz) / (depth * basis.tanX);
+  const ndcY = (dx * basis.ux + dy * basis.uy + dz * basis.uz) / (depth * basis.tanY);
+  // Inside the frame the anchor *is* the projection; outside it is walked in
+  // to the inset boundary (an operator looking at a worker and an operator
+  // looking for one get the same function).
+  const reach = Math.max(Math.abs(ndcX), Math.abs(ndcY));
+  const shrink = reach > 1 ? (1 - EDGE_INSET) / reach : 1;
+  return {
+    x: 0.5 + 0.5 * clamp(ndcX * shrink, -1, 1),
+    y: 0.5 - 0.5 * clamp(ndcY * shrink, -1, 1),
+    // Screen y grows downward, so the CSS angle is the negated canvas slope.
+    angle: Math.atan2(-ndcY, ndcX),
+    behind,
+  };
 }

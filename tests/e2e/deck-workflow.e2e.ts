@@ -481,7 +481,12 @@ async function startHarness(projectDir: string): Promise<{ proc: ChildProcess; i
 
 test.describe("deck d03 workflow", () => {
   test.use({ baseURL: `http://127.0.0.1:${PORT}`, viewport: { width: 1440, height: 900 } });
-  test.describe.configure({ mode: "serial", timeout: 90_000 });
+  // Serial by construction (one live run, one harness, one artifact) and slow:
+  // this step measured 49.7 s alone. Under `bun run test:e2e` four Playwright
+  // workers share this 4-vCPU box and the same step has exceeded 90 s, which is
+  // the box's number, not the slice's — the timeout is a venue constant and the
+  // assertions inside are unchanged.
+  test.describe.configure({ mode: "serial", timeout: 150_000 });
 
   let projectDir = "";
   let harness: ChildProcess | null = null;

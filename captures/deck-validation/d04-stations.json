@@ -1,0 +1,134 @@
+{
+  "capturedAt": "2026-09-13T09:27:46.823Z",
+  "url": "http://127.0.0.1:4325/?surface=deck",
+  "server": "bun tests/e2e/serve.ts",
+  "stations": {
+    "tier": "minimal",
+    "tierSource": "auto",
+    "mounted": 1,
+    "disposed": 0,
+    "frames": 3,
+    "drawCalls": 7,
+    "objects": 26,
+    "triangles": 228,
+    "vertices": 564,
+    "pixels": 238068,
+    "nodes": 9,
+    "edges": 5,
+    "instances": 19,
+    "digest": "e2emain\u0002idle\u0002longtitle\u0002s-alpha\u0001done\u0001\u00010000\u0001-1\u0002running\u0001running\u0001\u00010001\u00012\u0002p-one\u0001pending\u0001\u00010000\u0001-1\u0002p-two\u0001pending\u0001\u00010000\u0001-1\u0002s-beta\u0001done\u0001\u00010000\u0001-1\u0002longreason\u0001failed\u0001failed\u00010000\u0001-1\u0002envblock\u0001blocked-env\u0001blocked-env\u00010000\u0001-1\u0002longtitle\u0001running\u0001\u00011001\u00012\u0002verifying\u0001verifying\u0001\u00010001\u00014\u0002s-alpha→s-beta\u0001100\u0002s-beta→longtitle\u0001100\u0002s-alpha→longreason\u0001100\u0002s-alpha→envblock\u0001100\u0002longtitle→verifying\u0001000\u0002longtitle\u00010\u00012\u00010\u0002verifying\u00010\u00014\u00010\u0002running\u00010\u00012\u00010",
+    "selected": "longtitle",
+    "hover": null,
+    "focused": "longtitle",
+    "pinned": null,
+    "frozen": null,
+    "cameraPreset": "command",
+    "liveCount": 3,
+    "stations": 3,
+    "stationMarks": 7,
+    "stationOverflow": 0,
+    "offScreen": [],
+    "camera": {
+      "target": {
+        "x": 11.040000000000001,
+        "y": 0.35,
+        "z": 0
+      },
+      "distance": 10.216861032140038,
+      "azimuth": 0.7853981633974483,
+      "elevation": 0.55
+    },
+    "stationSegments": 2,
+    "liveRows": 5,
+    "logLines": 86,
+    "positions": [
+      {
+        "id": "s-alpha",
+        "x": 0,
+        "z": 0
+      },
+      {
+        "id": "running",
+        "x": 0,
+        "z": 1.84
+      },
+      {
+        "id": "p-one",
+        "x": 0,
+        "z": 3.68
+      },
+      {
+        "id": "p-two",
+        "x": 0,
+        "z": 5.5200000000000005
+      },
+      {
+        "id": "s-beta",
+        "x": 5.5200000000000005,
+        "z": 0
+      },
+      {
+        "id": "longreason",
+        "x": 5.5200000000000005,
+        "z": 1.84
+      },
+      {
+        "id": "envblock",
+        "x": 5.5200000000000005,
+        "z": 3.68
+      },
+      {
+        "id": "longtitle",
+        "x": 11.040000000000001,
+        "z": 0
+      },
+      {
+        "id": "verifying",
+        "x": 16.56,
+        "z": 0
+      }
+    ],
+    "instrument": {}
+  },
+  "lanes": [
+    {
+      "id": "longtitle",
+      "action": "12:52:31 slice_claimed longtitle #1"
+    },
+    {
+      "id": "verifying",
+      "action": "12:52:31 worker_finished verifying #1 3s"
+    },
+    {
+      "id": "running",
+      "action": "12:52:31 slice_claimed running #1"
+    }
+  ],
+  "hud": "live: 3 · showing longtitle",
+  "focusSwitch": {
+    "before": "longtitle",
+    "after": "verifying",
+    "cameraMoved": false,
+    "instances": [
+      19,
+      19
+    ],
+    "stationMarks": [
+      7,
+      7
+    ]
+  },
+  "markers": {
+    "panned": [
+      "longtitle",
+      "verifying",
+      "running"
+    ],
+    "buttons": 3
+  },
+  "markerActivation": {
+    "target": "longtitle",
+    "focused": "longtitle",
+    "cameraPreset": "command"
+  }
+}

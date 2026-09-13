@@ -107,6 +107,7 @@ function input(overrides: Partial<DeckInput> = {}): DeckInput {
     pinnedId: null,
     prefs: DEFAULT_DECK_PREFS,
     live: true,
+    maxStations: 8,
     ...overrides,
   };
 }
@@ -282,6 +283,11 @@ describe("buildDeckModel: the world does not reflow", () => {
     // Selection and status are scene-visible, so they must change it.
     expect(buildDeckModel(input({ selected: "e" })).digest).not.toBe(base.digest);
     expect(buildDeckModel(input({ detail: detail([...BASE.slice(0, 2), slice("c", "verifying", ["b"]), ...BASE.slice(3)]) })).digest).not.toBe(base.digest);
+    // `d04`: a wedge is scene-visible (the station's column breaks)…
+    expect(buildDeckModel(input({ agents: [{ id: "c", lane: 1, status: "running", attempt: 1, generation: 3, lastLine: "", wedged: true }] })).digest).not.toBe(base.digest);
+    // …while a slot is not: it is a pool entry, so a lane re-index upstream
+    // must not repaint a scene whose coordinates come from the roadmap.
+    expect(buildDeckModel(input({ agents: [{ id: "c", lane: 4, status: "running", attempt: 1, generation: 3, lastLine: "" }] })).digest).toBe(base.digest);
   });
 
   test("appending a slice leaves every pad already on the floor where it was", () => {
@@ -398,6 +404,87 @@ describe("buildDeckModel: focus, live workers and the station stage (d03)", () =
     const before = buildDeckModel(input({ sliceDetail: detailOf("one line") }));
     const after = buildDeckModel(input({ sliceDetail: detailOf("a different line\nand another\n".repeat(50)) }));
     expect(after.digest).toBe(before.digest);
+  });
+});
+
+describe("buildDeckModel: stations (d04)", () => {
+  /** Four live workers, plus a done slice, with lanes as the server numbers them. */
+  const live = (): { slices: SliceSummary[]; agents: AgentRow[] } => ({
+    slices: [
+      slice("a", "done"),
+      slice("r1", "running"),
+      slice("v", "verifying"),
+      slice("t", "done"),
+      slice("r2", "running"),
+      slice("r3", "running"),
+    ],
+    agents: [
+      { id: "r1", lane: 0, status: "running", attempt: 1, generation: 1, lastLine: "edit" },
+      { id: "v", lane: 1, status: "verifying", attempt: 1, generation: 2, lastLine: "gates" },
+      { id: "r2", lane: 2, status: "running", attempt: 1, generation: 0, lastLine: "" },
+      { id: "r3", lane: 3, status: "running", attempt: 1, generation: 0, lastLine: "" },
+    ],
+  });
+
+  test("every live worker is one station, in lane order, with its own facts", () => {
+    const { slices, agents } = live();
+    const model = buildDeckModel(input({ detail: detail(slices), agents }));
+    expect(model.stations.map((station) => station.id)).toEqual(["r1", "v", "r2", "r3"]);
+    expect(model.stations.map((station) => station.id)).toEqual(model.liveIds);
+    expect(model.stations.map((station) => station.lane)).toEqual([0, 1, 2, 3]);
+    expect(model.stations.map((station) => station.stack)).toEqual([0, 0, 0, 0]);
+    expect(model.stations.filter((station) => station.primary).map((station) => station.id)).toEqual(["r1"]);
+    expect(model.stations.filter((station) => station.focused).map((station) => station.id)).toEqual(["r1"]);
+    // The stage is the same number the node carries: one derivation, two views.
+    const node = (id: string): RailNode => model.nodes.find((n) => n.id === id)!;
+    for (const station of model.stations) expect(station.stage).toBe(node(station.id).stage);
+    expect(model.stationOverflow).toBe(0);
+    expect(model.warnings).toEqual([]);
+  });
+
+  test("focusing another worker moves the flag, not the station", () => {
+    const { slices, agents } = live();
+    const before = buildDeckModel(input({ detail: detail(slices), agents }));
+    const after = buildDeckModel(input({ detail: detail(slices), agents, pinnedId: "r3" }));
+    expect(after.focusId).toBe("r3");
+    expect(after.stations.find((station) => station.id === "r3")?.focused).toBe(true);
+    expect(positionsOf(after.nodes)).toEqual(positionsOf(before.nodes));
+    expect(after.stations.map((station) => [station.id, station.slot, station.stage])).toEqual(
+      before.stations.map((station) => [station.id, station.slot, station.stage]),
+    );
+    // Focus is scene-visible (the station brightens), so the digest moves — and
+    // it is the only thing that moved.
+    expect(after.digest).not.toBe(before.digest);
+  });
+
+  test("a wedged worker is flagged on its station, and only on it", () => {
+    const { slices, agents } = live();
+    const wedged: AgentRow[] = agents.map((row) => (row.id === "v" ? { ...row, wedged: true, staleForMs: 700_000 } : row));
+    const model = buildDeckModel(input({ detail: detail(slices), agents: wedged }));
+    expect(model.stations.filter((station) => station.wedged).map((station) => station.id)).toEqual(["v"]);
+    expect(model.nodes.find((node) => node.id === "v")?.wedged).toBe(true);
+  });
+
+  test("over the tier's cap the pool holds what it can and counts the rest", () => {
+    const { slices, agents } = live();
+    const model = buildDeckModel(input({ detail: detail(slices), agents, maxStations: 2 }));
+    expect(model.stations.map((station) => station.id)).toEqual(["r1", "v", "r2", "r3"]);
+    expect(model.stations.filter((station) => station.stack === 0).map((station) => station.id)).toEqual(["r1", "v"]);
+    expect(model.stations.filter((station) => station.stack > 0).map((station) => station.id)).toEqual(["r2", "r3"]);
+    expect(model.stationOverflow).toBe(2);
+    // The lane list is still complete: the pool's cap hides a station, not a worker.
+    expect(model.liveIds).toHaveLength(4);
+  });
+
+  test("a malformed lane is repaired in the model, and the repair is visible", () => {
+    const { slices, agents } = live();
+    const duplicated: AgentRow[] = agents.map((row) => ({ ...row, lane: 0 }));
+    const model = buildDeckModel(input({ detail: detail(slices), agents: duplicated, maxStations: 2 }));
+    expect(model.stations.map((station) => station.slot)).toEqual([0, 1, 1, 1]);
+    // One repair (the second worker at lane 0), then the pool is full and the
+    // rest are counted rather than repaired.
+    expect(model.warnings).toEqual(["v: slot 0 already taken — placed at slot 1"]);
+    expect(model.stationOverflow).toBe(2);
   });
 });
 

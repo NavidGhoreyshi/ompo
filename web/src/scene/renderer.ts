@@ -1,5 +1,5 @@
 /**
- * The deck's WebGL2 renderer (roadmap slices `d01`–`d02`) — the **only**
+ * The deck's WebGL2 renderer (roadmap slices `d01`–`d04`) — the **only**
  * module in the repository that imports `three` (asserted by
  * `tests/release-gate.test.ts`).
  *
@@ -11,10 +11,12 @@
  * `d02` draws the roadmap rail with the cheapest primitives that carry the
  * information: pads and their alert markers are two instanced meshes, all
  * dependency edges are one vertex-coloured `LineSegments`, ghosts/cycles are one
- * more, and the selection is one line loop. No lights (`MeshBasicMaterial`),
- * no textures, no post-processing, no in-canvas text (CP-3), no per-frame work:
- * a model change rewrites buffers and requests one frame, and nothing else
- * touches the GPU.
+ * more, and the selection is one line loop. `d04` adds the station pool: the
+ * same three instanced meshes plus one for every live worker's stage marks,
+ * sized once for the largest tier. No lights (`MeshBasicMaterial`), no textures,
+ * no post-processing, no in-canvas text (CP-3), no per-frame work: a model
+ * change rewrites buffers and requests one frame, and nothing else touches the
+ * GPU.
  *
  * `info()` returns one object that is mutated in place: the per-frame path must
  * not allocate, and callers that keep it must copy it.
@@ -136,14 +138,25 @@ const MARKER_H = 0.85;
 const MARKER_OFFSET = 0.22;
 
 /**
- * The focused station's shaft (`d03`): one short box per filled segment, above
- * the pad. Geometry, not text (CP-3), and instanced into one draw call whose
- * capacity is fixed at creation — focusing another worker rewrites instances,
- * it never creates a mesh.
+ * Stations (`d03`–`d04`): one short box per filled stage mark, standing on the
+ * worker's own pad. Geometry, not text (CP-3), instanced into one draw call
+ * whose capacity is fixed at creation. Every live worker draws from this one
+ * pool — a worker joining, leaving, or becoming the focus rewrites instances,
+ * it never creates a mesh, and the instance count does not depend on which
+ * worker is focused (focus is brightness, not geometry).
  */
-const SHAFT_W = 0.2;
-const SHAFT_H = 0.24;
-const SHAFT_GAP = 0.09;
+const STATION_W = 0.2;
+const STATION_H = 0.24;
+const STATION_GAP = 0.09;
+/** Overflow: marks stacked beside the last station, one per hidden worker. */
+const STATION_STACK_CAP = 4;
+const STATION_STACK_H = 0.13;
+/**
+ * Pool capacity: the most stations any tier can draw, times the marks per
+ * station, plus the overflow stack. The tier's `maxStations` caps what is
+ * *drawn* (the model decides that); this allocation happens once.
+ */
+const STATION_POOL = TIER_BUDGETS.high.maxStations * SHAFT_SEGMENTS + STATION_STACK_CAP;
 
 /**
  * How much a live pad that is *not* the focus recedes. Colour only: height
@@ -227,8 +240,8 @@ export function createDeckRenderer(canvas: HTMLCanvasElement, tier: QualityTier,
   padGeometry.translate(0, 0.5, 0);
   const markerGeometry = new THREE.BoxGeometry(MARKER_W, 1, MARKER_W);
   markerGeometry.translate(0, 0.5, 0);
-  const shaftGeometry = new THREE.BoxGeometry(SHAFT_W, 1, SHAFT_W);
-  shaftGeometry.translate(0, 0.5, 0);
+  const stationGeometry = new THREE.BoxGeometry(STATION_W, 1, STATION_W);
+  stationGeometry.translate(0, 0.5, 0);
   const surfaceMaterial = new THREE.MeshBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0 });
   const lineMaterial = new THREE.LineBasicMaterial({ vertexColors: true, transparent: true, opacity: 0 });
 
@@ -291,7 +304,7 @@ export function createDeckRenderer(canvas: HTMLCanvasElement, tier: QualityTier,
 
   const pads = createInstances(padGeometry, PAD_CAPACITY);
   const markers = createInstances(markerGeometry, MARKER_CAPACITY);
-  const shaft = createInstances(shaftGeometry, SHAFT_SEGMENTS);
+  const stations = createInstances(stationGeometry, STATION_POOL);
   const edges = createLines(LINE_CAPACITY);
   const outlines = createLines(LINE_CAPACITY);
 
@@ -320,6 +333,9 @@ export function createDeckRenderer(canvas: HTMLCanvasElement, tier: QualityTier,
     fullScreenLayers: 0,
     linePixels: 0,
     shadedPixels: 0,
+    stations: 0,
+    stationMarks: 0,
+    markers: 0,
     stationSegments: 0,
     fps: 0,
   };
@@ -432,18 +448,20 @@ export function createDeckRenderer(canvas: HTMLCanvasElement, tier: QualityTier,
   const writeRail = (model: DeckModel): void => {
     const padsNeeded = model.nodes.filter((n) => !n.ghost && !n.inCycle).length;
     const markersNeeded = model.nodes.reduce((sum, n) => sum + (n.alert === null ? 0 : n.alert === "blocked-env" ? 2 : 1), 0);
-    // The focused station: a live slice the operator is being pointed at. One
-    // station in `d03`; `d04` pools the same mesh across live workers.
-    const station = model.nodes.find((n) => n.id === model.focusId && n.live && !n.ghost && !n.inCycle);
-    const segments = station === undefined ? 0 : shaftSegments(station.stage);
+    const nodesById = new Map(model.nodes.map((n) => [n.id, n]));
+    // Stations (`d04`): every live worker the pool holds, drawn from one pooled
+    // mesh. The model decided the slots (`lanes.ts`); this decides only paint.
+    const pooled = model.stations.filter((station) => station.stack === 0);
+    const hidden = model.stations.length - pooled.length;
     ensureInstances(pads, padGeometry, padsNeeded);
     ensureInstances(markers, markerGeometry, markersNeeded);
+    ensureInstances(stations, stationGeometry, pooled.length * SHAFT_SEGMENTS + Math.min(hidden, STATION_STACK_CAP) + 1);
     ensureLines(edges, model.edges.length * (EDGE_SEGMENTS / 2 + 1) * 2 + 16);
     ensureLines(outlines, model.nodes.length * 8 + 16);
 
     pads.count = 0;
     markers.count = 0;
-    shaft.count = 0;
+    stations.count = 0;
     edges.written = 0;
     outlines.written = 0;
     padIds = [];
@@ -469,29 +487,73 @@ export function createDeckRenderer(canvas: HTMLCanvasElement, tier: QualityTier,
       pushInstance(pads, node.x, 0, node.z, 1, style.height, 1, nodeColour);
       padIds.push(node.id);
 
-      if (node.id === station?.id) {
-        // The shaft: one box per filled segment, stacked from the pad's top.
-        stationColour.copy(tokens[STATION_TOKENS[node.status] ?? "info"]);
-        for (let i = 0; i < segments; i++) {
-          pushInstance(
-            shaft,
-            node.x,
-            style.height + SHAFT_GAP + i * (SHAFT_H + SHAFT_GAP),
-            node.z,
-            1,
-            SHAFT_H,
-            1,
-            stationColour,
-          );
-        }
-      }
-
       if (node.alert !== null) {
         const marker = tokens[node.alert === "failed" ? "destructive" : "warning"];
         pushInstance(markers, node.x, style.height, node.z, 1, MARKER_H, 1, marker);
         if (node.alert === "blocked-env") {
           pushInstance(markers, node.x + MARKER_OFFSET, style.height, node.z, 1, MARKER_H * 0.7, 1, marker);
         }
+      }
+    }
+
+    // Stations: a column of stage marks standing on each worker's own pad.
+    // Brightness is the only focus-dependent thing here, so switching focus
+    // rewrites instance colours — never the instance count (d03 finding 3).
+    let drawnStations = 0;
+    let focusedSegments = 0;
+    // The overflow stack hangs off the *last* pool entry (the highest slot),
+    // so it does not move when the stations are merely re-ordered.
+    let anchor: RailNode | null = null;
+    let anchorSlot = -1;
+    let anchorHeight = 0;
+    for (const station of pooled) {
+      const node = nodesById.get(station.id);
+      if (!node || node.ghost || node.inCycle) continue;
+      const height = (PAD_STYLES[node.status] ?? DEFAULT_PAD_STYLE).height;
+      // A wedged worker's column is broken at the top: a static pattern, so
+      // "stalled" survives greyscale instead of depending on the amber colour.
+      const marks = station.wedged ? Math.max(1, shaftSegments(station.stage)) : shaftSegments(station.stage);
+      stationColour.copy(tokens[station.wedged ? "warning" : (STATION_TOKENS[node.status] ?? "info")]);
+      if (!station.focused) stationColour.multiplyScalar(SECONDARY_DIM);
+      for (let i = 0; i < marks; i++) {
+        const broken = station.wedged && i === marks - 1;
+        pushInstance(
+          stations,
+          node.x + (broken ? STATION_W * 1.8 : 0),
+          height + STATION_GAP + i * (STATION_H + STATION_GAP),
+          node.z,
+          1,
+          STATION_H,
+          1,
+          stationColour,
+        );
+      }
+      drawnStations += 1;
+      if (station.focused) focusedSegments = shaftSegments(station.stage);
+      if (station.slot > anchorSlot) {
+        anchor = node;
+        anchorSlot = station.slot;
+        anchorHeight = height;
+      }
+    }
+
+    // The pool is full: the workers it cannot hold become one dim mark each,
+    // stacked beside the last station. The HUD carries the count and the lane
+    // list still lists every one of them — overflow is reported, never hidden.
+    if (anchor !== null && hidden > 0) {
+      stationColour.copy(tokens.muted).multiplyScalar(SECONDARY_DIM);
+      const marks = Math.min(hidden, STATION_STACK_CAP);
+      for (let i = 0; i < marks; i++) {
+        pushInstance(
+          stations,
+          anchor.x + PAD_W / 2 + STATION_W,
+          anchorHeight + STATION_GAP + i * STATION_STACK_H,
+          anchor.z,
+          1,
+          STATION_STACK_H,
+          1,
+          stationColour,
+        );
       }
     }
 
@@ -530,7 +592,7 @@ export function createDeckRenderer(canvas: HTMLCanvasElement, tier: QualityTier,
 
     finishInstances(pads);
     finishInstances(markers);
-    finishInstances(shaft);
+    finishInstances(stations);
     finishLines(edges);
     finishLines(outlines);
 
@@ -555,10 +617,13 @@ export function createDeckRenderer(canvas: HTMLCanvasElement, tier: QualityTier,
       scene.add(grid);
     }
 
-    stats.instances = pads.count + markers.count + shaft.count;
-    stats.stationSegments = segments;
+    stats.instances = pads.count + markers.count + stations.count;
+    stats.stations = drawnStations;
+    stats.stationMarks = stations.count;
+    stats.markers = markers.count;
+    stats.stationSegments = focusedSegments;
     stats.vertices =
-      gridVertices + pads.count * 24 + markers.count * 24 + shaft.count * 24 + edges.written + outlines.written + ringGeometry.getAttribute("position").count;
+      gridVertices + pads.count * 24 + markers.count * 24 + stations.count * 24 + edges.written + outlines.written + ringGeometry.getAttribute("position").count;
     applied = model;
   };
 
@@ -688,19 +753,19 @@ export function createDeckRenderer(canvas: HTMLCanvasElement, tier: QualityTier,
     dispose(): void {
       if (disposed) return;
       disposed = true;
-      scene.remove(grid, pads.mesh, markers.mesh, shaft.mesh, edges.mesh, outlines.mesh, ring);
+      scene.remove(grid, pads.mesh, markers.mesh, stations.mesh, edges.mesh, outlines.mesh, ring);
       grid.geometry.dispose();
       gridMaterial.dispose();
       padGeometry.dispose();
       markerGeometry.dispose();
-      shaftGeometry.dispose();
+      stationGeometry.dispose();
       ringGeometry.dispose();
       ringMaterial.dispose();
       surfaceMaterial.dispose();
       lineMaterial.dispose();
       pads.mesh.dispose();
       markers.mesh.dispose();
-      shaft.mesh.dispose();
+      stations.mesh.dispose();
       edges.mesh.geometry.dispose();
       outlines.mesh.geometry.dispose();
       renderer.dispose();

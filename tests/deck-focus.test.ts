@@ -23,8 +23,11 @@ import { frameForNode, liveSliceIds, focusFraming, focusTarget, nextLiveId, shaf
 import {
   applyCameraIntent,
   CAMERA_LIMITS,
+  edgeAnchor,
+  EDGE_INSET,
   focusIntent,
   lerpCamera,
+  offScreenIds,
   visibleSliceIds,
   type CameraState,
 } from "../web/src/scene/camera.ts";
@@ -210,6 +213,70 @@ describe("visibleSliceIds agrees with the renderer's own projection", () => {
           expect(`${state.azimuth}@${aspect} ${node.id}:${mine.has(node.id)}`).toBe(`${state.azimuth}@${aspect} ${node.id}:${theirs}`);
         }
       }
+    }
+  });
+});
+
+describe("edgeAnchor and offScreenIds: where an off-screen worker points", () => {
+  const states: CameraState[] = [
+    railFraming(BOUNDS, 1.6),
+    frameForNode({ x: 16.56, z: 0 }, 1.6),
+    { target: { x: 8, y: 0.35, z: 1 }, distance: 7, azimuth: 2.4, elevation: 0.3 },
+  ];
+
+  test("offScreenIds is exactly the complement of visibleSliceIds", () => {
+    for (const state of states) {
+      const visible = new Set(visibleSliceIds(state, NODES, 1.6));
+      const hidden = offScreenIds(state, NODES, 1.6);
+      expect(hidden).toEqual(NODES.filter((node) => !visible.has(node.id)).map((node) => node.id));
+    }
+  });
+
+  test("an on-screen node anchors at its own projection; an off-screen one at the frame", () => {
+    for (const state of states) {
+      const camera = threeCamera(state, 1.6);
+      const hidden = new Set(offScreenIds(state, NODES, 1.6));
+      for (const node of NODES) {
+        const anchor = edgeAnchor(state, node, 1.6);
+        const point = new THREE.Vector3(node.x, 0.35, node.z).project(camera);
+        if (!hidden.has(node.id)) {
+          expect(anchor.x).toBeCloseTo(point.x * 0.5 + 0.5, 3);
+          expect(anchor.y).toBeCloseTo(0.5 - point.y * 0.5, 3);
+          expect(anchor.behind).toBe(false);
+          continue;
+        }
+        // Off screen: inside the viewport, on the edge band the inset defines,
+        // and on the side the node actually is.
+        expect(anchor.x).toBeGreaterThan(0);
+        expect(anchor.x).toBeLessThan(1);
+        expect(anchor.y).toBeGreaterThan(0);
+        expect(anchor.y).toBeLessThan(1);
+        const down = Math.max(Math.abs(anchor.x - 0.5), Math.abs(anchor.y - 0.5));
+        expect(down).toBeGreaterThan(0.5 - EDGE_INSET - 0.02);
+        expect(Math.sign(anchor.x - 0.5)).toBe(Math.sign(point.x) || 1);
+      }
+    }
+  });
+
+  test("a node behind the camera anchors on the side the operator must turn to", () => {
+    // Looking from +z toward -z (`azimuth` 0), so camera right *is* world +x.
+    const away: CameraState = { target: { x: 0, y: 0.35, z: 0 }, distance: 20, azimuth: 0, elevation: 0.12 };
+    const inFrontRight = edgeAnchor(away, { x: 10, z: -10 }, 1.6);
+    const behindRight = edgeAnchor(away, { x: 10, z: 30 }, 1.6);
+    const behindLeft = edgeAnchor(away, { x: -10, z: 30 }, 1.6);
+    expect(inFrontRight.behind).toBe(false);
+    expect(inFrontRight.x).toBeGreaterThan(0.5);
+    // Behind the lens there is no projection, so the marker is the antipode of
+    // the camera-space direction: behind-right is still "turn right".
+    expect(behindRight.behind).toBe(true);
+    expect(behindRight.x).toBeGreaterThan(0.5);
+    expect(behindLeft.behind).toBe(true);
+    expect(behindLeft.x).toBeLessThan(0.5);
+    for (const anchor of [behindRight, behindLeft]) {
+      expect(anchor.x).toBeGreaterThanOrEqual(0);
+      expect(anchor.x).toBeLessThanOrEqual(1);
+      expect(anchor.y).toBeGreaterThanOrEqual(0);
+      expect(anchor.y).toBeLessThanOrEqual(1);
     }
   });
 });

@@ -1,10 +1,11 @@
 /**
- * The deck's DOM layer (roadmap slices `d02`–`d03`).
+ * The deck's DOM layer (roadmap slices `d02`–`d04`).
  *
  * All text lives in the document (CP-3): the canvas draws geometry, and this
  * file draws the words — the selected (or hovered) slice's status line, the
- * focused worker's station line and lane strip, the bounded live window, and
- * the pad list that gives the scene its keyboard and assistive-technology path.
+ * focused worker's station line, the lane list of every live worker (with its
+ * action line), the off-screen markers, the bounded live window, and the pad
+ * list that gives the scene its keyboard and assistive-technology path.
  *
  * It derives nothing: every line reads `DeckModel` fields plus the app's
  * existing helpers (`heroAction`, `liveSliceEvent`) and the dashboard's own
@@ -18,6 +19,7 @@ import StatusBadge from "../components/StatusBadge.tsx";
 import LiveFeed from "../components/LiveFeed.tsx";
 import { liveSliceEvent } from "../lib/events.ts";
 import { heroAction } from "../lib/selection.ts";
+import type { EdgeMarker } from "./camera.ts";
 import type { DeckModel, RailNode } from "./types.ts";
 
 /**
@@ -49,6 +51,7 @@ export default function DeckOverlay({
   focusSlice,
   frozen,
   expanded,
+  edgeMarkers,
   onFrozenChange,
   onExpandedChange,
   onFocus,
@@ -66,12 +69,23 @@ export default function DeckOverlay({
   focusSlice: SliceSummary | null;
   frozen: boolean;
   expanded: boolean;
+  /**
+   * Live workers the camera cannot see, with the viewport-edge anchor they
+   * point from (`camera.edgeAnchor`). Empty while every worker is on screen —
+   * and the lane list below lists every worker either way.
+   */
+  edgeMarkers: EdgeMarker[];
   onFrozenChange: (frozen: boolean) => void;
   onExpandedChange: (expanded: boolean) => void;
-  /** Focus a worker: pin it, select it, frame it (the lane strip's action). */
-  onFocus: (sliceId: string) => void;
+  /**
+   * Focus a worker. `frame` also moves the camera: lane rows pass `false`
+   * (focus is a pointer change, not a camera order), edge markers pass `true`
+   * (the worker is off screen, so "there" is the whole request).
+   */
+  onFocus: (sliceId: string, frame: boolean) => void;
   onSelect: (sliceId: string) => void;
 }) {
+  const nodeById = new Map(model.nodes.map((node) => [node.id, node]));
   const selected = model.nodes.find((node) => node.selected) ?? null;
   const hovered = hoverId === null ? null : (model.nodes.find((node) => node.id === hoverId) ?? null);
   const shown = hovered ?? selected;
@@ -87,10 +101,9 @@ export default function DeckOverlay({
       })
     : null;
 
-  // The live workers, in board order (`liveIds` is that order; the nodes carry
-  // the per-worker facts). The focused one is the operator's handle on "which
-  // worker is the deck pointing at".
-  const liveNodes = model.nodes.filter((node) => node.live);
+  // The live workers, in station order (`model.stations` is that order and the
+  // scene's slot order at once). The focused one is the operator's handle on
+  // "which worker the deck is pointing at".
   const focused = model.focusId === null ? null : (model.nodes.find((node) => node.id === model.focusId) ?? null);
   const focusAgent = focused === null ? undefined : agents.find((row) => row.id === focused.id);
 
@@ -144,7 +157,7 @@ export default function DeckOverlay({
               {focused.stageLabel ? ` · ${focused.stageLabel}` : ""}
             </span>
             <span className="omp-deck-station-meta">
-              {liveNodes.length === 0 ? "no worker running" : `live: ${liveNodes.length}`}
+              {model.liveIds.length === 0 ? "no worker running" : `live: ${model.liveIds.length}`}
             </span>
           </>
         ) : (
@@ -152,27 +165,73 @@ export default function DeckOverlay({
         )}
       </p>
 
-      {liveNodes.length > 0 && (
+      {/* Off-screen workers (`d04`): a marker on the viewport edge the worker's
+          direction leaves, so a station the camera cannot show is still
+          reachable — click it and the deck goes there. The lane list below
+          lists every live worker whether or not a marker exists. */}
+      {edgeMarkers.length > 0 && (
+        <div className="omp-deck-edges" role="group" aria-label="Off-screen workers">
+          {edgeMarkers.map((marker) => (
+            <button
+              key={marker.id}
+              type="button"
+              className="omp-deck-edge"
+              data-slice-id={marker.id}
+              data-behind={marker.behind ? "true" : "false"}
+              style={{ left: `${(marker.x * 100).toFixed(2)}%`, top: `${(marker.y * 100).toFixed(2)}%` }}
+              title={`${marker.id} is off screen`}
+              aria-label={`Focus and frame ${marker.id} (off screen)`}
+              onClick={() => onFocus(marker.id, true)}
+            >
+              <span
+                className="omp-deck-edge-arrow"
+                style={{ transform: `rotate(${((marker.angle * 180) / Math.PI).toFixed(1)}deg)` }}
+                aria-hidden="true"
+              />
+              <span className="omp-deck-edge-id">{marker.id}</span>
+            </button>
+          ))}
+        </div>
+      )}
+
+      {model.stations.length > 0 && (
         <ul className="omp-deck-lanes" aria-label="Live workers">
-          {liveNodes.map((node) => {
-            const laneAgent = agents.find((row) => row.id === node.id);
-            const isFocused = node.id === model.focusId;
+          {model.stations.map((station) => {
+            const node = nodeById.get(station.id);
+            if (!node) return null;
+            const row = agents.find((agentRow) => agentRow.id === station.id);
+            const laneAction = heroAction({
+              status: node.status,
+              lastLine: row?.lastLine,
+              lastEvent: liveSliceEvent(node.status, events, node.id),
+              reason: node.reason,
+              deps: node.deps,
+            });
             return (
-              <li key={node.id}>
+              <li key={station.id}>
                 <button
                   type="button"
                   className="omp-deck-lane"
-                  data-focused={isFocused ? "true" : "false"}
-                  aria-current={isFocused ? "true" : undefined}
-                  onClick={() => onFocus(node.id)}
+                  data-focused={station.focused ? "true" : "false"}
+                  data-primary={station.primary ? "true" : "false"}
+                  data-overflow={station.stack > 0 ? "true" : "false"}
+                  aria-current={station.focused ? "true" : undefined}
+                  title={laneAction}
+                  onClick={() => onFocus(station.id, false)}
                 >
-                  <span className="omp-deck-lane-id">{node.id}</span>
-                  <span className="omp-deck-lane-status">{node.status}</span>
-                  {node.stageLabel && <span className="omp-deck-lane-stage">{node.stageLabel}</span>}
-                  <span className="omp-deck-lane-meta">
-                    L{laneAgent?.lane ?? "—"} · gen {node.generation} · a{node.attempts}
+                  <span className="omp-deck-lane-dot" aria-hidden="true">
+                    {station.focused ? "●" : "○"}
                   </span>
-                  {laneAgent?.wedged === true && <span className="omp-deck-lane-warn">stalled</span>}
+                  <span className="omp-deck-lane-id">{station.id}</span>
+                  <span className="omp-deck-lane-status">{node.status}</span>
+                  <span className="omp-deck-lane-stage">{node.stageLabel || "—"}</span>
+                  <span className="omp-deck-lane-meta">
+                    {station.lane === null ? "L—" : `L${station.lane}`} · g{node.generation} · a{node.attempts}
+                  </span>
+                  <span className="omp-deck-lane-tail">
+                    {station.wedged && <span className="omp-deck-lane-warn">stalled</span>}
+                    <span className="omp-deck-lane-action">{laneAction}</span>
+                  </span>
                 </button>
               </li>
             );

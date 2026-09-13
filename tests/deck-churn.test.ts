@@ -134,6 +134,7 @@ describe("the scene cannot see the history", () => {
       pinnedId: null,
       prefs: DEFAULT_DECK_PREFS,
       live: true,
+      maxStations: 8,
     };
     const history = Array.from({ length: CHURN }, (_, i) => eventAt(i));
     const quiet = buildDeckModel(base);
