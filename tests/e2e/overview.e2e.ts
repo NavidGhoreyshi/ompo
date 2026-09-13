@@ -180,7 +180,7 @@ test.describe("overview focus (desktop)", () => {
     await expect(toggle).toHaveAttribute("aria-expanded", "false");
     await expect(page.locator(".omp-inspector")).toHaveAttribute("aria-hidden", "true");
 
-    await page.getByRole("option", { name: /longreason/ }).click();
+    await page.getByRole("option", { name: /^longreason / }).click();
     await expect(toggle).toHaveAttribute("aria-expanded", "true");
     await expect(page.locator(".omp-inspector-title")).toContainText("longreason");
 
@@ -190,7 +190,7 @@ test.describe("overview focus (desktop)", () => {
 
   test("board, DAG, and agents modes share one selection", async ({ page }) => {
     await gotoOverview(page);
-    await page.getByRole("option", { name: /s-beta/ }).click();
+    await page.getByRole("option", { name: /^s-beta / }).click();
     await expect(page.locator('.omp-board-row[data-selected="true"]')).toContainText("s-beta");
     // Board rows read as workflow entities: state, id, and one meta line.
     await expect(page.locator('.omp-board-row[data-selected="true"] .omp-board-meta')).toContainText("attempt 1");
@@ -233,7 +233,7 @@ test.describe("overview focus (narrow)", () => {
 
   test("the inspector becomes an overlay instead of a column", async ({ page }) => {
     await gotoOverview(page);
-    await page.getByRole("option", { name: /longtitle/ }).click();
+    await page.getByRole("option", { name: /^longtitle / }).click();
     const pos = await page.locator(".omp-inspector").evaluate((el) => getComputedStyle(el).position);
     expect(pos).toBe("fixed");
     await expect(page.locator(".omp-inspector-title")).toContainText("longtitle");

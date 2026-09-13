@@ -37,26 +37,31 @@ Agent: sonic
 Verify: bun test
 alpha body
 ## [s-beta] Wire the beta endpoints
+Depends: s-alpha
 Effort: med
 Agent: task
 Verify: bun lint
 beta body
 ## [longtitle] ${LONG_TITLE}
+Depends: s-beta
 Effort: hi
 Agent: task
 Verify: bun test --coverage
 longtitle body
 ## [longreason] Normal title, catastrophic reason
+Depends: s-alpha
 Effort: lo
 Agent: sonic
 Verify: bun test
 longreason body
 ## [envblock] Environment-gated slice
+Depends: s-alpha
 Effort: med
 Agent: task
 Verify: bun test
 envblock body
 ## [verifying] Awaiting verdict
+Depends: longtitle
 Effort: lo
 Agent: sonic
 Verify: bun test

@@ -1,5 +1,5 @@
 /**
- * Deck contracts (roadmap slice `d01`).
+ * Deck contracts (roadmap slices `d01`–`d02`).
  *
  * Types and the small constants the shell and the deck must agree on. The
  * deck is a projection of state the dashboard already holds: it receives
@@ -7,7 +7,7 @@
  * `docs/desktop-3d-roadmap.md`).
  */
 
-import type { AgentRow, RunDetail, RunEvent, SliceDetail } from "../api.ts";
+import type { AgentRow, RunDetail, RunEvent, RunSummary, SliceDetail } from "../api.ts";
 import type { QualityTier } from "./tier.ts";
 
 export type { QualityTier } from "./tier.ts";
@@ -64,14 +64,123 @@ export const DEFAULT_CAMERA: DeckCamera = {
   elevation: 0.62,
 };
 
+/** Perspective field of view, shared by the renderer and `railFraming`. */
+export const CAMERA_FOV = 50;
+
+/** A position on the deck floor, in world units. */
+export interface RailPosition {
+  x: number;
+  y: number;
+  z: number;
+}
+
+/** Footprint of the rail in world units, pad edges included. */
+export interface RailBounds {
+  minX: number;
+  maxX: number;
+  minZ: number;
+  maxZ: number;
+  width: number;
+  depth: number;
+  centerX: number;
+  centerZ: number;
+}
+
 /**
- * Scene contents. `d01` renders an empty world (a floor grid and nothing
- * else); `d02` builds the real model from the DTOs and this is the only
- * thing the renderer ever receives.
+ * What the deck is allowed to show about one pad. Every field is either a DTO
+ * field or a `layoutDag` output — the model invents no second lifecycle: the
+ * status strings are the roadmap's, and `alert` is the only visual *kind*
+ * derived from them.
+ */
+export interface RailNode {
+  id: string;
+  title: string;
+  /** Roadmap status, verbatim (`pending`, `running`, `done`, `unknown`, …). */
+  status: string;
+  attempts: number;
+  generation: number;
+  effort: string | null;
+  /** Longest dependency chain — the layout column this pad sits in. */
+  depth: number;
+  /** World position on the floor (from `railPositions`, never from status). */
+  x: number;
+  z: number;
+  deps: readonly string[];
+  selected: boolean;
+  /** Scheduler flags, from `dag.ts` (`readyDagIds` / `isDagReady`). */
+  ready: boolean;
+  blocked: boolean;
+  /** Unknown dependency (`layoutDag` ghost node). */
+  ghost: boolean;
+  /** Member of a dependency cycle (`layoutDag` `cycleIds`). */
+  inCycle: boolean;
+  /** Failure text for the overlay line; `null` when the DTO has none. */
+  reason: string | null;
+  /** What the pad must encode beyond colour (`d02`: failed / blocked-env). */
+  alert: AlertKind | null;
+}
+
+/** Alert kinds the scene can draw as of `d02`; `d05` extends this union. */
+export type AlertKind = "failed" | "blocked-env";
+
+/** One dependency edge, projected from the roadmap's `deps`. */
+export interface RailEdge {
+  key: string;
+  /** Dep id (the pad the edge leaves). */
+  from: string;
+  /** Dependent slice id (the pad the edge arrives at). */
+  to: string;
+  /** Dep status is done/skipped — `dag.ts` `depSatisfied`. */
+  satisfied: boolean;
+  /** Dep id is not in the roadmap. */
+  unknown: boolean;
+  /** Both ends are cycle members. */
+  inCycle: boolean;
+}
+
+/** Run counts, verbatim from `RunSummary.counts` — nothing is recounted here. */
+export type DeckCounts = RunSummary["counts"];
+
+/**
+ * Scene contents: the renderer's *only* input, and a pure function of the
+ * DTOs and view state (`buildDeckModel` in `model.ts`). `d02` renders the
+ * roadmap rail; later slices extend this model rather than adding a parallel
+ * path to the scene.
  */
 export interface DeckModel {
-  /** Monotonic revision; a change is what makes the renderer re-apply. */
-  revision: number;
+  runId: string | null;
+  live: boolean;
+  /** True while a run switch is loading and the deck holds the previous pads. */
+  loading: boolean;
+  nodes: RailNode[];
+  edges: RailEdge[];
+  counts: DeckCounts;
+  /** The slice that needs eyes (`preferredSliceId`), independent of selection. */
+  primaryId: string | null;
+  /** Extent of `nodes`, for the default framing and the floor grid. */
+  bounds: RailBounds;
+  /**
+   * Content key of everything the renderer consumes. Derived from the
+   * projection (never a counter), so identical inputs give an identical
+   * digest and the scene can prove it did no work.
+   */
+  digest: string;
+}
+
+/**
+ * Everything the projection reads. `events`, `agents` and `prefs` are part of
+ * the contract for the slices that consume them (`d03` focus/live window);
+ * `d02`'s rail is a function of `detail` + `selected` + `runId` only, which is
+ * why an event or worker churn cannot touch the scene.
+ */
+export interface DeckInput {
+  runId: string | null;
+  detail: RunDetail | null;
+  events: readonly RunEvent[];
+  agents: readonly AgentRow[];
+  selected: string | null;
+  prefs: DeckPrefs;
+  live: boolean;
 }
 
 /** Props the shell hands the deck. Fetching stays in `App.tsx`. */
@@ -83,6 +192,8 @@ export interface DeckProps {
   selected: string | null;
   sliceDetail: SliceDetail | Record<string, unknown> | null;
   live: boolean;
+  /** The app's single selection system — the same state the board writes. */
+  onSelect: (sliceId: string) => void;
   /** Switch back to the dashboard surface (the `D` key and the HUD button). */
   onExit: () => void;
 }
@@ -96,10 +207,16 @@ export interface RenderStats {
   /** Draw calls issued by the last `render()`. */
   drawCalls: number;
   triangles: number;
-  /** Line segments (the floor grid) — lines, not triangles, are the `d01` world. */
+  /** Line segments drawn (grid + rail edges + outlines). */
   lines: number;
-  /** Top-level scene nodes. */
+  /**
+   * `drawCalls + instances` — the `objects` term of the `d00` cost model
+   * (`docs/deck-performance-budget.md` §3.2: an instance and a call cost the
+   * same, so the budget counts both). Not the scene-graph child count.
+   */
   objects: number;
+  /** Instances drawn by the last `render()` (pads + markers). */
+  instances: number;
   programs: number;
   textures: number;
   geometries: number;
@@ -157,5 +274,22 @@ export interface DeckDebugHook {
   triangles: number;
   vertices: number;
   pixels: number;
+  /** Model counters, written when a model is applied. */
+  nodes: number;
+  edges: number;
+  instances: number;
+  /** Digest of the applied model — stable across status-preserving updates. */
+  digest: string;
+  /** Slice currently selected / under the pointer, as the deck sees them. */
+  selected: string | null;
+  hover: string | null;
+  /**
+   * Applied pad positions, `{ id, x, z }` in model order. Allocated per
+   * model application (never per frame) so the layout-stability spec can
+   * compare real coordinates before and after an app-state change.
+   */
+  positions: { id: string; x: number; z: number }[];
+  /** Canvas-relative CSS pixels of a pad, or `null` when nothing is drawn. */
+  screenPosition: ((id: string) => { x: number; y: number } | null) | null;
   instrument: unknown;
 }

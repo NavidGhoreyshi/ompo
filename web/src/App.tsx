@@ -283,6 +283,7 @@ export default function App() {
                   selected={sel}
                   sliceDetail={sliceDetail}
                   live={detail?.live ?? false}
+                  onSelect={setSel}
                   onExit={toggleSurface}
                 />
               </Suspense>

@@ -3920,6 +3920,170 @@ button[data-slot="select-trigger"] {
   color: var(--omp-muted);
 }
 
+/* ---------- deck overlay (slice d02): the selected/hovered slice line and the
+ * pad list that gives the scene its keyboard and screen-reader path. All text
+ * stays in the document (CP-3); the canvas draws only geometry. ---------- */
+.omp-deck-overlay {
+  display: contents;
+}
+
+.omp-deck-line {
+  position: absolute;
+  left: 10px;
+  right: 10px;
+  bottom: 10px;
+  width: fit-content;
+  max-width: calc(100% - 20px);
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin: 0;
+  padding: 6px 10px;
+  border: 1px solid var(--omp-border);
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--omp-panel) 88%, transparent);
+  color: var(--omp-secondary);
+  font-family: var(--omp-mono);
+  font-size: 12px;
+  pointer-events: none;
+}
+
+.omp-deck-line[data-kind="hover"] {
+  border-style: dashed;
+}
+
+.omp-deck-line-hint {
+  font-size: 10px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--omp-muted);
+}
+
+.omp-deck-line-id {
+  color: var(--omp-text);
+  font-weight: 600;
+}
+
+.omp-deck-line-title {
+  max-width: 44ch;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--omp-text);
+}
+
+.omp-deck-line-meta {
+  color: var(--omp-muted);
+}
+
+.omp-deck-line-action {
+  max-width: 56ch;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--omp-secondary);
+}
+
+.omp-deck-empty {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  margin: 0;
+  color: var(--omp-secondary);
+  font-family: var(--omp-mono);
+  font-size: 12px;
+  pointer-events: none;
+}
+
+/* Visually hidden until it has keyboard focus: out of the way of the scene,
+ * still the first thing a keyboard or screen reader reaches (d09 builds the
+ * full list on this contract). */
+.omp-deck-mirror {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  padding: 0;
+  overflow: hidden;
+  clip-path: inset(50%);
+  list-style: none;
+}
+
+.omp-deck-mirror:focus-within {
+  position: absolute;
+  left: 10px;
+  bottom: 10px;
+  width: min(520px, calc(100% - 20px));
+  height: auto;
+  max-height: 45%;
+  margin: 0;
+  padding: 6px;
+  overflow-y: auto;
+  clip-path: none;
+  display: grid;
+  gap: 2px;
+  align-content: start;
+  border: 1px solid var(--omp-border);
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--omp-panel) 94%, transparent);
+}
+
+.omp-deck-mirror li {
+  display: contents;
+}
+
+.omp-deck-mirror button {
+  display: grid;
+  grid-template-columns: 14ch 11ch minmax(0, 1fr);
+  gap: 8px;
+  text-align: left;
+  font: inherit;
+  font-family: var(--omp-mono);
+  font-size: 12px;
+  color: var(--omp-secondary);
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  padding: 3px 7px;
+  cursor: pointer;
+}
+
+.omp-deck-mirror button:hover,
+.omp-deck-mirror button:focus-visible {
+  color: var(--omp-text);
+  background: var(--omp-panel-2);
+  border-color: var(--omp-border);
+}
+
+.omp-deck-mirror button[aria-current="true"] {
+  color: var(--omp-text);
+  border-color: var(--omp-cyan);
+}
+
+.omp-deck-mirror-id {
+  color: var(--omp-text);
+}
+
+.omp-deck-mirror-status {
+  color: var(--omp-muted);
+}
+
+.omp-deck-mirror-title {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.omp-deck-mirror-more {
+  display: block;
+  padding: 3px 7px;
+  color: var(--omp-muted);
+  font-family: var(--omp-mono);
+  font-size: 12px;
+}
+
 .omp-deck-notice,
 .omp-deck-skeleton {
   flex: 1;

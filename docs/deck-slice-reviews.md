@@ -139,3 +139,168 @@ hold with more than an order of magnitude to spare.
 | `bun test` incl. extended release gate; `bun run test:e2e` | ✔ 655 unit tests, 26 e2e tests (18 existing + 8 deck) |
 | `snapshot()` shape (frames, p50/p95, commits/s, mutations/s, long tasks, heap or reason, renderer counters) | ✔ asserted in `tests/deck-instrument.test.ts` and the e2e budget spec |
 | No `fetch`/`EventSource`/`WebSocket`/`node:*`/`../src/` under `scene/**` | ✔ asserted by the release gate, with a violation probe verified |
+
+---
+
+## d02 — scene model and the roadmap rail
+
+The whole roadmap as a spatial object: one pad per slice at its dependency depth, one edge per
+declared dep, ghosts for unknown deps, outlines for cycles, status encoded in pad height/colour
+plus markers, selection shared with the dashboard — all produced by a pure
+`buildDeckModel(DeckInput): DeckModel` (`web/src/scene/model.ts`) whose coordinates come from
+`layoutDag` through `railPositions` (`web/src/scene/rail.ts`) and never from status.
+
+Reproduce everything below with:
+
+```bash
+bun run web:build
+bunx playwright test tests/e2e/deck.e2e.ts --reporter=list --workers=1
+DECK_IDLE_MS=20000 bunx playwright test tests/e2e/deck.e2e.ts -g "idle deck" --reporter=list --workers=1
+bun test tests/deck-model.test.ts
+# the real run (22 slices, 32 deps), served embedded by the repo's own dashboard:
+bun src/cli.ts --port 4321 --no-open     # then open /?surface=deck and pick 20260909-kph0as
+```
+
+### Bundle
+
+| Artifact | d01 | d02 | Δ |
+|---|---|---|---|
+| `assets/Deck-*.js` (the deck + `three`) | 540.83 kB / 135.91 kB gzip | 557.71 kB / 142.08 kB gzip | **+16.9 kB / +6.2 kB gzip** |
+| `assets/index-*.js` (the dashboard shell) | 453.20 kB / 136.56 kB gzip | 453.25 kB / 136.59 kB gzip | +0.05 kB |
+| `assets/index-*.css` | 79.93 kB / 14.50 kB gzip | 82.42 kB / 14.86 kB gzip | +2.5 kB (overlay + mirror styles) |
+
+The rail's code is the whole cost: model + positions + pads/markers/edges/outlines/ring + the DOM
+overlay. The dashboard chunk is unchanged (its only d02 deltas are the deck's `onSelect` prop in
+`App.tsx` and reusing `liveSliceEvent` in `RunHeader`), and the deck remains its own lazy chunk —
+the dashboard pays nothing for any of it.
+
+### What the model itself cost us (the question this slice exists to answer)
+
+Fixture run (9 slices, 5 deps, 3 alert markers), 1440×900 CSS, tier `minimal`; counters read from
+`window.__ompoDeck` / `instrument.snapshot()` in the deck e2e run above:
+
+| Counter | d01 (empty world) | d02 (rail) |
+|---|---|---|
+| draw calls | 1 | **6** (grid, pads, markers, edges, outlines, ring) |
+| objects (`calls + instances`, `d00`'s budget term) | 1 | **18** (6 + 12 instances) |
+| instances | — | 12 (9 pads + 3 markers) |
+| triangles | 0 | 144 |
+| lines | 18 | 56 |
+| vertices | 36 | 396 |
+| geometries / programs | 1 / 1 | 6 / 4 |
+| shaded pixels (est. `× 9 ns/px`, `d00`) | 13 053 (0.12 ms) | **40 609 (0.37 ms)** |
+| full-screen layers | 0 | 0 |
+
+Against `d00`'s minimal budget (`p50 ≤ 33 ms`, `p95 ≤ 45 ms`) and the model
+`0.9 + 9·MPx + 0.03·objects`: the rail prices at ~1.8 ms/frame (0.9 fixed + 0.37 fill + 0.54
+objects) and measures at 0.4–1.6 ms.
+
+| Window (minimal tier) | frames | p50 | p95 | worst |
+|---|---|---|---|---|
+| interaction: resize + HUD toggle (d01's window, same spec) | 2 | 0.4 ms | 0.9 ms | 0.9 ms |
+| one status change through the real control path | 1 | 1.4 ms | 1.4 ms | 1.4 ms |
+| 10 selection changes via the raycast path | 9 | 1.2 ms | 2.8 ms | 2.8 ms |
+
+- **A status change costs one frame and no buffers.** `deck-status-change` (printed by the
+  status-change spec) reports `moved: false`, `instances 12→12`, `geometries 6→6`, `drawCalls 6`,
+  `window.frames 1` at 1.4 ms, `longTasks 0`. Only the instance colour/height buffers are
+  rewritten; nothing is reallocated, recreated or remounted.
+- **Nothing that is not visual reaches the scene.** `buildDeckModel`'s digest excludes events,
+  agents and preferences; `tests/deck-model.test.ts` asserts that 200 events, an empty worker
+  list, a wedged worker and a preference change all leave it byte-identical, and the e2e shows
+  the rail produces no frames while the event stream ticks. Log text cannot drive the render
+  loop because it cannot change the model.
+
+### Idle behaviour (20 s, same window as d01's run)
+
+| Observation | d01 | d02 |
+|---|---|---|
+| rendered frames | 0 | **0** |
+| DOM mutations | 0 | **0** |
+| React commits | 8 (0.40/s) | **6 (0.30/s)** |
+| long tasks | 0 | 0 |
+| heap (`performance.memory`) | 10.0 MB (quantized) | 10.0 MB (quantized) |
+
+The commit rate went *down* although the deck now draws 22 objects: the HUD's compact comparison
+was narrowed to the fields the always-visible row actually renders. Measured before the change:
+150 readout diffs in a 20 s idle window, every one of them `commitsPerSec`, `mutationsPerSec` or
+`eventsPerSec` — panel-only rates that were committing ~1/s for pixels nobody was looking at.
+M5's budget (≤ 4 commits/s) holds either way; the fix removes the invisible half.
+
+### Event → visible latency
+
+A real event through the real path (`POST /api/runs/<id>/control` → store → SSE poll → `App` state
+→ deck DOM mark): **361 ms** in the d02 run, against d01's 619/670/677 ms. Same bound (the
+server's 900 ms store poll) and same conclusion: the deck adds no measurable time on top of the
+transport. Single sample — `d03v`'s M4 is where the distribution comes from.
+
+### Layout stability (the property the operator actually uses)
+
+`tests/deck-model.test.ts` (pure, no browser):
+
+- **5 status permutations** of the same roadmap (all-pending, all-done, two mixed, one
+  all-terminal) → identical `id → (x,z)` maps and identical node order, for every pad.
+- Worker state (wedged, stale, gone), activity/log content (200 events, 400-char details), a
+  changed failure reason, selection, `prefs`, `live` → positions, order and bounds unchanged.
+- Appending three slices at the end of the roadmap → every existing pad keeps its exact
+  coordinates.
+- Spatial invariants: a dep is always drawn to the *left* of its dependent, and an unknown dep's
+  ghost column leads every real column.
+
+`tests/e2e/deck.e2e.ts` proves the same through the real app: a `skip` control lands, the model
+digest changes, and `moved: false` with `instances`/`geometries`/`drawCalls` all unchanged.
+
+What this deliberately does *not* cover: inserting a slice in the middle of a column shifts that
+column's later rows (the existing `layoutDag` row order). A run's roadmap is written once before
+it starts, and a *status* change can never reflow — which is the rule CP-7 states.
+
+### The real run, not just the fixture
+
+`.omp/roadmap/runs/20260909-kph0as` (22 slices, 32 declared deps), served by `bun src/cli.ts`:
+22 pads, 32 edges, 5 draw calls, 27 objects, 1 112 vertices, no ghosts and no cycle outlines.
+`captures/deck-d02-real-run.png` is the capture; the chain-with-branches shape matches the
+dashboard's DAG view of the same run, and the framing was retuned after that check: the first
+implementation fitted a bounding sphere and shrank the long, shallow rail to a fifth of the
+viewport. `railFraming` now fits the rail's box in the camera's own basis (`rail.ts`), and
+`tests/deck-model.test.ts` projects every corner of that box through a real
+`THREE.PerspectiveCamera` at 16:9, 1:1 and 390×844 to assert it lands inside the frustum.
+
+### What the deck does worse, and open findings
+
+1. **Growing the viewport costs one long task.** A resize-only probe: 1440→1600×1000 → 1 frame
+   (1.1 ms) and 1 long task (**75 ms**); 1600→1180 → 0 long tasks; 1180→1440 → 0. The
+   interaction window in the e2e run shows the same single task (57 ms isolated; up to 194 ms
+   when three other software-rendered browsers share this 4-vCPU box). It is the main-thread side
+   of reallocating the canvas backing store inside SwiftShader, not the rail — the rail's own
+   frames are 0.4–1.6 ms. The e2e guard is now the *count* (≤ 2 per window); a hardware-dependent
+   worst-case threshold was removed rather than loosened. Against the gate's own M5 budget
+   (≤ 2 long tasks > 50 ms per minute) this is an operator action, not a rate — the idle window
+   measures 0 — but it is the one place in `d02` where the machine, not the scene, sets the floor.
+2. **Hover is colour-only.** The pointer's highlight brightens a pad's instance colour; selection
+   has the ring, alerts have markers and heights, but hover has no non-colour channel. Colour-blind
+   operators keep the overlay line and the mirror list (both text), and `d09` owns the fix.
+3. **The DOM census root changed and the counts are not comparable to d01.** The instrument now
+   watches the whole deck subtree (canvas, overlay, mirror, HUD) because the DOM line mutates as
+   much as the scene does; the "deck DOM nodes" column therefore jumped from 12 (HUD root) to 72
+   (panel closed) / 145 (open). The mirror list is the bulk of it — 3 spans per pad, ~600 nodes at
+   200 pads — and it is the accessibility price `d09` will virtualise.
+4. **`objects` was redefined** from "scene-graph children" to `drawCalls + instances` — `d00`'s
+   budget term, and what the HUD should have shown from the start. d01's numbers in this file
+   (`objects 1`) used the old meaning.
+5. **Heap is still quantized.** `performance.memory` reports exactly 10 000 000 bytes before and
+   after; M7 still needs `renderer.info.memory` plus a better API (`d03v`/`d10`), unchanged from
+   d01.
+6. **No animation anywhere in the rail** — pads appear when the model arrives, and the ring jumps
+   on selection. That is deliberate for this slice (`d05` adds transitions, `d13` ambient), but it
+   means the first paint of a run is abrupt, and `d03` inherits the jump until transitions land.
+
+### Acceptance criteria (d02)
+
+| Criterion | Result |
+|---|---|
+| Pads = `slices.length`, edges = dep count, both matching `layoutDag` | ✔ 9 pads / 5 edges on the fixture; 22 pads / 32 edges on the real run; parity asserted against `layoutDag` in `tests/deck-model.test.ts` |
+| A status change leaves every pad's position unchanged | ✔ unit: 5 status permutations, identical coordinates; e2e: real `skip` → `moved: false`, `geometries`/`instances` unchanged |
+| Clicking pad X selects X in the deck line *and* the dashboard's board | ✔ `s-beta` selected by a real pointer click on the canvas; dashboard row shows it after switching surfaces, and a dashboard click moves the deck's line |
+| Draw calls ≤ 8 at 24 slices; no buffer rebuild on selection change | ✔ 6 calls (fixture and real run), `geometries` 6→6 and `instances` 12→12 across selection changes |
+| `bun test`, `bunx tsc --noEmit`, `git diff --check`, `bun run test:e2e` clean | ✔ 670 unit tests, 32 e2e tests |
+| M1 duplication scan passes (no second derivation) | ✔ release gate green; `model.ts` reuses `layoutDag`/`preferredSliceId`/`depSatisfied`, and the deck↔dashboard DAG parity is asserted in the e2e |

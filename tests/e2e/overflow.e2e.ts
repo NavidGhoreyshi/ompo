@@ -170,14 +170,14 @@ test.describe("overflow at desktop", () => {
     await page.getByRole("button", { name: "Collapse log" }).click();
 
     // Inspector over the two stress slices, every tab.
-    await page.getByRole("option", { name: /longtitle/ }).click();
+    await page.getByRole("option", { name: /^longtitle / }).click();
     await openInspector(page);
     for (const tab of ["Output", "Diff", "Verify", "Review", "Prompt", "Events", "Usage", "Log"]) {
       await openInspectorTab(page, tab);
       await scan(page, `inspector/longtitle/${tab}`, hits);
     }
     await closeInspector(page);
-    await page.getByRole("option", { name: /longreason/ }).click();
+    await page.getByRole("option", { name: /^longreason / }).click();
     await openInspector(page);
     await openInspectorTab(page, "Output");
     await scan(page, "inspector/longreason/Output", hits);
@@ -209,7 +209,7 @@ test.describe("overflow at narrow width", () => {
     await openMode(page, "Agents");
     await scan(page, "narrow/agents", hits);
     await openMode(page, "Board");
-    await page.getByRole("option", { name: /longtitle/ }).click();
+    await page.getByRole("option", { name: /^longtitle / }).click();
     await openInspector(page);
     await openInspectorTab(page, "Output");
     await scan(page, "narrow/inspector", hits);

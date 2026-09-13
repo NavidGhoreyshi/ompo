@@ -123,6 +123,28 @@ export function describeEvent(e: RunEvent): string {
   return parts.join(" · ");
 }
 
+/**
+ * Statuses whose "on what?" is live information. Terminal states answer with
+ * their outcome (done / reason), so an event line would be stale noise.
+ */
+const LIVE_ACTIVITY_STATUSES = new Set(["running", "verifying", "pending", "blocked", "blocked-env"]);
+
+/**
+ * The newest event text for a slice — the hero line's live fallback, shared by
+ * the dashboard's `RunHeader` and the deck's overlay so the two surfaces cannot
+ * disagree about what "current activity" means. `null` for a terminal status.
+ */
+export function liveSliceEvent(status: string, events: readonly RunEvent[], sliceId: string): string | null {
+  if (!LIVE_ACTIVITY_STATUSES.has(status)) return null;
+  for (let i = events.length - 1; i >= 0; i--) {
+    const e = events[i]!;
+    if (e.sliceId !== sliceId) continue;
+    const text = describeEvent(e).trim();
+    return text ? `${e.type} — ${text}` : e.type;
+  }
+  return null;
+}
+
 /** Case-insensitive substring match across type, lane, slice, payload, seq. */
 export function eventMatchesQuery(e: RunEvent, query: string): boolean {
   const q = query.trim().toLowerCase();

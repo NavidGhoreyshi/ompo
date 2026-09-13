@@ -121,6 +121,7 @@ describe("computeSample", () => {
       triangles: 0,
       lines: 18,
       objects: 1,
+      instances: 0,
       programs: 1,
       textures: 0,
       geometries: 1,

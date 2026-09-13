@@ -58,7 +58,7 @@ export function heroAction(input: {
   lastLine?: string | null;
   lastEvent?: string | null;
   reason?: string | null;
-  deps?: string[];
+  deps?: readonly string[];
 }): string {
   const line = input.lastLine?.trim();
   if (line) return line;

@@ -1,6 +1,6 @@
 import type { AgentRow, RunDetail, RunEvent } from "../api.ts";
 import { formatElapsed, formatTokens } from "../lib/format.ts";
-import { describeEvent } from "../lib/events.ts";
+import { liveSliceEvent } from "../lib/events.ts";
 import { heroAction, preferredSliceId } from "../lib/selection.ts";
 import { StatusSymbol } from "./icons.tsx";
 import { toneForStatus } from "./StatusBadge.tsx";
@@ -31,26 +31,8 @@ export default function RunHeader({
     detail.slices.find((s) => s.id === preferredSliceId(detail.slices)) ??
     null;
   const agent = hero ? agents.find((a) => a.id === hero.id) : undefined;
-  // Latest-event fallback only where "on what?" is live information.
-  // Terminal states answer with the outcome itself (done / reason).
-  const liveState =
-    hero !== null &&
-    (hero.status === "running" ||
-      hero.status === "verifying" ||
-      hero.status === "pending" ||
-      hero.status === "blocked" ||
-      hero.status === "blocked-env");
-  let lastEvent: string | null = null;
-  if (hero && liveState) {
-    for (let i = events.length - 1; i >= 0; i--) {
-      const e = events[i]!;
-      if (e.sliceId === hero.id) {
-        const text = describeEvent(e).trim();
-        lastEvent = text ? `${e.type} — ${text}` : e.type;
-        break;
-      }
-    }
-  }
+  // "On what?" is live information: terminal states answer with the outcome.
+  const lastEvent = hero ? liveSliceEvent(hero.status, events, hero.id) : null;
   const action = hero
     ? heroAction({ status: hero.status, lastLine: agent?.lastLine, lastEvent, reason: hero.reason, deps: hero.deps })
     : null;
