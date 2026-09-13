@@ -3,6 +3,16 @@ import type { SliceSummary } from "../api.ts";
 type SliceLike = Pick<SliceSummary, "id" | "status" | "updatedAt">;
 
 /**
+ * A slice with a worker in flight. One rule for the whole web app: the deck's
+ * live set (`scene/focus.ts`), the live-window tail target (`useLiveStream`)
+ * and the "needs eyes" ranking above all read this function, so the three can
+ * never disagree about which slice is live.
+ */
+export function isLiveStatus(status: string): boolean {
+  return status === "running" || status === "verifying";
+}
+
+/**
  * Browser port of `preferredSel` (src/watch.tsx): the cursor lands on what
  * needs eyes. Rank 0 is live or terminal-failure work (running / verifying /
  * failed), rank 1 is blocked waiting on the operator, rank 2 is done,

@@ -20,6 +20,8 @@ import type { RenderStats } from "./types.ts";
 export const FRAME_RING = 3000;
 /** Event→visible latencies kept per window. */
 export const LATENCY_RING = 512;
+/** Event records kept per window — one slot per possible latency sample. */
+const RECORD_RING = LATENCY_RING;
 /** Pending event timestamps remembered for latency matching. */
 const PENDING_EVENTS = 512;
 /**
@@ -43,6 +45,33 @@ export interface HeapReading {
   reason: string;
 }
 
+/**
+ * Per-stage latency sample sets for one window, split so the gate can attribute
+ * a regression to the pipeline stage that caused it instead of one collapsed
+ * event→visible number. `transport` is measured from the event's own timestamp
+ * (it may have been produced remotely and read later); the other three are
+ * measured from the moment the event was applied to React state. A stage with
+ * no mark is absent from its set — never zero-filled.
+ */
+export interface LatencyStageSamples {
+  transport: number[];
+  dom: number[];
+  model: number[];
+  scene: number[];
+  /** Records that produced at least one stage value. */
+  samples: number;
+}
+
+/** The same split as `LatencyStageSamples`, reduced to percentiles. */
+export interface LatencyStageStats {
+  transport: FrameTimeStats;
+  dom: FrameTimeStats;
+  model: FrameTimeStats;
+  scene: FrameTimeStats;
+  /** Records that produced at least one stage value. */
+  samples: number;
+}
+
 /** One JSON-serialisable sample: what the gate records and the HUD shows. */
 export interface DeckSample {
   at: string;
@@ -62,6 +91,8 @@ export interface DeckSample {
   heap: HeapReading;
   events: { applied: number; perSec: number; markMisses: number };
   latencyMs: FrameTimeStats;
+  /** The same window's event→visible latency, split by pipeline stage. */
+  latencyStages: LatencyStageStats;
   renderer: RenderStats | null;
   loop: FrameLoopStats;
   estimate: { shadedPixels: number; shaderMs: number; basis: string };
@@ -82,6 +113,7 @@ export interface SampleInput {
   heap: HeapReading;
   frameTimes: number[];
   latencies: number[];
+  latencyStages: LatencyStageSamples;
   layouts: number[];
   renderer: RenderStats | null;
   loop: FrameLoopStats;
@@ -118,6 +150,13 @@ export function computeSample(input: SampleInput): DeckSample {
     heap: input.heap,
     events: { applied: input.events, perSec: perSec(input.events), markMisses: input.markMisses },
     latencyMs: frameTimeStats(input.latencies),
+    latencyStages: {
+      transport: frameTimeStats(input.latencyStages.transport),
+      dom: frameTimeStats(input.latencyStages.dom),
+      model: frameTimeStats(input.latencyStages.model),
+      scene: frameTimeStats(input.latencyStages.scene),
+      samples: input.latencyStages.samples,
+    },
     renderer: input.renderer,
     loop: input.loop,
     estimate: {
@@ -156,6 +195,12 @@ export interface Instrumentation {
   noteEvent(seq: number, at: string | number): void;
   /** The derived text for `seq` is now in the document. */
   markEventRendered(seq: number): void;
+  /**
+   * A pipeline stage mark for the current event record: the deck calls this
+   * when its model update lands and when it renders the frame. `dom` is the
+   * third stage and is written by `markEventRendered`.
+   */
+  noteStage(stage: "model" | "scene"): void;
   /** Start counting mutations inside the deck subtree. */
   observeDom(root: Element | null): void;
   setTier(tier: QualityTier): void;
@@ -234,6 +279,80 @@ export function createInstrumentation(deps: InstrumentationDeps = {}): Instrumen
   let detachLongTasks: (() => void) | null = null;
   let domRoot: Element | null = null;
 
+  /**
+   * Event records for the stage split, one slot per `noteEvent`. `at`/`rx` are
+   * always written; a stage stays NaN until it is marked, so a record without
+   * one is absent from that stage's sample set rather than reading as zero.
+   */
+  const recSeq = new Float64Array(RECORD_RING);
+  const recAt = new Float64Array(RECORD_RING);
+  const recRx = new Float64Array(RECORD_RING);
+  const recDom = new Float64Array(RECORD_RING).fill(NaN);
+  const recModel = new Float64Array(RECORD_RING).fill(NaN);
+  const recScene = new Float64Array(RECORD_RING).fill(NaN);
+  let recWrite = 0;
+  let recCount = 0;
+
+  const slotOf = (index: number): number => (recWrite - recCount + index + RECORD_RING) % RECORD_RING;
+  const currentSlot = (): number => (recWrite - 1 + RECORD_RING) % RECORD_RING;
+
+  /**
+   * Opening a record closes the previous one: it keeps the stages already
+   * marked, and only its own `dom` mark (matched by seq) can still land on it.
+   *
+   * Attribution: the deck's model update and frame follow an event causally and
+   * happen before the next event is scripted, so a bare `noteStage` mark
+   * belongs to the newest record. The perf spec scripts one event at a time,
+   * which is what makes that honest; batched events would need an explicit seq.
+   */
+  const openRecord = (seq: number, at: number): void => {
+    const slot = recWrite % RECORD_RING;
+    recSeq[slot] = seq;
+    recAt[slot] = at;
+    recRx[slot] = wallClock();
+    recDom[slot] = NaN;
+    recModel[slot] = NaN;
+    recScene[slot] = NaN;
+    recWrite++;
+    if (recCount < RECORD_RING) recCount++;
+  };
+
+  /** First mark wins: a stage is a single moment, not the last write. */
+  const setStage = (slot: number, target: Float64Array, value: number): void => {
+    if (Number.isFinite(target[slot]!)) return;
+    target[slot] = value;
+  };
+
+  /** `dom` is matched by seq because later events may already have opened. */
+  const markRendered = (seq: number, value: number): void => {
+    for (let i = recCount - 1; i >= 0; i--) {
+      const slot = slotOf(i);
+      if (recSeq[slot] === seq) {
+        setStage(slot, recDom, value);
+        return;
+      }
+    }
+  };
+
+  const stageSamples = (): LatencyStageSamples => {
+    const transport: number[] = [];
+    const dom: number[] = [];
+    const model: number[] = [];
+    const scene: number[] = [];
+    let samples = 0;
+    for (let i = 0; i < recCount; i++) {
+      const slot = slotOf(i);
+      const rx = recRx[slot]!;
+      if (!Number.isFinite(rx)) continue;
+      samples++;
+      transport.push(Math.max(0, rx - recAt[slot]!));
+      if (Number.isFinite(recDom[slot]!)) dom.push(Math.max(0, recDom[slot]! - rx));
+      if (Number.isFinite(recModel[slot]!)) model.push(Math.max(0, recModel[slot]! - rx));
+      if (Number.isFinite(recScene[slot]!)) scene.push(Math.max(0, recScene[slot]! - rx));
+    }
+    return { transport, dom, model, scene, samples };
+  };
+
   const frameTimes = (): number[] => {
     const out: number[] = [];
     for (let i = 0; i < frameCount; i++) out.push(frameRing[(frameWrite - frameCount + i + FRAME_RING) % FRAME_RING]!);
@@ -257,6 +376,7 @@ export function createInstrumentation(deps: InstrumentationDeps = {}): Instrumen
       heap: readHeap(),
       frameTimes: frameTimes(),
       latencies: ring(latencies),
+      latencyStages: stageSamples(),
       layouts: ring(layouts),
       renderer: rendererSource(),
       loop: loopSource(),
@@ -276,6 +396,8 @@ export function createInstrumentation(deps: InstrumentationDeps = {}): Instrumen
     frameWrite = 0;
     latencies.length = 0;
     layouts.length = 0;
+    recWrite = 0;
+    recCount = 0;
   };
 
   return {
@@ -300,6 +422,7 @@ export function createInstrumentation(deps: InstrumentationDeps = {}): Instrumen
       }
       pending.set(seq, stamp);
       pendingAt.push(seq);
+      openRecord(seq, stamp);
     },
     markEventRendered(seq: number): void {
       const stamp = pending.get(seq);
@@ -310,9 +433,16 @@ export function createInstrumentation(deps: InstrumentationDeps = {}): Instrumen
       pending.delete(seq);
       const index = pendingAt.indexOf(seq);
       if (index >= 0) pendingAt.splice(index, 1);
-      latencies.push(Math.max(0, wallClock() - stamp));
+      const renderedAt = wallClock();
+      markRendered(seq, renderedAt);
+      latencies.push(Math.max(0, renderedAt - stamp));
       eventsApplied++;
       if (latencies.length > LATENCY_RING) latencies.shift();
+    },
+    noteStage(stage: "model" | "scene"): void {
+      // Marked before any event: nothing to attribute it to, so it is ignored.
+      if (recWrite === 0) return;
+      setStage(currentSlot(), stage === "model" ? recModel : recScene, wallClock());
     },
     observeDom(root: Element | null): void {
       detachMutations?.();

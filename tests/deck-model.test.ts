@@ -103,6 +103,8 @@ function input(overrides: Partial<DeckInput> = {}): DeckInput {
     events: [event(1, "c")],
     agents: AGENTS,
     selected: null,
+    sliceDetail: null,
+    pinnedId: null,
     prefs: DEFAULT_DECK_PREFS,
     live: true,
     ...overrides,
@@ -302,6 +304,100 @@ describe("buildDeckModel: the world does not reflow", () => {
     }
     // The unknown dependency's ghost column leads every real column.
     expect(x.get("m")!).toBeLessThan(Math.min(...BASE.map((s) => x.get(s.id)!)));
+  });
+});
+
+describe("buildDeckModel: focus, live workers and the station stage (d03)", () => {
+  test("liveIds is the live set in board order, and nodes agree with it", () => {
+    const slices = [slice("p", "pending"), slice("r1", "running"), slice("v", "verifying"), slice("t", "done"), slice("r2", "running")];
+    const model = buildDeckModel(input({ detail: detail(slices) }));
+    expect(model.liveIds).toEqual(["r1", "v", "r2"]);
+    // One rule (`isLiveStatus`) applied in one place: the per-node flag and the
+    // ordered list can never disagree.
+    expect(model.nodes.filter((n) => n.live).map((n) => n.id)).toEqual(model.liveIds);
+  });
+
+  test("focusId is the pin, else the live primary, else the overall primary", () => {
+    const model = buildDeckModel(input());
+    expect(model.focusId).toBe("c"); // the fixture's only live slice
+    expect(buildDeckModel(input({ pinnedId: "e" })).focusId).toBe("e"); // a pin on a pending slice still wins
+    // The live primary is preferredSliceId's answer over live slices…
+    const two = [slice("a", "done"), slice("v", "verifying"), slice("r", "running")];
+    expect(buildDeckModel(input({ detail: detail(two) })).focusId).toBe(preferredSliceId(two.filter((s) => s.status !== "done" && s.status !== "pending")));
+    expect(buildDeckModel(input({ detail: detail(two) })).focusId).toBe("v");
+    // …and with nothing live the focus falls back to the slice that needs eyes.
+    const quiescent = [slice("a", "done"), slice("b", "failed")];
+    expect(buildDeckModel(input({ detail: detail(quiescent) })).focusId).toBe("b");
+  });
+
+  test("the station stage comes from lib/pipeline.ts, and only for live slices", () => {
+    const model = buildDeckModel(input());
+    const node = (id: string): RailNode => model.nodes.find((n) => n.id === id)!;
+
+    // A running worker with no detail: Claim → Generation → Work are observed,
+    // so the stage index is Work even before the shell's detail lands.
+    expect(node("c").stage).toBe(2);
+    expect(node("c").stageLabel).toBe("Work");
+    // A non-live slice has no phase to draw.
+    for (const id of ["a", "b", "d", "f", "g"]) {
+      expect(node(id).stage).toBe(-1);
+      expect(node(id).stageLabel).toBe("");
+    }
+
+    // Verifying with no detail resolves to the Verify stage: the station rises
+    // when a worker hands off, which is the signal the operator reads.
+    const verifying = buildDeckModel(input({ detail: detail([slice("c", "verifying", ["b"])]) }));
+    expect(verifying.nodes.find((n) => n.id === "c")?.stage).toBe(4);
+    expect(verifying.nodes.find((n) => n.id === "c")?.stageLabel).toBe("Verify");
+  });
+
+  test("the shell's slice detail moves the stage on, and only for its own slice", () => {
+    const slices = [slice("c", "verifying", ["b"], { attempts: 1 }), slice("d", "running", ["b"])];
+    const cDetail = {
+      sliceId: "c",
+      title: "Slice c",
+      status: "verifying",
+      attempts: 1,
+      generation: 1,
+      verify: [],
+      deps: ["b"],
+      metrics: { turns: 4, tools: 9, durationMs: 1000 },
+      verdictPass: true,
+      review: { approved: true, findings: [] },
+      recentEvents: [],
+      history: [],
+      artifacts: { report: true, verdict: true, review: true, workerLog: true, prompt: false },
+    };
+    const withDetail = buildDeckModel(input({ detail: detail(slices), sliceDetail: cDetail }));
+    const node = (id: string): RailNode => withDetail.nodes.find((n) => n.id === id)!;
+    expect(node("c").stageLabel).toBe("Review"); // verdict passed + review approved
+    expect(node("d").stageLabel).toBe("Work"); // the detail belongs to `c`, not `d`
+  });
+
+  test("focus and stage are scene-visible, but log text is not", () => {
+    const base = buildDeckModel(input());
+    expect(buildDeckModel(input({ pinnedId: "e" })).digest).not.toBe(base.digest);
+    const proving = buildDeckModel(input({ detail: detail([slice("c", "verifying", ["b"])]) }));
+    expect(proving.digest).not.toBe(base.digest); // the shaft grew a segment
+
+    // A detail that does not change the stage — more transcript, more events —
+    // must leave the renderer's early-out intact (CP-3).
+    const detailOf = (workerTail: string) => ({
+      sliceId: "c",
+      title: "Slice c",
+      status: "running",
+      attempts: 1,
+      generation: 1,
+      verify: [],
+      deps: ["b"],
+      workerTail,
+      recentEvents: [],
+      history: [],
+      artifacts: { report: false, verdict: false, review: false, workerLog: true, prompt: false },
+    });
+    const before = buildDeckModel(input({ sliceDetail: detailOf("one line") }));
+    const after = buildDeckModel(input({ sliceDetail: detailOf("a different line\nand another\n".repeat(50)) }));
+    expect(after.digest).toBe(before.digest);
   });
 });
 

@@ -23,6 +23,7 @@
 import * as THREE from "three";
 import { TIER_BUDGETS, type QualityTier } from "./tier.ts";
 import { cameraPose, gridPlan, PAD_D, PAD_W, RING_MARGIN } from "./rail.ts";
+import { SHAFT_SEGMENTS, shaftSegments } from "./focus.ts";
 import { CAMERA_FOV, type DeckCamera, type DeckModel, type RailNode, type RenderStats } from "./types.ts";
 
 export interface DeckRenderer {
@@ -33,7 +34,7 @@ export interface DeckRenderer {
   setHover(nodeId: string | null): void;
   /** Screen-space pick: NDC in, slice id out (`null` when no pad is there). */
   pick(ndcX: number, ndcY: number): string | null;
-  /** Canvas-relative CSS pixels of a world point (debug/e2e projection). */
+  /** Canvas-relative CSS pixels of a world point, or `null` when it is off screen. */
   project(x: number, y: number, z: number): { x: number; y: number } | null;
   setSize(cssWidth: number, cssHeight: number): void;
   /**
@@ -134,6 +135,27 @@ const MARKER_W = 0.08;
 const MARKER_H = 0.85;
 const MARKER_OFFSET = 0.22;
 
+/**
+ * The focused station's shaft (`d03`): one short box per filled segment, above
+ * the pad. Geometry, not text (CP-3), and instanced into one draw call whose
+ * capacity is fixed at creation — focusing another worker rewrites instances,
+ * it never creates a mesh.
+ */
+const SHAFT_W = 0.2;
+const SHAFT_H = 0.24;
+const SHAFT_GAP = 0.09;
+
+/**
+ * How much a live pad that is *not* the focus recedes. Colour only: height
+ * already encodes status, and dimming a running pad's height would make
+ * "secondary" look like "less alive" — decoration must never overwrite
+ * information.
+ */
+const SECONDARY_DIM = 0.6;
+
+/** Station material per live phase (the pad keeps the roadmap's status colour). */
+const STATION_TOKENS: Record<string, TokenName> = { running: "info", verifying: "warning" };
+
 /** Edges: sampled arcs, dashed by emitting every other segment. */
 const EDGE_SEGMENTS = 8;
 const EDGE_ARC = 0.08;
@@ -205,6 +227,8 @@ export function createDeckRenderer(canvas: HTMLCanvasElement, tier: QualityTier,
   padGeometry.translate(0, 0.5, 0);
   const markerGeometry = new THREE.BoxGeometry(MARKER_W, 1, MARKER_W);
   markerGeometry.translate(0, 0.5, 0);
+  const shaftGeometry = new THREE.BoxGeometry(SHAFT_W, 1, SHAFT_W);
+  shaftGeometry.translate(0, 0.5, 0);
   const surfaceMaterial = new THREE.MeshBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0 });
   const lineMaterial = new THREE.LineBasicMaterial({ vertexColors: true, transparent: true, opacity: 0 });
 
@@ -267,6 +291,7 @@ export function createDeckRenderer(canvas: HTMLCanvasElement, tier: QualityTier,
 
   const pads = createInstances(padGeometry, PAD_CAPACITY);
   const markers = createInstances(markerGeometry, MARKER_CAPACITY);
+  const shaft = createInstances(shaftGeometry, SHAFT_SEGMENTS);
   const edges = createLines(LINE_CAPACITY);
   const outlines = createLines(LINE_CAPACITY);
 
@@ -295,6 +320,7 @@ export function createDeckRenderer(canvas: HTMLCanvasElement, tier: QualityTier,
     fullScreenLayers: 0,
     linePixels: 0,
     shadedPixels: 0,
+    stationSegments: 0,
     fps: 0,
   };
 
@@ -335,9 +361,13 @@ export function createDeckRenderer(canvas: HTMLCanvasElement, tier: QualityTier,
     camera.lookAt(cameraTarget);
   };
 
-  /** Pad colour for a node, with the pointer's highlight folded in. */
-  const padColour = (node: RailNode, out: THREE.Color): THREE.Color => {
+  /**
+   * Pad colour for a node, with the pointer's highlight folded in. A live pad
+   * that is not the focus recedes in colour only (see `SECONDARY_DIM`).
+   */
+  const padColour = (node: RailNode, focusId: string | null, out: THREE.Color): THREE.Color => {
     out.copy(tokens[(PAD_STYLES[node.status] ?? DEFAULT_PAD_STYLE).token]);
+    if (node.live && node.id !== focusId) out.multiplyScalar(SECONDARY_DIM);
     if (node.ghost || node.inCycle) out.multiplyScalar(0.6);
     if (node.id === hoverId) out.lerp(tokens.ring, 0.45);
     return out;
@@ -391,6 +421,7 @@ export function createDeckRenderer(canvas: HTMLCanvasElement, tier: QualityTier,
   const edgeColour = new THREE.Color();
   const outlineColour = new THREE.Color();
   const nodeColour = new THREE.Color();
+  const stationColour = new THREE.Color();
 
   /**
    * Rewrite every rail buffer from `model`. Called on a model change only: the
@@ -401,6 +432,10 @@ export function createDeckRenderer(canvas: HTMLCanvasElement, tier: QualityTier,
   const writeRail = (model: DeckModel): void => {
     const padsNeeded = model.nodes.filter((n) => !n.ghost && !n.inCycle).length;
     const markersNeeded = model.nodes.reduce((sum, n) => sum + (n.alert === null ? 0 : n.alert === "blocked-env" ? 2 : 1), 0);
+    // The focused station: a live slice the operator is being pointed at. One
+    // station in `d03`; `d04` pools the same mesh across live workers.
+    const station = model.nodes.find((n) => n.id === model.focusId && n.live && !n.ghost && !n.inCycle);
+    const segments = station === undefined ? 0 : shaftSegments(station.stage);
     ensureInstances(pads, padGeometry, padsNeeded);
     ensureInstances(markers, markerGeometry, markersNeeded);
     ensureLines(edges, model.edges.length * (EDGE_SEGMENTS / 2 + 1) * 2 + 16);
@@ -408,6 +443,7 @@ export function createDeckRenderer(canvas: HTMLCanvasElement, tier: QualityTier,
 
     pads.count = 0;
     markers.count = 0;
+    shaft.count = 0;
     edges.written = 0;
     outlines.written = 0;
     padIds = [];
@@ -429,9 +465,26 @@ export function createDeckRenderer(canvas: HTMLCanvasElement, tier: QualityTier,
       }
 
       const style = PAD_STYLES[node.status] ?? DEFAULT_PAD_STYLE;
-      padColour(node, nodeColour);
+      padColour(node, model.focusId, nodeColour);
       pushInstance(pads, node.x, 0, node.z, 1, style.height, 1, nodeColour);
       padIds.push(node.id);
+
+      if (node.id === station?.id) {
+        // The shaft: one box per filled segment, stacked from the pad's top.
+        stationColour.copy(tokens[STATION_TOKENS[node.status] ?? "info"]);
+        for (let i = 0; i < segments; i++) {
+          pushInstance(
+            shaft,
+            node.x,
+            style.height + SHAFT_GAP + i * (SHAFT_H + SHAFT_GAP),
+            node.z,
+            1,
+            SHAFT_H,
+            1,
+            stationColour,
+          );
+        }
+      }
 
       if (node.alert !== null) {
         const marker = tokens[node.alert === "failed" ? "destructive" : "warning"];
@@ -477,6 +530,7 @@ export function createDeckRenderer(canvas: HTMLCanvasElement, tier: QualityTier,
 
     finishInstances(pads);
     finishInstances(markers);
+    finishInstances(shaft);
     finishLines(edges);
     finishLines(outlines);
 
@@ -501,9 +555,10 @@ export function createDeckRenderer(canvas: HTMLCanvasElement, tier: QualityTier,
       scene.add(grid);
     }
 
-    stats.instances = pads.count + markers.count;
+    stats.instances = pads.count + markers.count + shaft.count;
+    stats.stationSegments = segments;
     stats.vertices =
-      gridVertices + pads.count * 24 + markers.count * 24 + edges.written + outlines.written + ringGeometry.getAttribute("position").count;
+      gridVertices + pads.count * 24 + markers.count * 24 + shaft.count * 24 + edges.written + outlines.written + ringGeometry.getAttribute("position").count;
     applied = model;
   };
 
@@ -529,7 +584,7 @@ export function createDeckRenderer(canvas: HTMLCanvasElement, tier: QualityTier,
       let index = 0;
       for (const node of applied.nodes) {
         if (node.ghost || node.inCycle) continue;
-        pads.mesh.setColorAt(index, padColour(node, nodeColour));
+        pads.mesh.setColorAt(index, padColour(node, applied.focusId, nodeColour));
         index++;
       }
       if (pads.mesh.instanceColor) pads.mesh.instanceColor.needsUpdate = true;
@@ -550,7 +605,12 @@ export function createDeckRenderer(canvas: HTMLCanvasElement, tier: QualityTier,
     project(x: number, y: number, z: number): { x: number; y: number } | null {
       if (cssWidth <= 0 || cssHeight <= 0) return null;
       projected.set(x, y, z).project(camera);
-      if (projected.z > 1) return null;
+      // `null` means "nothing is drawn there": behind the camera, past the far
+      // plane, or outside the viewport. A pad the operator cannot see must not
+      // report a clickable point (the `d02` hook contract, tightened in `d03`
+      // when the camera started framing one station rather than the whole rail).
+      if (projected.z > 1 || projected.z < -1) return null;
+      if (Math.abs(projected.x) > 1 || Math.abs(projected.y) > 1) return null;
       return {
         x: (projected.x * 0.5 + 0.5) * cssWidth,
         y: (0.5 - projected.y * 0.5) * cssHeight,
@@ -628,17 +688,19 @@ export function createDeckRenderer(canvas: HTMLCanvasElement, tier: QualityTier,
     dispose(): void {
       if (disposed) return;
       disposed = true;
-      scene.remove(grid, pads.mesh, markers.mesh, edges.mesh, outlines.mesh, ring);
+      scene.remove(grid, pads.mesh, markers.mesh, shaft.mesh, edges.mesh, outlines.mesh, ring);
       grid.geometry.dispose();
       gridMaterial.dispose();
       padGeometry.dispose();
       markerGeometry.dispose();
+      shaftGeometry.dispose();
       ringGeometry.dispose();
       ringMaterial.dispose();
       surfaceMaterial.dispose();
       lineMaterial.dispose();
       pads.mesh.dispose();
       markers.mesh.dispose();
+      shaft.mesh.dispose();
       edges.mesh.geometry.dispose();
       outlines.mesh.geometry.dispose();
       renderer.dispose();

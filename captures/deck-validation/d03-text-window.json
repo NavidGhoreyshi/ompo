@@ -1,0 +1,41 @@
+{
+  "generatedAt": "2026-09-13T08:44:49.705Z",
+  "runId": "d03-workflow",
+  "sliceId": "delta",
+  "linesWritten": 1970,
+  "windowMs": 63861,
+  "source": {
+    "name": "worker-1-g0.log",
+    "tailLines": 5,
+    "linesBefore": 100,
+    "focusedBefore": "delta",
+    "digestBefore": "d03-workflow\u0002idle\u0002delta\u0002alpha\u0001failed\u0001failed\u00011000\u0001-1\u0002gamma\u0001skipped\u0001\u00010000\u0001-1\u0002delta\u0001running\u0001\u00010001\u00012\u0002beta\u0001done\u0001\u00010000\u0001-1\u0002alpha→beta\u0001000"
+  },
+  "frames": {
+    "before": 7,
+    "after": 7,
+    "delta": 0
+  },
+  "after": {
+    "focused": "delta",
+    "digest": "d03-workflow\u0002idle\u0002delta\u0002alpha\u0001failed\u0001failed\u00011000\u0001-1\u0002gamma\u0001skipped\u0001\u00010000\u0001-1\u0002delta\u0001running\u0001\u00010001\u00012\u0002beta\u0001done\u0001\u00010000\u0001-1\u0002alpha→beta\u0001000",
+    "liveCount": 1
+  },
+  "window": {
+    "frames": 0,
+    "commits": 19,
+    "commitsPerSec": 0.3,
+    "mutations": 942,
+    "mutationsPerSec": 14.78,
+    "longTasks": {
+      "count": 7,
+      "worstMs": 95
+    },
+    "domElements": 91
+  },
+  "bounded": {
+    "rows": 5,
+    "logLines": 400,
+    "expanded": "false"
+  }
+}

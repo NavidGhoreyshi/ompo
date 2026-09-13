@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef } from "react";
 import type { RunEvent, SliceLane, SliceSummary } from "../api.ts";
+import { isLiveStatus } from "./selection.ts";
 import { alignLineIds, buildLiveStream, compactWindow, type StreamEntry } from "./stream.ts";
 import { useSliceLog } from "./useSliceLog.ts";
 
@@ -35,7 +36,7 @@ export interface LiveStreamState {
  * window.
  */
 export function useLiveStream(runId: string | null, slice: SliceSummary | null, events: RunEvent[]): LiveStreamState {
-  const active = slice !== null && (slice.status === "running" || slice.status === "verifying");
+  const active = slice !== null && isLiveStatus(slice.status);
   const { name, lane, lines, error, loading } = useSliceLog(runId, slice?.id ?? null, active, LIVE_TAIL);
   // Line ordinals are recovered by aligning each poll against the previous
   // one. The ref caches that comparison: read during render (pure), written

@@ -118,6 +118,20 @@ export interface RailNode {
   reason: string | null;
   /** What the pad must encode beyond colour (`d02`: failed / blocked-env). */
   alert: AlertKind | null;
+  /**
+   * A worker is in flight (`isLiveStatus`) — station-pool membership, and the
+   * reason a pad recedes when it is not the focus.
+   */
+  live: boolean;
+  /**
+   * Pipeline stage index for a live slice (`currentStageIndex` over
+   * `buildPipelineStages`), `-1` for a slice with no observed phase or for a
+   * non-live pad. The station's shaft fills one segment per stage step; the
+   * scene reads this number, never the stage names.
+   */
+  stage: number;
+  /** Stage label for the DOM (`buildPipelineStages[stage].label`, "" when none). */
+  stageLabel: string;
 }
 
 /** Alert kinds the scene can draw as of `d02`; `d05` extends this union. */
@@ -157,6 +171,18 @@ export interface DeckModel {
   counts: DeckCounts;
   /** The slice that needs eyes (`preferredSliceId`), independent of selection. */
   primaryId: string | null;
+  /**
+   * Live workers (`liveSliceIds`) in board order — the lane strip, the `[`/`]`
+   * cycle and the HUD's `live: N`. Pads carry the same fact per node; this is
+   * the ordered projection of it, so the overlay never re-derives the order.
+   */
+  liveIds: string[];
+  /**
+   * The worker in front of the operator (`focusTarget`): the pin when one is
+   * set, else the live primary, else the overall primary. `null` on an empty
+   * roadmap; equal to `primaryId` when nothing is pinned and no worker runs.
+   */
+  focusId: string | null;
   /** Extent of `nodes`, for the default framing and the floor grid. */
   bounds: RailBounds;
   /**
@@ -179,6 +205,15 @@ export interface DeckInput {
   events: readonly RunEvent[];
   agents: readonly AgentRow[];
   selected: string | null;
+  /**
+   * The shell's slice detail fetch for the current selection (it is the slice
+   * the Inspector shows). Used for the focused station's stage index when it
+   * belongs to that slice; when it does not, the stage falls back to what the
+   * `SliceSummary` alone can prove. Never fetched or cached here.
+   */
+  sliceDetail: SliceDetail | null;
+  /** The operator's pin (view state): wins over the derived focus target. */
+  pinnedId: string | null;
   prefs: DeckPrefs;
   live: boolean;
 }
@@ -230,6 +265,12 @@ export interface RenderStats {
   linePixels: number;
   /** `pixels × fullScreenLayers + linePixels`. */
   shadedPixels: number;
+  /**
+   * Filled shaft segments of the focused station (`d03`) — 0 when nothing is
+   * framed or the framed slice is not live. Read from the model, so it is
+   * correct before the frame that draws it.
+   */
+  stationSegments: number;
   /** Frames per second actually rendered, refreshed on read (`info()`). */
   fps: number;
 }
@@ -249,13 +290,15 @@ export const DECK_KEYS: DeckKey[] = [
   { key: "T", codes: ["t"], effect: "Cycle quality tier (auto → minimal → standard → high)", slice: "d01" },
   { key: "H / ?", codes: ["h", "?"], effect: "Keymap and budget HUD", slice: "d01" },
   { key: "D", codes: ["d"], effect: "Switch to the dashboard surface", slice: "d01" },
-  { key: "F", codes: ["f"], effect: "Frame the selection (pin)", slice: "d03" },
-  { key: "Esc", codes: ["Escape"], effect: "Release the pin, then close the dock", slice: "d03" },
+  { key: "F", codes: ["f"], effect: "Frame the selection (pin it)", slice: "d03" },
+  { key: "Esc", codes: ["Escape"], effect: "Release the pin, re-follow the primary", slice: "d03" },
   { key: "Space", codes: [" "], effect: "Freeze / resume the live window", slice: "d03" },
   { key: "E", codes: ["e"], effect: "Expand the live window to the raw transcript", slice: "d03" },
-  { key: "C", codes: ["c"], effect: "Cycle camera preset (command → rail → topology)", slice: "d03" },
-  { key: "0", codes: ["0"], effect: "Reset the camera to the preset default", slice: "d03" },
-  { key: "[ / ]", codes: ["[", "]"], effect: "Previous / next live worker", slice: "d04" },
+  { key: "[ / ]", codes: ["[", "]"], effect: "Previous / next live worker", slice: "d03" },
+  { key: "arrow keys", codes: ["ArrowUp", "ArrowDown", "ArrowLeft", "ArrowRight"], effect: "Pan the camera along the floor", slice: "d03" },
+  { key: "wheel / + / -", codes: ["+", "=", "-"], effect: "Zoom the camera", slice: "d03" },
+  { key: "C", codes: ["c"], effect: "Cycle camera preset (command ↔ rail)", slice: "d03" },
+  { key: "0", codes: ["0"], effect: "Reset the camera to the preset's framing", slice: "d03" },
   { key: "1…8", codes: ["1", "2", "3", "4", "5", "6", "7", "8"], effect: "Open the dock on inspector tab N", slice: "d06" },
   { key: "M", codes: ["m"], effect: "Toggle reduced motion", slice: "d09" },
 ];
@@ -283,6 +326,21 @@ export interface DeckDebugHook {
   /** Slice currently selected / under the pointer, as the deck sees them. */
   selected: string | null;
   hover: string | null;
+  /** Focus state (`d03`): the framed worker, the pin, and the frozen window. */
+  focused: string | null;
+  pinned: string | null;
+  frozen: string | null;
+  /** The camera preset the deck is following (`command` | `rail`). */
+  cameraPreset: "command" | "rail";
+  /** Live workers the deck can see (lane strip length, HUD `live: N`). */
+  liveCount: number;
+  /** Camera state last written to the renderer (view state, for the specs). */
+  camera: DeckCamera;
+  /** Filled shaft segments of the focused station (`0` when nothing is framed). */
+  stationSegments: number;
+  /** Rows in the live window and raw lines behind it — the bounded-window evidence. */
+  liveRows: number;
+  logLines: number;
   /**
    * Applied pad positions, `{ id, x, z }` in model order. Allocated per
    * model application (never per frame) so the layout-stability spec can

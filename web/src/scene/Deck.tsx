@@ -16,10 +16,12 @@
  */
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import type { SliceDetail } from "../api.ts";
 import { describeEvent } from "../lib/events.ts";
 import { buildDeckModel } from "./model.ts";
 import DeckOverlay from "./DeckOverlay.tsx";
-import { railFraming } from "./rail.ts";
+import { focusTarget, nextLiveId } from "./focus.ts";
+import { applyCameraIntent, focusIntent, lerpCamera, type CameraIntent } from "./camera.ts";
 import { createFrameLoop, type FrameLoop } from "./loop.ts";
 import { createDeckRenderer, probeRendererString, type DeckRenderer } from "./renderer.ts";
 import { instrument } from "./instrument.ts";
@@ -30,6 +32,7 @@ import {
   DEFAULT_CAMERA,
   DEFAULT_DECK_PREFS,
   parseDeckPrefs,
+  type DeckCamera,
   type DeckDebugHook,
   type DeckModel,
   type DeckPrefs,
@@ -39,7 +42,18 @@ import {
 
 const HUD_MS = 250;
 const RESIZE_DEBOUNCE_MS = 150;
+/** Camera flights are short and rare: one per focus change, never per frame. */
+const CAMERA_LERP_MS = 450;
+/** One arrow key press, in world units; one wheel notch, as a zoom factor. */
+const PAN_STEP = 1.2;
+const ZOOM_STEP = 1.12;
 const TIER_CYCLE: ("auto" | QualityTier)[] = ["auto", "minimal", "standard", "high"];
+/**
+ * The two camera presets this slice owns (`d04` adds `topology`): `command`
+ * frames the focus target, `rail` fits the whole roadmap. Auto-framing only
+ * happens in `command` — an operator who asked for the overview keeps it.
+ */
+export type DeckCameraPreset = "command" | "rail";
 
 interface HudReadout {
   fps: number;
@@ -85,9 +99,9 @@ function sameCompactReadout(a: HudReadout, b: HudReadout): boolean {
   );
 }
 
-/** Bounds identity for "did the world change size?" — pad positions, not equality. */
-function sameBounds(a: RailBounds, b: RailBounds): boolean {
-  return a.width === b.width && a.depth === b.depth && a.centerX === b.centerX && a.centerZ === b.centerZ;
+/** Bounds identity for "did the world change size?" — extent, not equality. */
+function boundsShape(bounds: RailBounds): string {
+  return `${bounds.width},${bounds.depth},${bounds.centerX},${bounds.centerZ}`;
 }
 
 function readPrefs(): DeckPrefs {
@@ -104,6 +118,22 @@ function writePrefs(prefs: DeckPrefs): void {
   } catch {
     // Storage unavailable: the session keeps the in-memory value.
   }
+}
+
+/**
+ * The shell types `sliceDetail` as `SliceDetail | Record<string, unknown>`
+ * because its own state is written by more than one fetch (a failed lookup
+ * stores `{ error }`). The projection may only see a real detail, so the
+ * boundary narrows on the one field it will read.
+ */
+function asSliceDetail(value: DeckProps["sliceDetail"]): SliceDetail | null {
+  if (value === null || typeof value !== "object") return null;
+  if (!("sliceId" in value) || typeof value.sliceId !== "string") return null;
+  // The shell's state is the union of a real fetch and its failure marker; the
+  // `sliceId` check is what separates them, and this is the one place that
+  // trusts the rest of the shape (the model reads only optional fields).
+  const detail = value as SliceDetail;
+  return detail;
 }
 
 /**
@@ -130,6 +160,15 @@ function deckHook(): DeckDebugHook {
       digest: "",
       selected: null,
       hover: null,
+      focused: null,
+      pinned: null,
+      frozen: null,
+      cameraPreset: "command",
+      liveCount: 0,
+      camera: { ...DEFAULT_CAMERA, target: { ...DEFAULT_CAMERA.target } },
+      stationSegments: 0,
+      liveRows: 0,
+      logLines: 0,
       positions: [],
       screenPosition: null,
       instrument,
@@ -138,11 +177,19 @@ function deckHook(): DeckDebugHook {
   return page.__ompoDeck;
 }
 
-export default function Deck({ runId, detail, events, agents, selected, live, onSelect, onExit }: DeckProps) {
+export default function Deck({ runId, detail, events, agents, selected, sliceDetail, live, onSelect, onExit }: DeckProps) {
   const [prefs, setPrefs] = useState<DeckPrefs>(readPrefs);
   const [hudOpen, setHudOpen] = useState(false);
   const [readout, setReadout] = useState<HudReadout | null>(null);
   const [hover, setHover] = useState<string | null>(null);
+  // Deck view state (never persisted, never domain state): the pin that
+  // overrides auto-follow, the frozen live window (keyed to its slice), and
+  // whether the window shows the raw transcript.
+  const [pinnedId, setPinnedId] = useState<string | null>(null);
+  const [frozenId, setFrozenId] = useState<string | null>(null);
+  const [expanded, setExpanded] = useState(false);
+  /** `command` follows the work; `rail` is the operator's whole-run overview. */
+  const [preset, setPreset] = useState<DeckCameraPreset>("command");
   const containerRef = useRef<HTMLDivElement | null>(null);
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const rendererRef = useRef<DeckRenderer | null>(null);
@@ -151,8 +198,14 @@ export default function Deck({ runId, detail, events, agents, selected, live, on
   const lastReadoutRef = useRef<HudReadout | null>(null);
   const sizeRef = useRef({ width: 0, height: 0 });
   const rectRef = useRef<{ left: number; top: number; width: number; height: number } | null>(null);
-  const boundsRef = useRef<RailBounds | null>(null);
   const hoverRef = useRef<string | null>(null);
+  /** The camera as the renderer last received it, and the flight in progress. */
+  const cameraRef = useRef<DeckCamera>(DEFAULT_CAMERA);
+  const tweenRef = useRef<{ from: DeckCamera; to: DeckCamera; startedAt: number; durationMs: number } | null>(null);
+  /** What the last framing decision was about, so it happens once per change. */
+  const framingRef = useRef<{ focusId: string | null; shape: string } | null>(null);
+  /** Set when a model change still owes the scene a frame (the latency stage). */
+  const sceneStagePendingRef = useRef(false);
   const [ready, setReady] = useState(false);
   // A WebGL2 context can still fail to come up (driver crash, context limit);
   // that is the same product state as no WebGL2 at all, not a crashed surface.
@@ -177,8 +230,19 @@ export default function Deck({ runId, detail, events, agents, selected, live, on
   // `agents` and `prefs` are inputs the later slices consume; the rail is a
   // function of `detail` + `selected`, so their churn leaves the digest intact.
   const projected = useMemo(
-    () => buildDeckModel({ runId, detail, events, agents, selected, prefs, live }),
-    [runId, detail, events, agents, selected, prefs, live],
+    () =>
+      buildDeckModel({
+        runId,
+        detail,
+        events,
+        agents,
+        selected,
+        sliceDetail: asSliceDetail(sliceDetail),
+        pinnedId,
+        prefs,
+        live,
+      }),
+    [runId, detail, events, agents, selected, sliceDetail, pinnedId, prefs, live],
   );
   const lastModelRef = useRef<DeckModel | null>(null);
   // A run switch that is still loading keeps the previous pads on the floor
@@ -193,6 +257,8 @@ export default function Deck({ runId, detail, events, agents, selected, live, on
           edges: lastModelRef.current.edges,
           counts: lastModelRef.current.counts,
           primaryId: lastModelRef.current.primaryId,
+          liveIds: lastModelRef.current.liveIds,
+          focusId: lastModelRef.current.focusId,
           bounds: lastModelRef.current.bounds,
           digest: lastModelRef.current.digest,
         }
@@ -217,18 +283,56 @@ export default function Deck({ runId, detail, events, agents, selected, live, on
     instrument.markEventRendered(seq);
   }, []);
 
-  /**
-   * The camera frames the rail when the world's extent changes (a slice was
-   * added, the run was replaced) — never per frame, and never because a status
-   * moved. Pad positions do not depend on this.
-   */
-  const frameRail = useCallback((renderer: DeckRenderer, next: DeckModel): void => {
-    const previous = boundsRef.current;
-    if (previous && sameBounds(previous, next.bounds)) return;
-    boundsRef.current = next.bounds;
+  /** Canvas aspect, from the last measured size; 1 before the first layout. */
+  const aspect = useCallback((): number => {
     const size = sizeRef.current;
-    renderer.setCamera(railFraming(next.bounds, size.height > 0 ? size.width / size.height : 1));
+    return size.height > 0 ? size.width / size.height : 1;
   }, []);
+
+  /** Write a camera state through to the renderer and publish it to the hook. */
+  const applyCamera = useCallback((renderer: DeckRenderer, next: DeckCamera): void => {
+    cameraRef.current = next;
+    renderer.setCamera(next);
+    const hook = deckHook();
+    hook.camera = { ...next, target: { ...next.target } };
+  }, []);
+
+  /**
+   * Apply an intent. Framing intents (`focus`/`rail`) fly for ≤ 450 ms unless
+   * motion is reduced; direct-manipulation intents (pan/zoom/orbit) land at
+   * once, because a lag between the wheel and the world reads as a bug.
+   */
+  const dispatchCamera = useCallback(
+    (intent: CameraIntent, immediate = false): void => {
+      const renderer = rendererRef.current;
+      if (!renderer) return;
+      const to = applyCameraIntent(cameraRef.current, intent);
+      if (immediate || reducedMotion) {
+        tweenRef.current = null;
+        applyCamera(renderer, to);
+      } else {
+        tweenRef.current = { from: cameraRef.current, to, startedAt: performance.now(), durationMs: CAMERA_LERP_MS };
+      }
+      loopRef.current?.request();
+    },
+    [applyCamera, reducedMotion],
+  );
+
+  /** Frame one slice id, from the model's own node list. */
+  const frameSlice = useCallback(
+    (sliceId: string | null, immediate = false): void => {
+      dispatchCamera(focusIntent({ focusId: sliceId, nodes: modelRef.current.nodes, bounds: modelRef.current.bounds }, aspect()), immediate);
+    },
+    [aspect, dispatchCamera],
+  );
+
+  /** Frame a preset: `rail` fits the roadmap, `command` the focus target. */
+  const framePreset = useCallback(
+    (next: DeckCameraPreset, immediate = false): void => {
+      frameSlice(next === "rail" ? null : modelRef.current.focusId, immediate);
+    },
+    [frameSlice],
+  );
 
   /** Write a model into the scene and publish it to the debug hook. */
   const applyToScene = useCallback(
@@ -239,12 +343,18 @@ export default function Deck({ runId, detail, events, agents, selected, live, on
       hook.edges = next.edges.length;
       hook.digest = next.digest;
       hook.selected = next.nodes.find((node) => node.selected)?.id ?? null;
-      hook.instances = renderer.info().instances;
+      hook.focused = next.focusId;
+      hook.liveCount = next.liveIds.length;
+      const info = renderer.info();
+      hook.instances = info.instances;
+      hook.stationSegments = info.stationSegments;
       hook.positions = next.nodes.map((node) => ({ id: node.id, x: node.x, z: node.z }));
-      frameRail(renderer, next);
+      // The model reached the scene; the frame that draws it is the scene stage.
+      instrument.noteStage("model");
+      sceneStagePendingRef.current = true;
       loopRef.current?.request();
     },
-    [frameRail],
+    [],
   );
 
   // Size first: a zero-size container gets no renderer at all (a 0-width
@@ -306,6 +416,15 @@ export default function Deck({ runId, detail, events, agents, selected, live, on
     const onFrame = (): void => {
       const active = rendererRef.current;
       if (!active) return;
+      // Advance any camera flight before drawing, so the frame that is about to
+      // be rendered is the frame the camera is in. When it lands, `isDirty()`
+      // goes false and the loop stops scheduling — no per-frame camera work.
+      const tween = tweenRef.current;
+      if (tween) {
+        const t = Math.min(1, (performance.now() - tween.startedAt) / tween.durationMs);
+        applyCamera(active, lerpCamera(tween.from, tween.to, t * t * (3 - 2 * t)));
+        if (t >= 1) tweenRef.current = null;
+      }
       const started = performance.now();
       const stats = active.render();
       instrument.recordFrame(performance.now() - started);
@@ -315,20 +434,31 @@ export default function Deck({ runId, detail, events, agents, selected, live, on
       hook.triangles = stats.triangles;
       hook.vertices = stats.vertices;
       hook.pixels = stats.pixels;
+      // The scene stage of the event pipeline: the first frame that draws a
+      // changed model. Attribution is per event record (instrument.ts).
+      if (sceneStagePendingRef.current) {
+        sceneStagePendingRef.current = false;
+        instrument.noteStage("scene");
+      }
     };
     const loop = createFrameLoop({
       onFrame,
       maxFps: budget.maxFps,
-      isDirty: () => renderer.animating(),
+      isDirty: () => renderer.animating() || tweenRef.current !== null,
     });
 
     rendererRef.current = renderer;
     loopRef.current = loop;
     renderer.setCamera(DEFAULT_CAMERA);
+    cameraRef.current = DEFAULT_CAMERA;
     // Mount order: the renderer exists after the size effect's state update, so
     // the model is applied here as well as from the model effect below.
     applyToScene(renderer, modelRef.current);
     renderer.setSize(size.width, size.height);
+    // First paint frames the focus target (or the rail) immediately: an
+    // animated first approach would be motion the operator did not ask for.
+    frameSlice(modelRef.current.focusId, true);
+    framingRef.current = { focusId: modelRef.current.focusId, shape: boundsShape(modelRef.current.bounds) };
     hook.screenPosition = (id: string) => {
       const node = modelRef.current.nodes.find((candidate) => candidate.id === id);
       const active = rendererRef.current;
@@ -365,6 +495,58 @@ export default function Deck({ runId, detail, events, agents, selected, live, on
     if (!renderer) return;
     applyToScene(renderer, model);
   }, [model, applyToScene]);
+
+  /**
+   * The camera policy — the only place that decides a framing without the
+   * operator asking for one:
+   *
+   *  - the focus target moved → `command` framing on it, **unless** a pin is
+   *    set (a pin exists exactly to stop the camera following the work);
+   *  - nothing is focused and the rail's extent changed → `rail` framing, so a
+   *    quiescent run is readable from the first frame;
+   *  - nothing else moves the camera. Not an event, not a status change, not a
+   *    hover, not a log line.
+   */
+  useEffect(() => {
+    const previous = framingRef.current;
+    const next = { focusId: model.focusId, shape: boundsShape(model.bounds) };
+    framingRef.current = next;
+    // `rail` is the operator's explicit overview: nothing re-frames it.
+    if (previous === null || preset !== "command") return;
+    if (pinnedId !== null) return;
+    if (previous.focusId !== next.focusId) {
+      frameSlice(next.focusId);
+    } else if (next.focusId === null && previous.shape !== next.shape) {
+      frameSlice(null);
+    }
+  }, [model, pinnedId, preset, frameSlice]);
+
+  // The pin and the freeze are view state the specs read back: publish them,
+  // and clear a freeze whose slice is no longer the one on screen (a frozen
+  // window must never describe another worker's output).
+  useEffect(() => {
+    deckHook().pinned = pinnedId;
+  }, [pinnedId]);
+
+  useEffect(() => {
+    deckHook().cameraPreset = preset;
+  }, [preset]);
+
+  useEffect(() => {
+    if (frozenId !== null && frozenId !== model.focusId) {
+      setFrozenId(null);
+      return;
+    }
+    deckHook().frozen = frozenId;
+  }, [frozenId, model.focusId]);
+
+  // A different run is a different world: the pin, the freeze and the window's
+  // expansion are per-run view state, so they start clean.
+  useEffect(() => {
+    setPinnedId(null);
+    setFrozenId(null);
+    setExpanded(false);
+  }, [runId]);
 
   // Tier changes are parameters: resolution scale, fps cap and the tier label,
   // applied to the live renderer and loop.
@@ -432,9 +614,18 @@ export default function Deck({ runId, detail, events, agents, selected, live, on
   }, [ready, rendererString, hudOpen]);
 
   // Every commit of the deck subtree, counted where React schedules it. The
-  // HUD's 4 Hz tick is the only thing here that commits on a timer.
+  // HUD's 4 Hz tick is the only thing here that commits on a timer. The live
+  // window's row/line counts are read from the DOM the operator is looking at
+  // (the component publishes them as data attributes) — that is the bounded
+  // window's evidence, and it cannot disagree with what was rendered.
   useEffect(() => {
     instrument.recordCommit();
+    const live = containerRef.current?.querySelector(".omp-livefeed");
+    if (live) {
+      const hook = deckHook();
+      hook.liveRows = Number(live.getAttribute("data-rows") ?? 0);
+      hook.logLines = Number(live.getAttribute("data-lines") ?? 0);
+    }
   });
 
   /** Raycast through the cached canvas rect: pad id under a client point. */
@@ -476,15 +667,44 @@ export default function Deck({ runId, detail, events, agents, selected, live, on
     [onSelect, pickAt],
   );
 
+  /**
+   * Point the deck at one worker: the pin (so auto-follow stops), the shared
+   * selection (the dashboard's Inspector and the shell's slice-detail fetch
+   * follow it, which is what gives the station its stage), and the framing.
+   */
+  const focusOn = useCallback(
+    (sliceId: string): void => {
+      setPinnedId(sliceId);
+      onSelect(sliceId);
+      frameSlice(sliceId);
+    },
+    [frameSlice, onSelect],
+  );
+
   // Keys live on the surface, not the window: focus inside the deck is the
   // gate, and text inputs are never hijacked.
   const onKeyDown = useCallback(
     (event: React.KeyboardEvent<HTMLDivElement>) => {
       if (event.target instanceof HTMLElement) {
         const tag = event.target.tagName;
-        if (event.target.isContentEditable || tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT") return;
+        // Never hijack a control that answers the key itself (the mirror rows,
+        // the HUD buttons, the window's freeze/resume) or a text field.
+        if (event.target.isContentEditable || tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT" || tag === "BUTTON" || tag === "A") {
+          return;
+        }
       }
       const key = event.key.toLowerCase();
+      const model = modelRef.current;
+      // Inside the window's transcript (or a scrolling list) the scrolling keys
+      // belong to that element: an operator reading back through the log must
+      // be able to move it, while the deck's own keys still work.
+      if (
+        event.target instanceof Element &&
+        event.target.closest(".omp-livefeed-log, .omp-deck-lanes, .omp-deck-mirror") !== null &&
+        /^(Arrow|Page|Home|End| )/.test(event.key)
+      ) {
+        return;
+      }
       if (key === "t") {
         const current = TIER_CYCLE.indexOf(prefs.tier);
         const next = TIER_CYCLE[(current + 1) % TIER_CYCLE.length]!;
@@ -495,13 +715,62 @@ export default function Deck({ runId, detail, events, agents, selected, live, on
         onExit();
       } else if (key === "h" || event.key === "?") {
         setHudOpen((open) => !open);
+      } else if (key === "f") {
+        // Frame the selection — the operator's explicit "watch this one".
+        const target = model.nodes.find((node) => node.selected)?.id ?? model.focusId;
+        if (target !== null) focusOn(target);
+      } else if (event.key === "Escape") {
+        // Release the pin: follow the primary again, from wherever we are.
+        setPinnedId(null);
+        setPreset("command");
+        frameSlice(focusTarget(detail?.slices ?? [], null));
+      } else if (event.key === " ") {
+        const target = model.focusId;
+        if (target !== null) setFrozenId((current) => (current === target ? null : target));
+      } else if (key === "e") {
+        setExpanded((open) => !open);
+      } else if (key === "c") {
+        // `command` ↔ `rail`: the operator's whole-run overview is one key away,
+        // and `command` puts the camera back on the work.
+        const next: DeckCameraPreset = preset === "command" ? "rail" : "command";
+        setPreset(next);
+        framePreset(next);
+      } else if (event.key === "0") {
+        framePreset(preset);
+      } else if (event.key === "[" || event.key === "]") {
+        const next = nextLiveId(model.liveIds, model.focusId, event.key === "]" ? 1 : -1);
+        if (next !== null) focusOn(next);
+      } else if (event.key.startsWith("Arrow")) {
+        const step = event.shiftKey ? PAN_STEP * 3 : PAN_STEP;
+        const right = event.key === "ArrowRight" ? step : event.key === "ArrowLeft" ? -step : 0;
+        const forward = event.key === "ArrowUp" ? step : event.key === "ArrowDown" ? -step : 0;
+        dispatchCamera({ kind: "pan", right, forward }, true);
+      } else if (key === "+" || key === "=" || key === "-") {
+        dispatchCamera({ kind: "zoom", factor: key === "-" ? 1 / ZOOM_STEP : ZOOM_STEP }, true);
       } else {
         return;
       }
       event.preventDefault();
     },
-    [onExit, prefs],
+    [detail, dispatchCamera, focusOn, framePreset, frameSlice, onExit, prefs, preset],
   );
+
+  // Wheel zoom is a native listener: React's synthetic wheel events are
+  // passive at the root, so `preventDefault` there would not stop the page
+  // from scrolling behind the surface.
+  useEffect(() => {
+    const container = containerRef.current;
+    if (!container) return;
+    const onWheel = (event: WheelEvent): void => {
+      // The transcript and the lane list scroll themselves; only the empty
+      // scene area zooms.
+      if (event.target instanceof Element && event.target.closest(".omp-livefeed-log, .omp-deck-lanes, .omp-deck-mirror") !== null) return;
+      event.preventDefault();
+      dispatchCamera({ kind: "zoom", factor: event.deltaY > 0 ? ZOOM_STEP : 1 / ZOOM_STEP }, true);
+    };
+    container.addEventListener("wheel", onWheel, { passive: false });
+    return () => container.removeEventListener("wheel", onWheel);
+  }, [dispatchCamera]);
 
   useEffect(() => {
     const container = containerRef.current;
@@ -509,14 +778,31 @@ export default function Deck({ runId, detail, events, agents, selected, live, on
   }, []);
 
   if (rendererString === null || contextFailed) {
+    // No scene: the deck's information layer is DOM anyway (station line, live
+    // workers, the bounded window), so the operator keeps the part that answers
+    // questions and loses only the spatial overview (`d09` builds the full flat
+    // projection on this contract, including the pad list).
     return (
-      <section className="omp-deck omp-deck-flat" aria-label="Deck">
+      <section className="omp-deck omp-deck-flat" aria-label="Deck" ref={containerCallback} tabIndex={-1} onKeyDown={onKeyDown} data-tier="flat">
         <div className="omp-deck-notice" role="status">
-          <p>3D unavailable on this device — the dashboard has everything.</p>
+          <p>3D unavailable on this device — the spatial overview is off; the live deck below still works, and the dashboard has everything else.</p>
           <button type="button" className="omp-deck-button" onClick={onExit}>
             Back to dashboard
           </button>
         </div>
+        <DeckOverlay
+          model={model}
+          hoverId={hover}
+          agents={agents}
+          events={events}
+          focusSlice={detail?.slices.find((slice) => slice.id === model.focusId) ?? null}
+          frozen={frozenId !== null}
+          onFrozenChange={(next) => setFrozenId(next ? (model.focusId ?? null) : null)}
+          expanded={expanded}
+          onExpandedChange={setExpanded}
+          onFocus={focusOn}
+          onSelect={onSelect}
+        />
       </section>
     );
   }
@@ -542,7 +828,19 @@ export default function Deck({ runId, detail, events, agents, selected, live, on
         onPointerLeave={onPointerLeave}
         onPointerDown={onPointerDown}
       />
-      <DeckOverlay model={model} hoverId={hover} agents={agents} events={events} onSelect={onSelect} />
+      <DeckOverlay
+        model={model}
+        hoverId={hover}
+        agents={agents}
+        events={events}
+        focusSlice={detail?.slices.find((slice) => slice.id === model.focusId) ?? null}
+        frozen={frozenId !== null}
+        onFrozenChange={(next) => setFrozenId(next ? (model.focusId ?? null) : null)}
+        expanded={expanded}
+        onExpandedChange={setExpanded}
+        onFocus={focusOn}
+        onSelect={onSelect}
+      />
       <div className="omp-deck-hud">
         <div className="omp-deck-row">
           <span className="omp-deck-chip" data-tier={tier}>
@@ -562,6 +860,10 @@ export default function Deck({ runId, detail, events, agents, selected, live, on
           <span className="omp-deck-metric">run {runId ?? "none"}</span>
           <span className="omp-deck-metric" data-live={live ? "true" : "false"}>
             {live ? "live" : "quiescent"}
+          </span>
+          <span className="omp-deck-metric" data-live-count={model.liveIds.length}>
+            live: {model.liveIds.length} · showing {model.focusId ?? "—"}
+            {pinnedId !== null ? ` · pinned` : ""}
           </span>
           {lastEvent && (
             <span className="omp-deck-event" ref={(element) => markRendered(element, lastEvent.seq)}>

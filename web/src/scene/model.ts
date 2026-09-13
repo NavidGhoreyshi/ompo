@@ -18,8 +18,11 @@
  */
 
 import { depSatisfied, layoutDag } from "../lib/dag.ts";
-import { preferredSliceId } from "../lib/selection.ts";
+import { buildPipelineStages, currentStageIndex } from "../lib/pipeline.ts";
+import { isLiveStatus, preferredSliceId } from "../lib/selection.ts";
+import { focusTarget, liveSliceIds } from "./focus.ts";
 import { railBounds, railPositions } from "./rail.ts";
+import type { SliceDetail, SliceSummary } from "../api.ts";
 import type {
   AlertKind,
   DeckCounts,
@@ -48,14 +51,24 @@ function alertFor(status: string): AlertKind | null {
  * consumes, in model order, with positions omitted because they are a pure
  * function of the ids. Changing an event, a worker row or the log text cannot
  * change this string — which is how "text never touches the render loop"
- * (CP-3) becomes observable rather than aspirational.
+ * (CP-3) becomes observable rather than aspirational. Focus and the station's
+ * stage are in it because the shaft and the secondary dimming are drawn from
+ * them; the stage *label* is not, because the scene never draws text, and
+ * neither are `attempts`/`generation`, which the scene never reads either (a
+ * handoff that only bumps a counter must cost the GPU nothing).
  */
-function digestOf(runId: string | null, live: boolean, nodes: RailNode[], edges: RailEdge[]): string {
-  const parts: string[] = [runId ?? "", live ? "live" : "idle"];
+function digestOf(
+  runId: string | null,
+  live: boolean,
+  focusId: string | null,
+  nodes: RailNode[],
+  edges: RailEdge[],
+): string {
+  const parts: string[] = [runId ?? "", live ? "live" : "idle", focusId ?? ""];
   for (const n of nodes) {
     parts.push(
-      `${n.id}\u0001${n.status}\u0001${n.attempts}\u0001${n.generation}\u0001${n.alert ?? ""}\u0001` +
-        `${n.selected ? 1 : 0}${n.ghost ? 1 : 0}${n.inCycle ? 1 : 0}`,
+      `${n.id}\u0001${n.status}\u0001${n.alert ?? ""}\u0001` +
+        `${n.selected ? 1 : 0}${n.ghost ? 1 : 0}${n.inCycle ? 1 : 0}${n.live ? 1 : 0}\u0001${n.stage}`,
     );
   }
   for (const e of edges) {
@@ -74,9 +87,24 @@ function emptyModel(runId: string | null, live: boolean): DeckModel {
     edges: [],
     counts: { ...ZERO_COUNTS },
     primaryId: null,
+    liveIds: [],
+    focusId: null,
     bounds: railBounds([]),
     digest: `${runId ?? ""}\u0002loading`,
   };
+}
+
+/**
+ * A live slice's pipeline stage, from the DTOs: `buildPipelineStages` +
+ * `currentStageIndex` in `lib/pipeline.ts` — the same derivation the hero rail
+ * and the inspector checklist draw. The stage is read only for live slices;
+ * a terminal pad's phase is its status, and giving it a shaft would be noise.
+ */
+function stageFor(slice: SliceSummary, detail: SliceDetail | null): { stage: number; label: string } {
+  if (!isLiveStatus(slice.status)) return { stage: -1, label: "" };
+  const stages = buildPipelineStages(slice, detail);
+  const stage = currentStageIndex(stages);
+  return { stage, label: stage >= 0 ? (stages[stage]?.label ?? "") : "" };
 }
 
 /**
@@ -97,10 +125,14 @@ export function buildDeckModel(input: DeckInput): DeckModel {
   const positions = railPositions(layout);
   const byId = new Map(slices.map((s) => [s.id, s]));
   const cycleIds = new Set(layout.cycleIds);
+  // The shell fetches slice detail for the *selection*; it is used for nothing
+  // but the stage index, and only for the slice it actually belongs to.
+  const sliceDetail = input.sliceDetail;
 
   const nodes: RailNode[] = layout.nodes.map((n) => {
     const slice = byId.get(n.id);
     const position = positions.get(n.id) ?? { x: 0, y: 0, z: 0 };
+    const stage = slice ? stageFor(slice, sliceDetail?.sliceId === n.id ? sliceDetail : null) : { stage: -1, label: "" };
     return {
       id: n.id,
       title: n.title,
@@ -119,6 +151,9 @@ export function buildDeckModel(input: DeckInput): DeckModel {
       inCycle: cycleIds.has(n.id),
       reason: slice?.reason ?? null,
       alert: alertFor(n.status),
+      live: isLiveStatus(n.status),
+      stage: stage.stage,
+      stageLabel: stage.label,
     };
   });
 
@@ -139,6 +174,8 @@ export function buildDeckModel(input: DeckInput): DeckModel {
     }
   }
 
+  const pinnedId = input.pinnedId ?? null;
+  const focusId = focusTarget(slices, pinnedId);
   return {
     runId: detail.runId,
     live: input.live,
@@ -147,7 +184,9 @@ export function buildDeckModel(input: DeckInput): DeckModel {
     edges,
     counts: { ...detail.counts },
     primaryId: preferredSliceId(slices),
+    liveIds: liveSliceIds(slices),
+    focusId,
     bounds: railBounds(positions.values()),
-    digest: digestOf(detail.runId, input.live, nodes, edges),
+    digest: digestOf(detail.runId, input.live, focusId, nodes, edges),
   };
 }

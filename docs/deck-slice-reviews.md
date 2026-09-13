@@ -304,3 +304,286 @@ viewport. `railFraming` now fits the rail's box in the camera's own basis (`rail
 | Draw calls ≤ 8 at 24 slices; no buffer rebuild on selection change | ✔ 6 calls (fixture and real run), `geometries` 6→6 and `instances` 12→12 across selection changes |
 | `bun test`, `bunx tsc --noEmit`, `git diff --check`, `bun run test:e2e` clean | ✔ 670 unit tests, 32 e2e tests |
 | M1 duplication scan passes (no second derivation) | ✔ release gate green; `model.ts` reuses `layoutDag`/`preferredSliceId`/`depSatisfied`, and the deck↔dashboard DAG parity is asserted in the e2e |
+
+---
+
+## d03 — active-worker focus and the bounded live window
+
+The running worker becomes the object the deck points at: the camera frames it (`command` framing),
+its pad carries a stage shaft, the lane strip lists every live worker, and its real transcript runs
+in a bounded DOM window that the operator can hold (`Space`), expand to the raw tail (`E`) and step
+between workers (`[`/`]`) — all without the render loop ever seeing a log line.
+
+This is also the slice where the roadmap's first product question gets a measured answer rather than
+a design intention: **does putting the active worker and its live activity into this spatial
+representation improve the operator's experience?** The evidence below is organised the way the
+brief asked for it (focus, churn, latency attribution, retention, degradation, wins/losses), and it
+ends with a verdict and the deployment question ("what would a polished 2D dashboard lose?").
+
+Reproduce everything below with:
+
+```bash
+bun run web:build
+bunx playwright test tests/e2e/deck.e2e.ts --reporter=list --workers=1                       # fixture surface, focus, window, degradation
+DECK_IDLE_MS=20000 bunx playwright test tests/e2e/deck.e2e.ts -g "idle deck" --reporter=list --workers=1
+bunx playwright test tests/e2e/deck-workflow.e2e.ts --reporter=list --workers=1              # a real run: 8 workflow steps + the 60 s M6 window
+bun test tests/deck-focus.test.ts tests/deck-model.test.ts tests/deck-churn.test.ts tests/deck-instrument.test.ts
+bun run test:e2e                                                                              # all surfaces, parallel
+```
+
+Raw artifacts: `captures/deck-validation/d03-workflow.json` (per-step numbers, churn, latency
+stages), `captures/deck-validation/d03-text-window.json` (the 60 s log-volume window),
+`captures/deck-d03-workflow.png` (the real run, full page).
+
+### Bundle
+
+| Artifact | d02 | d03 | Δ |
+|---|---|---|---|
+| `assets/Deck-*.js` (the deck + `three`) | 557.71 kB / 142.08 kB gzip | 566.64 kB / 145.05 kB gzip | **+8.9 kB / +3.0 kB gzip** |
+| `assets/index-*.js` (the dashboard shell) | 453.25 kB / 136.59 kB gzip | 455.25 kB / 137.36 kB gzip | +2.0 kB (the `LiveFeed` freeze/expand props and the shared live-status rule) |
+| `assets/index-*.css` | 82.42 kB / 14.86 kB gzip | 85.61 kB / 15.24 kB gzip | +3.2 kB (station line, lane strip, docked window, flat mode) |
+
+The deck's own cost is one pure focus module, one pure camera module, the station shaft, and the DOM
+layer of the window. The dashboard's chunk grows only where it had to (`LiveFeed` gained four
+optional props so the deck could drive it instead of forking it; `isLiveStatus` moved into
+`lib/selection.ts` so the live set has one rule).
+
+### 1. The active worker as the primary object (brief §1)
+
+The work is real, not an animation: `tests/e2e/deck-workflow.e2e.ts` creates a run in a throwaway
+project, drives it through `storeApi` (`claimSlice`, `recordHandoff`, `workerFinished`,
+`verifyFailed`, `verifyPassed`) while the page is open, and writes worker transcripts with the real
+progress formatter (`formatProgressLine`). Step 1 of that run:
+
+| Property | Measured |
+|---|---|
+| focused slice (derived, unpinned) | the live primary — `window.__ompoDeck.focused` = `alpha`, and the only `.omp-deck-lane[data-focused="true"]` |
+| awareness of the others | `liveCount` 1 · lane strip = every live worker (3 on the fixture run) |
+| station on screen, dead centre | `screenPosition("longtitle")` = (612, 399) in a 1224 × 778 canvas, camera target = the station's own `(x, z)`, distance 10.22 |
+| the station is the distinctive object | pad + shaft: 14 instances = 9 pads + 3 markers + **2 shaft segments** (`stationSegments`); the station's stage comes from `buildPipelineStages`/`currentStageIndex` |
+| focus switch is immediate | `]` → `focused` changes, then **6 frames** (p50 0.7 ms, p95 9.3 ms) to the painted result; `geometries` 7→7 and draw calls unchanged |
+| the overview is one key away | `C` → rail preset, 9/9 pads on screen (command framing keeps 8/9: the framing carries context, it is not an exclusive view) |
+
+That last row is the honest shape of `command` framing: it aims the camera at the worker and puts the
+shaft on it, but with `LIVE_FRAME_UNITS = 8` (the roadmap's "station plus an 8-unit margin") most of
+the rail stays in frame. It reads as "the worker, in its place", not as "the worker alone" — which is
+the trade the roadmap asked for, and the reason a rail preset exists at all.
+
+### 2. The bounded live window under churn (brief §3)
+
+The window is the dashboard's own `LiveFeed` with the deck driving `expanded`/`frozen`; the tail is
+the server's 400-line cap (`LIVE_TAIL`). What it costs, at the caps and beyond them:
+
+| Test | Input | Result |
+|---|---|---|
+| `deck-churn-100k` | 100 000 events **and** 100 000 transcript lines handed to `buildLiveStream` | compact window = **5 rows**; derivation 0.8 s (linear in the rows given) |
+| `deck-churn-capped` | the real caps: 400 events, 400 lines | compact = 5 rows, **2.9 ms** |
+| `deck-churn-model` | 100 000 events in `DeckInput.events` | digest and nodes **byte-identical** to the empty array; 0.3 ms |
+| `deck-churn-store` | a 100 000-event `events.jsonl` | `readEvents` 249 ms per call — the *server's* cost per SSE tick, not the deck's |
+| workflow step 2 | handoff + 30 transcript lines in 3 bursts | `frames` 5 → 5 (**zero** for the text), rows changed, window stayed 5 |
+| workflow step 7 | 420 transcript lines + 50 real control events | compact 5 rows, expanded 400, `domElements` 214 → 90 (**ratio 0.42**, no growth) |
+| workflow M6 | **2 038 lines over 63 s**, tail polled every 2 s | `frames` **0**, commits 18 (0.29/s), mutations 940 (14.95/s), long tasks 1 (73 ms), `domElements` 90 flat, rows 5, `logLines` 400 |
+
+The three answers the brief demanded, stated as they are rather than as headlines:
+
+- **The default window stays bounded.** 5 meaningful rows, always; the expanded view is the raw tail
+  (≤ 400 lines, server cap 500), and 2 038 incoming lines never increased the DOM.
+- **Old output can be deliberately inspected**: the raw tail the dashboard's Inspector reads, with
+  freeze (`Space` → `frozen — N new rows`, N counted from the stream since the hold), expand (`E`),
+  scroll, and `Jump to live` to resume following.
+- **100 000 events do not reach the browser.** The transport is a `seq` cursor, the shell keeps the
+  last 400 events, and the window keeps 5 rows — measured, not assumed. The *derivation* is linear
+  in whatever it is handed (0.8 s for 100 000 rows); the caps are what keep that path away, and the
+  honest ceiling this measurement exposes is the **server's** whole-log read (249 ms per tick at
+  100 000 events against a 900 ms poll).
+
+### 3. Event → visible latency, attributed (brief §4)
+
+The instrument now splits one collapsed number into four stages: `transport` (the event's own
+timestamp → applied to React state), then `dom`, `model` and `scene`, each measured from application
+(`instrument.snapshot().latencyStages`). Same event, four stages, p50:
+
+| Window | transport | dom | model | scene | records |
+|---|---|---|---|---|---|
+| workflow step 1 (first event after page load) | 2 733 ms | 34 ms | 91 ms | 137 ms | 4 |
+| workflow step 2 (handoff + 30 lines) | 197 ms | 41 ms | — (digest unchanged) | — | 1 |
+| workflow step 3 (`worker_finished`) | 203 ms | 26 ms | 84 ms | 113 ms | 1 |
+| workflow step 4 (terminal failure) | 840 ms | 24 ms | 89 ms | 138 ms | 1 |
+| workflow step 7 (50 controls + 420 lines) | 379 ms | 27 ms | 84 ms | 128 ms | 101 |
+| fixture, one `retry` control | 603 ms | 34 ms | 94 ms | 147 ms | 3 |
+
+The delay is **transport**: the store's own `at` timestamp to the browser is 197–2 733 ms (the SSE
+poll runs every 900 ms, so its mean share is ~450 ms and its worst case is a loaded tick — step 1's
+2 733 ms is the first event racing the initial page load), while the deck's whole remaining pipeline
+— React commit, model rebuild, DOM text, and the frame that draws the change — is 116–262 ms and is
+dominated by the same loaded box. Note step 2's missing stages: a handoff that only bumps a counter
+is *not* scene-visible, so no model mark and no frame follow it.
+
+Perceptually, at 0.2–0.9 s p50 the deck is "live, one beat behind"; at a 2.7 s worst case an operator
+watching a burst would notice the lag. Nothing in the deck's own stages justifies a transport
+redesign; the one thing this measurement does *not* settle is how a human perceives ~600 ms with a
+*steady* event stream, which is `d03v`'s M4 protocol (≥ 50 samples over a live run).
+
+### 4. Focus retention (brief §5)
+
+Measured in the workflow run's step 6 and in `deck.e2e.ts`, with a live worker producing output:
+
+| Action | Result |
+|---|---|
+| select another pad (canvas raycast → `delta`) | live-window row keys and `scrollTop` unchanged; the window keeps following its own worker |
+| hover another worker | `hover` = that worker, `focused` unchanged — hover is a preview, never a focus change |
+| 20 new transcript lines while scrolled back | camera JSON **byte-identical**; `data-follow="false"` and the scroll offset retained; `Jump to live` returns `data-follow="true"` and lands ≤ 24 px from the bottom |
+| a pinned worker (`F`) while a control event lands | the pin holds and the camera is unchanged; `Esc` releases the pin, restores the primary, and re-frames it |
+| freeze (`Space`) during events | rows do not change; the counter says how many rows arrived; resume shows the newest window with no replayed motion |
+
+A user reading old output is never yanked back to the tail, and nothing but `F`/`C`/`[`/`]`/`Esc`, a
+lane click, or a *change of the primary while unpinned* moves the camera.
+
+### 5. Cost on the minimal tier (brief §8)
+
+This machine classifies as `minimal` (SwiftShader, 0.5× backing, 30 fps cap), 1440 × 900 CSS:
+7 draw calls, 21 objects, 444 vertices, 40 609 shaded px (0.37 ms at `d00`'s 9 ns/px), canvas
+612 × 389.
+
+| Window | frames | frame p50 / p95 / worst | commits/s | mutations/s | long tasks | notes |
+|---|---|---|---|---|---|---|
+| idle 2 s | **0** | — | 1 (0.46/s) | 0 | 0 | HUD compares before `setState`; the live window polls without touching the scene |
+| idle 20 s | **0** | — | 6 (0.29/s) | 0 | 0 | M3's budget is ≤ 3 frames |
+| interaction (resize + HUD) | 3 | 0.8 / 0.8 / 0.8 ms | 10 (3.43/s) | 56 (19.2/s) | 2 (worst 83 ms) | `d00` budget: p50 ≤ 33, p95 ≤ 45 ms |
+| one real status change | 1 | 2.5 ms | 3 | 4 | 0 | `moved: false`, `instances` 14→14, `geometries` 7→7 |
+| focus switch (`]`) | 6 | 0.7 / 9.3 ms | — | — | — | `geometries` 7→7, draw calls ≤ 8 |
+| 5 s of transcript growth | **0** | — | 0.2/s | 0 | 0 | acceptance 5; digest byte-identical (≤ 1 frame under 4-way parallel e2e, from a status change another spec caused) |
+| 63 s, 2 038 lines | **0** | — | 0.29/s | 14.95/s | 1 (73 ms) | M6; DOM flat at 90 elements |
+
+Long tasks in the parallel `bun run test:e2e` run (four software-rendered browsers on four vCPUs):
+the interaction window reported up to 5, all from the viewport resize path (`d02`'s known
+backing-store reallocation), which is why that guard is a jank ceiling and the *rate* budget is
+measured on the idle/churn windows — where it is 0–1 per window. The same contention reaches the
+frame budget itself: the p95 of a three-frame window measured 57.2 ms once in the parallel run and
+0.8 ms alone, so the budget spec asserts `d00`'s numbers only when the suite runs with
+`--workers=1` (the command above) and a 3× regression ceiling otherwise — the machine, not the
+scene, is the variable, and the venue is stated rather than averaged in.
+
+### 6. Degraded operation (brief §9)
+
+| Case | Result |
+|---|---|
+| pinned `minimal` (the tier this machine auto-selects) | every operational answer survives: focused worker, 3 lanes, shaft, window rows; canvas at 0.5× |
+| runtime tier change (`T` → `standard`) | same GL context (`mounted` unchanged), same station, same instances — tier is a parameter, not a rebuild |
+| no WebGL2 at all | the notice says what is lost, and the DOM layer (station line, lane strip, live window) stays usable; the dashboard is one click away and untouched |
+
+The degradation rule the brief asked for — remove decoration before information — is the tier table's
+own shape: `minimal` drops backing-store resolution, MSAA and the ambient pass, and *nothing* that
+answers which worker is running, what it is doing, or that it is failing. What is missing on the flat
+path is the spatial overview itself (and the pad mirror list), which `d09` owns.
+
+### 7. Where the deck wins, where it loses (brief §6)
+
+Not a replacement claim, and not a timed human comparison — M10's five scripted tasks (deck vs
+dashboard vs TUI, three repetitions) are `d03v`'s protocol, and this slice did not run them. What the
+measurements above do support:
+
+**Wins (measured).**
+- **Concurrency awareness**: every live worker is a station plus a lane strip row, and the HUD says
+  `live: N · showing <id>`; a second live worker is visible *without scrolling* and without changing
+  the primary (fixture: 3 live workers, 1 focused, camera on the primary).
+- **Active-worker focus**: the camera targets the station's own coordinates and the operator gets it
+  without asking; the shaft encodes the pipeline stage (2 → 3 segments from Work to Verify as the
+  worker handed off), which the dashboard shows as a spine but not as "this object".
+- **Spatial overview on demand**: `C` returns the whole rail (9/9 pads on the fixture, 22 pads/32
+  edges on the real d02 run) and `C` again puts the camera back on the work.
+- **State transitions read in place**: a status change moves no pad (`moved: false`) and costs one
+  frame at 2.5 ms, so the map is stable enough to learn.
+
+**Losses (measured or structural).**
+- **Raw log inspection**: the deck's window is one transcript (`worker`/`verify` lane the server
+  picks). The dashboard's Inspector has Diff, Verify (per-gate output), Review, Prompt and Log tabs;
+  the deck has none of them until `d06`, and `E` is not a substitute for a diff view.
+- **Exact textual information**: dense tables (slices, agents, stats), report fields, token counts,
+  copyable payloads — all still dashboard-only.
+- **Review/gate detail**: verdict steps, findings, re-review history — inspector only.
+- **No-GPU devices and any surface where 3D is not worth 145 kB gzip**: the dashboard loads and runs
+  with none of the deck's chunk or its per-frame cost; the deck's flat path is a stub today (`d09`
+  builds the real one).
+- **Latency**: both surfaces share the 0.9 s poll; the deck adds none, but it also cannot beat it.
+
+### 8. What the deck does worse, and open findings
+
+1. **The transport dominates the event pipeline** (197–2 733 ms of a 223–2 995 ms total). The deck's
+   own stages are 20–300 ms and the scene is never the bottleneck; a sub-second monitoring surface
+   needs a transport change, not a renderer change (CP-4's trigger, now measurable).
+2. **The server reads the whole event log per poll** (249 ms at 100 000 events). The deck is bounded
+   at every step after that; the store is not. This is the next real ceiling and it is not the deck's
+   to fix.
+3. **A focus switch changes the instance count by the shaft's segments** (14→15 in the fixture run).
+   Acceptance criterion 5's "objects unchanged" therefore holds for the pool, `geometries` and draw
+   calls, but *not* literally for `objects`: the station's stage indicator is scene geometry that
+   must differ, or the stage would not be visible. Recorded as a deviation rather than fudged.
+4. **`command` framing keeps most of the rail on screen** (8/9 pads). The camera is aimed, not
+   exclusive; "unmistakable" is carried by the shaft, the lane strip, the station line and the
+   framing together. If an operator wants isolation, `d04`/`d05` are where that argument belongs.
+5. **The camera can move without being asked** whenever the *primary changes* and nothing is pinned.
+   That is the slice's core behaviour ("a spatial focus that follows the work"), and `F`/`Esc`/`C`
+   are the escape hatches — but it is motion an operator did not request, and it is the most likely
+   thing to annoy a keyboard-first user in a long run.
+6. **Heap is still quantized** (`performance.memory` reports exactly 10 000 000 bytes). M7 cannot be
+   answered from that API; `d03v`/`d10` need `renderer.info.memory` over time (this slice keeps
+   `geometries` constant at 7 and `instances` at 14 across focus switches, which is evidence about
+   the renderer, not about the JS heap).
+7. **A rejected control still writes DOM text but changes nothing in the scene.** Correct, and the
+   reason the workflow's 50-control churn shows `control_rejected` rows — but an operator reading
+   only the scene cannot tell "rejected" from "still queued"; the lane strip and HUD line carry that,
+   and the planned alert stack (`d05`) is where it should become unmissable.
+8. **Resize is still the one machine-bound cost** (1–5 long tasks per resize under e2e parallelism,
+   73–83 ms worst). Unchanged from `d02`, and now measured in two more windows.
+
+### Acceptance criteria (d03)
+
+| Criterion | Result |
+|---|---|
+| 1. With exactly one live slice, `focused` = the derived primary | ✔ workflow step 1 (`alpha`), fixture (`longtitle` = first live in board order); unit tests pin the rule (pin → live primary → overall primary) |
+| 2. Compact window ≤ 5 meaningful rows; expanded = the raw transcript; rows have text on first paint | ✔ 5 rows everywhere it was measured; expanded = 86 rows (fixture) / 400 rows (churn); rows are built from `compactWindow`/`rawLine`, never animated in |
+| 3. Freezing shows the skipped-row count; resuming shows the newest window with no queued animation | ✔ `frozen — N new rows` + `resume`; held rows unchanged under events; resume clears motion (unit + workflow evidence) |
+| 4. `Esc` after `F` restores follow-the-primary framing (target id, not just position) | ✔ pinned `p-two` → `Esc` → `focused` = `longtitle`, camera target = `longtitle`'s coordinates, station line agrees |
+| 5. `frames` unchanged over transcript growth; `objects`/`geometries` unchanged across focus switches | ✔ 0 frames over 5 s and over 63 s / 2 038 lines; `geometries` 7→7 and draw calls stable across switches (`objects` moves by the shaft's segments — finding 3) |
+| 6. Instruments produce usable distributions on a real run (M4/M6 first exercised) | ✔ 101 stage records in the churn window; M6's 60 s window is its own artifact; latency attributed per stage |
+| 7. Gates clean | ✔ `bunx tsc --noEmit`, `bun test` (701), `git diff --check`, `bun run test:e2e` (44 passed, parallel), deck suite `--workers=1` (24 passed), workflow spec (2 passed) |
+
+### Verdict
+
+**PASS WITH RESTRICTIONS — recommendation, not a decision** (`docs/desktop-3d-roadmap.md` §0.5 rule 1:
+the operator fills in the decision block at `d03v`). The spatial model provides a *measurable*
+operational advantage for the workflow it was built for — one to three live workers on a software
+rasterizer — and it costs nothing measurable when idle (0 frames, 0 mutations, 0.29 commits/s over
+20 s). The restrictions, in the order they would bite:
+
+1. **Latency is transport-shaped** (p50 0.2–0.9 s, worst 2.7 s): the deck is a "live, one beat
+   behind" surface, not a sub-second one, and no deck-side work changes that.
+2. **Inspection stays 2D** until `d06`: diffs, gate output, review findings and prompt history are
+   dashboard-only, and the deck must not pretend otherwise.
+3. **The verdict rests on structural and instrument evidence**, not on timed human tasks: M10 (five
+   scripted tasks, deck vs dashboard vs TUI) is unmeasured here by design, and F4 cannot be declared
+   clean without it.
+4. **The camera follows the primary unpinned**, which is the point of the slice and also its most
+   likely annoyance; `F`/`Esc`/`C` exist so the operator can take the camera back.
+
+Continue to `d04` under those restrictions: multi-worker stations, off-screen awareness and the
+lane-order policy are the natural next step, and `d03v`'s M10 run is what turns this recommendation
+into a decision.
+
+### What a polished 2D dashboard would lose
+
+If the same information lived in a polished 2D dashboard — the board, the DAG, the live window, the
+lane strip — the operator would lose **one thing, not a list**: a single, persistent spatial map of
+the whole run that stays put while one worker is framed, so *where the work is*, *how many workers
+are in flight*, and *which of them the surface is pointing at* are answered by the same view at the
+same time. A 2D dashboard answers each of those well on its own (a lane strip for concurrency, a
+board or DAG for position, a hero header for the primary) but not simultaneously without scrolling,
+collapsing or a minimap that is itself a small spatial widget. Everything the deck's *text* says —
+status, stage, lane, reason, the last five meaningful rows — a 2D surface can say equally well and
+more densely, and everything about *inspection* (diffs, gates, reviews, prompts, exact payloads) a 2D
+surface does better; those are the parts the deck must not try to win. Transitions and history, the
+other two candidates, are not yet built here (`d05`, `d07`), so today the spatial representation's
+measurable contribution is comprehension of concurrency and focus — worth continuing for an operator
+who watches several workers at once, and worth nothing much for an operator who watches one worker
+and reads its log.

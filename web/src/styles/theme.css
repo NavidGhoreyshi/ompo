@@ -3929,11 +3929,10 @@ button[data-slot="select-trigger"] {
 
 .omp-deck-line {
   position: absolute;
-  left: 10px;
   right: 10px;
   bottom: 10px;
   width: fit-content;
-  max-width: calc(100% - 20px);
+  max-width: min(620px, calc(100% - 20px));
   display: flex;
   align-items: center;
   gap: 8px;
@@ -4084,6 +4083,185 @@ button[data-slot="select-trigger"] {
   font-size: 12px;
 }
 
+/* ---------- deck focus (slice d03): the station line, the lane strip and the
+ * docked live window. The scene answers "where is the work"; these answer
+ * "which worker, in what state, and what did it just do" in text. ---------- */
+
+.omp-deck-station {
+  position: absolute;
+  left: 10px;
+  top: 44px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  max-width: min(620px, calc(100% - 20px));
+  margin: 0;
+  padding: 5px 10px;
+  border: 1px solid var(--omp-border);
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--omp-panel) 88%, transparent);
+  color: var(--omp-secondary);
+  font-family: var(--omp-mono);
+  font-size: 12px;
+  pointer-events: none;
+}
+
+.omp-deck-station[data-live="true"] {
+  border-color: color-mix(in srgb, var(--omp-cyan) 55%, var(--omp-border));
+}
+
+.omp-deck-station-tag {
+  font-size: 10px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--omp-muted);
+}
+
+.omp-deck-station[data-live="true"] .omp-deck-station-tag {
+  color: var(--omp-cyan);
+}
+
+.omp-deck-station-id {
+  color: var(--omp-text);
+  font-weight: 600;
+}
+
+.omp-deck-station-meta {
+  color: var(--omp-muted);
+}
+
+/* The lane strip: every live worker, in board order, one row each. It is the
+ * "never lose awareness of another worker" guarantee in text, and the
+ * keyboard/click path onto any of them. */
+.omp-deck-lanes {
+  position: absolute;
+  top: 44px;
+  right: 10px;
+  width: min(360px, 40%);
+  max-height: 45%;
+  overflow-y: auto;
+  margin: 0;
+  padding: 4px;
+  list-style: none;
+  display: grid;
+  gap: 2px;
+  align-content: start;
+  border: 1px solid var(--omp-border);
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--omp-panel) 88%, transparent);
+}
+
+.omp-deck-lanes li {
+  display: contents;
+}
+
+.omp-deck-lane {
+  display: grid;
+  grid-template-columns: 12ch 9ch 7ch minmax(0, 1fr);
+  gap: 8px;
+  align-items: baseline;
+  text-align: left;
+  font: inherit;
+  font-family: var(--omp-mono);
+  font-size: 11.5px;
+  color: var(--omp-secondary);
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  padding: 3px 7px;
+  cursor: pointer;
+}
+
+.omp-deck-lane:hover,
+.omp-deck-lane:focus-visible {
+  color: var(--omp-text);
+  background: var(--omp-panel-2);
+  border-color: var(--omp-border);
+}
+
+.omp-deck-lane[data-focused="true"] {
+  color: var(--omp-text);
+  border-color: var(--omp-cyan);
+}
+
+.omp-deck-lane-id {
+  color: var(--omp-text);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.omp-deck-lane-status,
+.omp-deck-lane-stage,
+.omp-deck-lane-meta {
+  color: var(--omp-muted);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.omp-deck-lane-warn {
+  color: var(--omp-amber, var(--omp-muted));
+  font-weight: 600;
+}
+
+/* The live window, docked bottom-left and never over the HUD: the same
+ * component the dashboard renders, at the deck's own width. */
+.omp-deck-live {
+  position: absolute;
+  left: 10px;
+  bottom: 10px;
+  width: min(620px, 46%);
+  max-height: 46%;
+  display: flex;
+  flex-direction: column;
+  pointer-events: auto;
+}
+
+.omp-deck-live .omp-livefeed {
+  flex: 1 1 auto;
+  min-height: 0;
+  background: color-mix(in srgb, var(--omp-panel) 92%, transparent);
+  border: 1px solid var(--omp-border);
+  border-radius: 10px;
+  padding: 6px 8px;
+}
+
+.omp-deck-live .omp-livefeed-head {
+  flex-wrap: wrap;
+}
+
+/* Freeze: a state, not an alarm — but it must be impossible to miss while the
+ * operator is reading, and it must say what is being skipped. */
+.omp-livefeed-frozen {
+  flex: none;
+  padding: 1px 8px;
+  border: 1px solid color-mix(in srgb, var(--omp-amber, #ffb838) 60%, var(--omp-border));
+  border-radius: 999px;
+  color: var(--omp-amber, #ffb838);
+  font-size: 11px;
+  font-weight: 600;
+}
+
+.omp-livefeed-resume {
+  flex: none;
+  font: inherit;
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--omp-text);
+  background: var(--omp-panel-2);
+  border: 1px solid var(--omp-border);
+  border-radius: 999px;
+  padding: 2px 10px;
+  cursor: pointer;
+}
+
+.omp-livefeed-resume:hover,
+.omp-livefeed-resume:focus-visible {
+  border-color: var(--omp-cyan);
+}
+
 .omp-deck-notice,
 .omp-deck-skeleton {
   flex: 1;
@@ -4096,6 +4274,37 @@ button[data-slot="select-trigger"] {
   border: 1px solid var(--omp-border);
   border-radius: var(--omp-radius);
   background: var(--omp-panel);
+}
+
+/* Flat mode (`d03` for the notice, `d09` for the full projection): no scene, so
+ * the notice is a banner and the DOM layer keeps the answers. */
+.omp-deck-flat {
+  display: flex;
+  flex-direction: column;
+}
+
+.omp-deck-flat .omp-deck-notice {
+  flex: none;
+  margin: 10px;
+  padding: 8px 12px;
+  flex-direction: row;
+  justify-content: space-between;
+  align-items: center;
+  gap: 12px;
+  font-family: var(--omp-mono);
+  font-size: 12px;
+}
+
+.omp-deck-flat .omp-deck-notice p {
+  margin: 0;
+}
+
+.omp-deck-flat .omp-deck-station {
+  top: 66px;
+}
+
+.omp-deck-flat .omp-deck-lanes {
+  top: 66px;
 }
 
 .omp-deck-actions {
