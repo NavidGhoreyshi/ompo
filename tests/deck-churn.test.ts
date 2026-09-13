@@ -134,7 +134,9 @@ describe("the scene cannot see the history", () => {
       pinnedId: null,
       prefs: DEFAULT_DECK_PREFS,
       live: true,
+      dismissed: new Set<string>(),
       maxStations: 8,
+      maxBeacons: 32,
     };
     const history = Array.from({ length: CHURN }, (_, i) => eventAt(i));
     const quiet = buildDeckModel(base);
@@ -143,9 +145,21 @@ describe("the scene cannot see the history", () => {
     const ms = Math.round((performance.now() - started) * 100) / 100;
 
     console.log(`deck-churn-model ${JSON.stringify({ events: history.length, ms })}`);
+    // The renderer's whole input is the digest, and it did not move: nothing
+    // the log says can reach the GPU.
     expect(chatty.digest).toBe(quiet.digest);
-    expect(JSON.stringify(chatty.nodes)).toBe(JSON.stringify(quiet.nodes));
-    expect(ms).toBeLessThan(50); // the model does not read the array at all
+    // `seq` is the one event-derived field on a node (`d05`): the evidence
+    // stamp a transition carries, deliberately absent from the digest because
+    // the scene never draws it. Everything the scene *does* draw is identical.
+    const sceneShape = (nodes: typeof quiet.nodes) => nodes.map(({ seq: _seq, ...rest }) => rest);
+    expect(JSON.stringify(sceneShape(chatty.nodes))).toBe(JSON.stringify(sceneShape(quiet.nodes)));
+    expect(chatty.alerts).toEqual(quiet.alerts);
+    expect(chatty.nodes[0]?.seq).toBe(CHURN - 1);
+    // One pass over the array, for the evidence stamps and the alert index
+    // (`d05`). The app never hands the deck 100 000 events — the shell caps its
+    // window at 400 — so this bound is the pathological input, not the
+    // operating point.
+    expect(ms).toBeLessThan(1000);
   });
 });
 

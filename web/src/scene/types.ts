@@ -8,6 +8,7 @@
  */
 
 import type { AgentRow, RunDetail, RunEvent, RunSummary, SliceDetail } from "../api.ts";
+import type { DeckAlert } from "./alerts.ts";
 import type { QualityTier } from "./tier.ts";
 
 export type { QualityTier } from "./tier.ts";
@@ -119,6 +120,12 @@ export interface RailNode {
   /** What the pad must encode beyond colour (`d02`: failed / blocked-env). */
   alert: AlertKind | null;
   /**
+   * Newest event seq this slice produced (0 when it has none). It is the
+   * evidence stamp a transition and an alert carry (`d05`), so the scene never
+   * reports a change without the log entry that caused it.
+   */
+  seq: number;
+  /**
    * A worker is in flight (`isLiveStatus`) — station-pool membership, and the
    * reason a pad recedes when it is not the focus.
    */
@@ -224,6 +231,20 @@ export interface DeckModel {
   /** Workers the station pool cannot hold (HUD count; `0` when everything fits). */
   stationOverflow: number;
   /**
+   * Every active alert (`deriveAlerts`), severity first, with the operator's
+   * dismissals already applied: what the DOM stack renders, verbatim.
+   */
+  alerts: DeckAlert[];
+  /**
+   * The subset the scene draws beacons for (`≤ maxBeacons`, first in `alerts`
+   * order, so the most severe always get one). Overflow is counted in
+   * `alertsOverflow` and every alert keeps its stack row — a capped scene
+   * never means a hidden alert.
+   */
+  beaconAlerts: DeckAlert[];
+  /** Alerts with no beacon left in the tier's budget (`0` normally). */
+  alertsOverflow: number;
+  /**
    * Inputs the slot policy had to repair (a malformed lane, a collision, a
    * duplicate live id). Empty in normal operation; rendered in the HUD so a
    * repair is never silent.
@@ -269,11 +290,20 @@ export interface DeckInput {
   prefs: DeckPrefs;
   live: boolean;
   /**
+   * Dismissal keys (`dismissKey` in `alerts.ts`) the operator has cleared.
+   * View state, so it enters here rather than inside `deriveAlerts`: the
+   * taxonomy is a function of the DTOs, what the operator has acknowledged is
+   * a function of the session.
+   */
+  dismissed: ReadonlySet<string>;
+  /**
    * How many stations the operator's tier can draw (`TIER_BUDGETS[tier].maxStations`).
    * The projection, not the renderer, decides which workers get a slot, so the
    * overflow count and the lane list agree with the scene by construction.
    */
   maxStations: number;
+  /** Beacons the tier can draw (`TIER_BUDGETS[tier].maxBeacons`), same rule. */
+  maxBeacons: number;
 }
 
 /** Props the shell hands the deck. Fetching stays in `App.tsx`. */
@@ -334,6 +364,26 @@ export interface RenderStats {
   /** Alert markers drawn (failed / blocked-env beacons) — `d02`, counted here. */
   markers: number;
   /**
+   * Alert beacons drawn (`d05`) — `SEVERITY_RINGS[severity]` rings per alert in
+   * `model.beaconAlerts`. Zero when no alert is active, which is the normal
+   * state of a healthy run.
+   */
+  beacons: number;
+  /**
+   * Transition cues active in the last frame (`d05`). `0` in every steady
+   * state; a sequence of transitions must return to `0` when it ends, which is
+   * the acceptance test for "no queue growth".
+   */
+  tweens: number;
+  /** Distinct entities with an active cue in the last frame. */
+  animatedEntities: number;
+  /**
+   * Cumulative instance-buffer rewrites. A model application is one; each
+   * animated frame is another while cues last. This is the "scene mutations"
+   * figure of the transition cost, and it is monotonic, so a spec can diff it.
+   */
+  sceneWrites: number;
+  /**
    * Filled marks of the *focused* station (`d03`) — 0 when nothing is framed
    * or the framed slice is not live. Read from the model, so it is correct
    * before the frame that draws it.
@@ -368,7 +418,7 @@ export const DECK_KEYS: DeckKey[] = [
   { key: "C", codes: ["c"], effect: "Cycle camera preset (command ↔ rail)", slice: "d03" },
   { key: "0", codes: ["0"], effect: "Reset the camera to the preset's framing", slice: "d03" },
   { key: "1…8", codes: ["1", "2", "3", "4", "5", "6", "7", "8"], effect: "Open the dock on inspector tab N", slice: "d06" },
-  { key: "M", codes: ["m"], effect: "Toggle reduced motion", slice: "d09" },
+  { key: "M", codes: ["m"], effect: "Toggle reduced motion (transitions off, alerts unchanged)", slice: "d05" },
 ];
 
 /** The debug hook the e2e suite and `d10` assert against. Not public API. */
@@ -407,6 +457,22 @@ export interface DeckDebugHook {
   stationMarks: number;
   /** Alert markers drawn — half of the `instances` identity the specs assert. */
   markers: number;
+  /** Alert beacons drawn (`d05`), the active alert count, and the cap overflow. */
+  beacons: number;
+  alerts: number;
+  alertsOverflow: number;
+  /** Transitions (`d05`): active cues, animated entities, and the resolved motion flag. */
+  tweens: number;
+  animatedEntities: number;
+  motion: "full" | "reduced";
+  /**
+   * The deltas the last applied model produced (`d05`): the deck's own record
+   * of which worker changed and to what. Allocated per model application, never
+   * per frame. `attempt` deltas are included (they are recorded, not animated).
+   */
+  deltas: { kind: string; id: string | null; from?: string; to?: string }[];
+  /** Dismissed alert keys — the session's acknowledgements, for the specs. */
+  dismissed: string[];
   stationOverflow: number;
   /** Live workers with no on-screen station, by id (`d04` edge markers). */
   offScreen: string[];

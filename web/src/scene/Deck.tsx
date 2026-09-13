@@ -18,6 +18,8 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { SliceDetail } from "../api.ts";
 import { describeEvent } from "../lib/events.ts";
+import { appendDismissed, DISMISSED_KEY, dismissKey, parseDismissed, type DeckAlert } from "./alerts.ts";
+import { diffModels, type SceneDelta } from "./deltas.ts";
 import { buildDeckModel } from "./model.ts";
 import DeckOverlay from "./DeckOverlay.tsx";
 import { focusTarget, nextLiveId } from "./focus.ts";
@@ -76,6 +78,11 @@ interface HudReadout {
   layoutMs: number;
   longTasks: number;
   longTaskWorstMs: number;
+  /** Transition counters (`d05`), read from the renderer's own statistics. */
+  tweens: number;
+  animatedEntities: number;
+  sceneWrites: number;
+  beacons: number;
   heapUsedBytes: number | null;
   heapReason: string;
   eventsPerSec: number;
@@ -119,6 +126,28 @@ function writePrefs(prefs: DeckPrefs): void {
     window.localStorage.setItem(DECK_PREFS_KEY, JSON.stringify(prefs));
   } catch {
     // Storage unavailable: the session keeps the in-memory value.
+  }
+}
+
+/**
+ * Dismissed alerts (`d05`): client-side view state, one run-prefixed key per
+ * acknowledged condition (`dismissKey`). Storage that cannot be read or
+ * written degrades to session memory — never a throw, and never an alert the
+ * operator cannot clear.
+ */
+function readDismissed(): string[] {
+  try {
+    return parseDismissed(window.localStorage.getItem(DISMISSED_KEY));
+  } catch {
+    return [];
+  }
+}
+
+function writeDismissed(keys: string[]): void {
+  try {
+    window.localStorage.setItem(DISMISSED_KEY, JSON.stringify(keys));
+  } catch {
+    // Private mode: the dismissals last as long as the page does.
   }
 }
 
@@ -170,6 +199,14 @@ function deckHook(): DeckDebugHook {
       stations: 0,
       stationMarks: 0,
       markers: 0,
+      beacons: 0,
+      alerts: 0,
+      alertsOverflow: 0,
+      tweens: 0,
+      animatedEntities: 0,
+      motion: "full",
+      deltas: [],
+      dismissed: [],
       stationOverflow: 0,
       offScreen: [],
       camera: { ...DEFAULT_CAMERA, target: { ...DEFAULT_CAMERA.target } },
@@ -186,6 +223,7 @@ function deckHook(): DeckDebugHook {
 
 export default function Deck({ runId, detail, events, agents, selected, sliceDetail, live, onSelect, onExit }: DeckProps) {
   const [prefs, setPrefs] = useState<DeckPrefs>(readPrefs);
+  const [dismissed, setDismissed] = useState<string[]>(readDismissed);
   const [hudOpen, setHudOpen] = useState(false);
   const [readout, setReadout] = useState<HudReadout | null>(null);
   const [hover, setHover] = useState<string | null>(null);
@@ -195,6 +233,8 @@ export default function Deck({ runId, detail, events, agents, selected, sliceDet
   const [pinnedId, setPinnedId] = useState<string | null>(null);
   const [frozenId, setFrozenId] = useState<string | null>(null);
   const [expanded, setExpanded] = useState(false);
+  /** Alert stack collapsed (`d05`): view state, like the window's freeze. */
+  const [alertsCollapsed, setAlertsCollapsed] = useState(false);
   /** `command` follows the work; `rail` is the operator's whole-run overview. */
   const [preset, setPreset] = useState<DeckCameraPreset>("command");
   const containerRef = useRef<HTMLDivElement | null>(null);
@@ -251,11 +291,19 @@ export default function Deck({ runId, detail, events, agents, selected, sliceDet
         pinnedId,
         prefs,
         live,
+        dismissed: new Set(dismissed),
         maxStations: budget.maxStations,
+        maxBeacons: budget.maxBeacons,
       }),
-    [runId, detail, events, agents, selected, sliceDetail, pinnedId, prefs, live, budget.maxStations],
+    [runId, detail, events, agents, selected, sliceDetail, pinnedId, prefs, live, dismissed, budget.maxStations, budget.maxBeacons],
   );
   const lastModelRef = useRef<DeckModel | null>(null);
+  /**
+   * The model the *scene* last drew, for the transition diff. Distinct from
+   * `lastModelRef`, which survives a run switch so the previous rail stays on
+   * the floor while the next one loads (`d02`).
+   */
+  const previousModelRef = useRef<DeckModel | null>(null);
   // A run switch that is still loading keeps the previous pads on the floor
   // (d02 error behaviour): the world must not flash empty, and the DOM line
   // says what is happening instead. The digest stays the previous one because
@@ -269,6 +317,9 @@ export default function Deck({ runId, detail, events, agents, selected, sliceDet
           counts: lastModelRef.current.counts,
           primaryId: lastModelRef.current.primaryId,
           liveIds: lastModelRef.current.liveIds,
+          alerts: lastModelRef.current.alerts,
+          beaconAlerts: lastModelRef.current.beaconAlerts,
+          alertsOverflow: lastModelRef.current.alertsOverflow,
           focusId: lastModelRef.current.focusId,
           bounds: lastModelRef.current.bounds,
           digest: lastModelRef.current.digest,
@@ -389,10 +440,10 @@ export default function Deck({ runId, detail, events, agents, selected, sliceDet
     [frameSlice],
   );
 
-  /** Write a model into the scene and publish it to the debug hook. */
+  /** Write a model (and the transitions that led to it) into the scene. */
   const applyToScene = useCallback(
-    (renderer: DeckRenderer, next: DeckModel): void => {
-      if (!renderer.applyModel(next)) return;
+    (renderer: DeckRenderer, next: DeckModel, deltas: readonly SceneDelta[]): void => {
+      if (!renderer.applyModel(next, deltas)) return;
       const hook = deckHook();
       hook.nodes = next.nodes.length;
       hook.edges = next.edges.length;
@@ -405,6 +456,18 @@ export default function Deck({ runId, detail, events, agents, selected, sliceDet
       hook.stations = info.stations;
       hook.stationMarks = info.stationMarks;
       hook.markers = info.markers;
+      hook.beacons = info.beacons;
+      hook.alerts = next.alerts.length;
+      hook.alertsOverflow = next.alertsOverflow;
+      hook.tweens = info.tweens;
+      hook.animatedEntities = info.animatedEntities;
+      hook.deltas = deltas.map((delta) => {
+        if (delta.kind === "status") return { kind: delta.kind, id: delta.id, from: delta.from, to: delta.to };
+        if (delta.kind === "stage") return { kind: delta.kind, id: delta.id, from: String(delta.from), to: String(delta.to) };
+        if (delta.kind === "attempt") return { kind: delta.kind, id: delta.id };
+        if (delta.kind === "alert") return { kind: delta.kind, id: delta.id, to: delta.alert.kind };
+        return { kind: delta.kind, id: delta.id, to: delta.alertKind };
+      });
       hook.stationOverflow = next.stationOverflow;
       hook.stationSegments = info.stationSegments;
       hook.positions = next.nodes.map((node) => ({ id: node.id, x: node.x, z: node.z }));
@@ -518,6 +581,9 @@ export default function Deck({ runId, detail, events, agents, selected, sliceDet
       hook.triangles = stats.triangles;
       hook.vertices = stats.vertices;
       hook.pixels = stats.pixels;
+      hook.tweens = stats.tweens;
+      hook.animatedEntities = stats.animatedEntities;
+      hook.beacons = stats.beacons;
       // The scene stage of the event pipeline: the first frame that draws a
       // changed model. Attribution is per event record (instrument.ts).
       if (sceneStagePendingRef.current) {
@@ -536,8 +602,11 @@ export default function Deck({ runId, detail, events, agents, selected, sliceDet
     renderer.setCamera(DEFAULT_CAMERA);
     cameraRef.current = DEFAULT_CAMERA;
     // Mount order: the renderer exists after the size effect's state update, so
-    // the model is applied here as well as from the model effect below.
-    applyToScene(renderer, modelRef.current);
+    // the model is applied here as well as from the model effect below. The
+    // first paint carries no deltas: a freshly loaded deck must not animate the
+    // whole world into existence (`diffModels(null, model)` is empty by rule).
+    previousModelRef.current = modelRef.current;
+    applyToScene(renderer, modelRef.current, []);
     renderer.setSize(size.width, size.height);
     // First paint frames the focus target (or the rail) immediately: an
     // animated first approach would be motion the operator did not ask for.
@@ -580,7 +649,14 @@ export default function Deck({ runId, detail, events, agents, selected, sliceDet
   useEffect(() => {
     const renderer = rendererRef.current;
     if (!renderer) return;
-    applyToScene(renderer, model);
+    // Transitions (`d05`): what changed between the model the scene last drew
+    // and this one. Computed only when the digest moved — an identical digest
+    // is by definition no scene-visible change — and handed to the renderer,
+    // which applies the state first and the cues second.
+    const previous = previousModelRef.current;
+    const deltas = previous !== null && previous.digest !== model.digest ? diffModels(previous, model) : [];
+    previousModelRef.current = model;
+    applyToScene(renderer, model, deltas);
     refreshEdgeMarkers();
   }, [model, applyToScene, refreshEdgeMarkers]);
 
@@ -615,6 +691,10 @@ export default function Deck({ runId, detail, events, agents, selected, sliceDet
   useEffect(() => {
     deckHook().pinned = pinnedId;
   }, [pinnedId]);
+
+  useEffect(() => {
+    deckHook().motion = reducedMotion ? "reduced" : "full";
+  }, [reducedMotion]);
 
   useEffect(() => {
     deckHook().cameraPreset = preset;
@@ -683,6 +763,10 @@ export default function Deck({ runId, detail, events, agents, selected, sliceDet
         layoutMs: sample.layoutMs,
         longTasks: sample.longTasks.count,
         longTaskWorstMs: sample.longTasks.worstMs,
+        tweens: stats.tweens,
+        animatedEntities: stats.animatedEntities,
+        sceneWrites: stats.sceneWrites,
+        beacons: stats.beacons,
         heapUsedBytes: sample.heap.usedBytes,
         heapReason: sample.heap.reason,
         eventsPerSec: sample.events.perSec,
@@ -772,6 +856,26 @@ export default function Deck({ runId, detail, events, agents, selected, sliceDet
     [frameSlice, onSelect],
   );
 
+  /**
+   * Dismiss one alert. The key includes the evidence seq, so this clears the
+   * condition as the operator sees it *now* — when it recurs (a second
+   * failure, a later wedge) the new key is not in the list and the alert
+   * comes back. There is deliberately no "dismiss all".
+   */
+  const dismissAlert = useCallback(
+    (alert: DeckAlert): void => {
+      const key = dismissKey(modelRef.current.runId, alert);
+      const next = appendDismissed(dismissed, key);
+      setDismissed(next);
+      writeDismissed(next);
+    },
+    [dismissed],
+  );
+
+  useEffect(() => {
+    deckHook().dismissed = dismissed;
+  }, [dismissed]);
+
   // Keys live on the surface, not the window: focus inside the deck is the
   // gate, and text inputs are never hijacked.
   const onKeyDown = useCallback(
@@ -804,6 +908,12 @@ export default function Deck({ runId, detail, events, agents, selected, sliceDet
         const current = TIER_CYCLE.indexOf(prefs.tier);
         const next = TIER_CYCLE[(current + 1) % TIER_CYCLE.length]!;
         const updated = { ...prefs, tier: next };
+        setPrefs(updated);
+        writePrefs(updated);
+      } else if (key === "m") {
+        // Reduced motion (`d05`): every transition becomes 0 ms, so the scene
+        // applies state changes instantly and the alert stack is unchanged.
+        const updated = { ...prefs, reducedMotion: !prefs.reducedMotion };
         setPrefs(updated);
         writePrefs(updated);
       } else if (key === "d") {
@@ -880,7 +990,15 @@ export default function Deck({ runId, detail, events, agents, selected, sliceDet
     // questions and loses only the spatial overview (`d09` builds the full flat
     // projection on this contract, including the pad list).
     return (
-      <section className="omp-deck omp-deck-flat" aria-label="Deck" ref={containerCallback} tabIndex={-1} onKeyDown={onKeyDown} data-tier="flat">
+      <section
+        className="omp-deck omp-deck-flat"
+        aria-label="Deck"
+        ref={containerCallback}
+        tabIndex={-1}
+        onKeyDown={onKeyDown}
+        data-tier="flat"
+        data-motion={reducedMotion ? "reduced" : "full"}
+      >
         <div className="omp-deck-notice" role="status">
           <p>3D unavailable on this device — the spatial overview is off; the live deck below still works, and the dashboard has everything else.</p>
           <button type="button" className="omp-deck-button" onClick={onExit}>
@@ -900,6 +1018,9 @@ export default function Deck({ runId, detail, events, agents, selected, sliceDet
           edgeMarkers={edgeMarkers}
           onFocus={focusOn}
           onSelect={onSelect}
+          onDismiss={dismissAlert}
+          alertsCollapsed={alertsCollapsed}
+          onAlertsCollapsedChange={setAlertsCollapsed}
         />
       </section>
     );
@@ -914,6 +1035,7 @@ export default function Deck({ runId, detail, events, agents, selected, sliceDet
       onKeyDown={onKeyDown}
       data-hud={hudOpen ? "open" : "closed"}
       data-tier={tier}
+      data-motion={reducedMotion ? "reduced" : "full"}
     >
       {/* Keyed by the context identity: a canvas whose context was lost can
           never hand out another one, so a rebuild gets a fresh element. */}
@@ -939,6 +1061,9 @@ export default function Deck({ runId, detail, events, agents, selected, sliceDet
         edgeMarkers={edgeMarkers}
         onFocus={focusOn}
         onSelect={onSelect}
+        onDismiss={dismissAlert}
+        alertsCollapsed={alertsCollapsed}
+        onAlertsCollapsedChange={setAlertsCollapsed}
       />
       <div className="omp-deck-hud" ref={hudRef}>
         <div className="omp-deck-row">
@@ -964,6 +1089,13 @@ export default function Deck({ runId, detail, events, agents, selected, sliceDet
             {stationCountLabel(model.liveIds.length, pooledStations)} · showing {model.focusId ?? "—"}
             {pinnedId !== null ? ` · pinned` : ""}
           </span>
+          <span className="omp-deck-metric" data-motion={reducedMotion ? "reduced" : "full"}>
+            motion: {reducedMotion ? "reduced" : "full"}
+          </span>
+          <span className="omp-deck-metric" data-alert-count={model.alerts.length} data-beacon-count={model.beaconAlerts.length}>
+            alerts: {model.alerts.length}
+            {model.alertsOverflow > 0 ? ` · ${model.alertsOverflow} over the beacon cap` : ""}
+          </span>
           {model.warnings.length > 0 && (
             <span className="omp-deck-warn" data-slot-warnings={model.warnings.length}>
               {model.warnings.length} slot warning{model.warnings.length === 1 ? "" : "s"}
@@ -972,6 +1104,7 @@ export default function Deck({ runId, detail, events, agents, selected, sliceDet
           {lastEvent && (
             <span className="omp-deck-event" ref={(element) => markRendered(element, lastEvent.seq)}>
               {lastEvent.type}
+              {lastEvent.sliceId ? ` · ${lastEvent.sliceId}` : ""}
               {describeEvent(lastEvent) && ` · ${describeEvent(lastEvent)}`} · seq {lastEvent.seq}
             </span>
           )}
@@ -1019,6 +1152,20 @@ export default function Deck({ runId, detail, events, agents, selected, sliceDet
                 <dd>
                   {readout?.stations ?? 0} drawn · {model.liveIds.length} live
                   {model.stationOverflow > 0 ? ` · ${model.stationOverflow} over the tier's cap` : ""}
+                </dd>
+              </div>
+              <div>
+                <dt>transitions</dt>
+                <dd>
+                  {readout?.tweens ?? 0} cues · {readout?.animatedEntities ?? 0} entities · {readout?.sceneWrites ?? 0} scene writes
+                  {reducedMotion ? " · motion reduced" : ""}
+                </dd>
+              </div>
+              <div>
+                <dt>alerts</dt>
+                <dd>
+                  {model.alerts.length} active · {model.beaconAlerts.length} beacons
+                  {model.alertsOverflow > 0 ? ` · ${model.alertsOverflow} text-only` : ""}
                 </dd>
               </div>
               <div>

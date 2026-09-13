@@ -135,6 +135,10 @@ describe("computeSample", () => {
       stations: 3,
       stationMarks: 7,
       markers: 3,
+      beacons: 0,
+      tweens: 0,
+      animatedEntities: 0,
+      sceneWrites: 1,
       stationSegments: 4,
       fps: 30,
     };
@@ -239,6 +243,23 @@ describe("instrumentation", () => {
     const sample = h.instrument.snapshot();
     expect(sample.mutations).toBe(0);
     expect(sample.domElements).toBe(0);
+  });
+
+  test("start() re-attaches to the element the deck promised to watch", () => {
+    // A deck that rebuilds its renderer (pressing `M`, a tier's MSAA bit)
+    // stops and starts the instrument. The element it watches does not change,
+    // so the mutation and element counters must keep counting — otherwise the
+    // evidence silently reads `mutations: 0` for the rest of the session.
+    const h = instrumentHarness();
+    h.instrument.start();
+    h.instrument.observeDom({} as Element);
+    h.instrument.stop();
+    h.instrument.start();
+    h.fireMutations(3);
+    h.tickSampler();
+    const sample = h.instrument.snapshot();
+    expect(sample.mutations).toBe(3);
+    expect(sample.domElements).toBe(42);
   });
 
   test("latest() reads the window without consuming it", () => {

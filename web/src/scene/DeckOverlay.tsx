@@ -19,8 +19,16 @@ import StatusBadge from "../components/StatusBadge.tsx";
 import LiveFeed from "../components/LiveFeed.tsx";
 import { liveSliceEvent } from "../lib/events.ts";
 import { heroAction } from "../lib/selection.ts";
+import type { AlertSeverity, DeckAlert } from "./alerts.ts";
 import type { EdgeMarker } from "./camera.ts";
 import type { DeckModel, RailNode } from "./types.ts";
+
+/**
+ * Severity as a glyph, next to the plain word. The stack never depends on
+ * colour: the ring count in the scene, the glyph and the word here, and the
+ * message itself all say the same thing.
+ */
+const SEVERITY_GLYPH: Record<AlertSeverity, string> = { high: "!!", medium: "!", advisory: "i" };
 
 /**
  * Pads listed in the DOM mirror. Past this the list states the remainder in
@@ -56,6 +64,9 @@ export default function DeckOverlay({
   onExpandedChange,
   onFocus,
   onSelect,
+  onDismiss,
+  alertsCollapsed,
+  onAlertsCollapsedChange,
 }: {
   model: DeckModel;
   /** Pad under the pointer, if any — previewed without changing selection. */
@@ -84,6 +95,10 @@ export default function DeckOverlay({
    */
   onFocus: (sliceId: string, frame: boolean) => void;
   onSelect: (sliceId: string) => void;
+  /** Acknowledge one alert (`d05`). Recurrence is a new key and re-raises. */
+  onDismiss: (alert: DeckAlert) => void;
+  alertsCollapsed: boolean;
+  onAlertsCollapsedChange: (collapsed: boolean) => void;
 }) {
   const nodeById = new Map(model.nodes.map((node) => [node.id, node]));
   const selected = model.nodes.find((node) => node.selected) ?? null;
@@ -106,6 +121,14 @@ export default function DeckOverlay({
   // "which worker the deck is pointing at".
   const focused = model.focusId === null ? null : (model.nodes.find((node) => node.id === model.focusId) ?? null);
   const focusAgent = focused === null ? undefined : agents.find((row) => row.id === focused.id);
+
+  // Alerts (`d05`): run-level conditions are banners (a double loop is not a
+  // slice's problem), slice conditions are stack rows in severity order. Both
+  // lists come straight from the model, so the scene, the stack and the HUD
+  // cannot disagree about what is alerting.
+  const banners = model.alerts.filter((alert) => alert.sliceId === null);
+  const rows = model.alerts.filter((alert) => alert.sliceId !== null);
+  const highest = model.alerts[0] ?? null;
 
   if (model.nodes.length === 0) {
     return (
@@ -254,6 +277,92 @@ export default function DeckOverlay({
           onExpandedChange={onExpandedChange}
         />
       </div>
+
+      {/* Run-level alerts (`d05`) and the slice stack share one bottom-right
+          column: the HUD owns the top, the lane strip the top-right, the live
+          window the bottom-left. A banner is for a condition that is not one
+          slice's problem (two loop processes). */}
+      {(banners.length > 0 || rows.length > 0) && (
+        <div className="omp-deck-alertcol">
+          {banners.map((alert) => (
+            <p key={`${alert.kind}:${alert.lastSeq}`} className="omp-deck-banner" data-kind={alert.kind} data-severity={alert.severity} role="alert">
+              <span className="omp-deck-alert-glyph" aria-hidden="true">
+                {SEVERITY_GLYPH[alert.severity]}
+              </span>
+              <strong>{alert.kind}</strong>
+              <span className="omp-deck-banner-text">{alert.message}</span>
+              <button
+                type="button"
+                className="omp-deck-alert-dismiss"
+                aria-label={`Dismiss ${alert.kind} alert`}
+                onClick={() => onDismiss(alert)}
+              >
+                ✕
+              </button>
+            </p>
+          ))}
+
+          {/* The alert stack: every active alert, severity-stamped in words and
+              glyph, one row each, dismissable one at a time. The scene carries
+              the ring pattern; this carries the sentence. */}
+          {rows.length > 0 && (
+            <section className="omp-deck-alerts" data-count={rows.length} data-overflow={model.alertsOverflow} aria-label="Alerts">
+              <button
+                type="button"
+                className="omp-deck-alerts-head"
+                aria-expanded={!alertsCollapsed}
+                onClick={() => onAlertsCollapsedChange(!alertsCollapsed)}
+              >
+                <span className="omp-deck-alerts-count">
+                  {rows.length} alert{rows.length === 1 ? "" : "s"}
+                </span>
+                {highest !== null && (
+                  <span className="omp-deck-alerts-highest">
+                    highest: {highest.severity} · {highest.kind}
+                    {alertsCollapsed && highest.sliceId !== null ? ` · ${highest.sliceId}` : ""}
+                  </span>
+                )}
+                <span className="omp-deck-alerts-toggle" aria-hidden="true">
+                  {alertsCollapsed ? "▸" : "▾"}
+                </span>
+              </button>
+              {!alertsCollapsed && (
+                <ul className="omp-deck-alerts-list">
+                  {rows.map((alert) => {
+                    const sliceId = alert.sliceId ?? "";
+                    return (
+                      <li
+                        key={`${sliceId}:${alert.kind}:${alert.lastSeq}`}
+                        className="omp-deck-alert"
+                        data-kind={alert.kind}
+                        data-severity={alert.severity}
+                        data-slice-id={sliceId}
+                      >
+                        <button type="button" className="omp-deck-alert-row" title={alert.message} onClick={() => onFocus(sliceId, false)}>
+                          <span className="omp-deck-alert-glyph" aria-hidden="true">
+                            {SEVERITY_GLYPH[alert.severity]}
+                          </span>
+                          <span className="omp-deck-alert-severity">{alert.severity}</span>
+                          <code className="omp-deck-alert-slice">{sliceId}</code>
+                          <span className="omp-deck-alert-message">{alert.message}</span>
+                        </button>
+                        <button
+                          type="button"
+                          className="omp-deck-alert-dismiss"
+                          aria-label={`Dismiss ${alert.kind} alert for ${sliceId}`}
+                          onClick={() => onDismiss(alert)}
+                        >
+                          ✕
+                        </button>
+                      </li>
+                    );
+                  })}
+                </ul>
+              )}
+            </section>
+          )}
+        </div>
+      )}
 
       {/* The accessibility backbone: every pad is a real button, in roadmap
           order. Visually hidden until focused so it never competes with the

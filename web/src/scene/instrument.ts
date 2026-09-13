@@ -276,8 +276,13 @@ export function createInstrumentation(deps: InstrumentationDeps = {}): Instrumen
   const pending = new Map<number, number>();
   const pendingAt: number[] = [];
   let detachMutations: (() => void) | null = null;
+  /**
+   * The element the deck asked to watch. Survives `stop()` on purpose: the
+   * instrument is stopped and started again across renderer rebuilds, and the
+   * counters must not silently freeze at their last value (see `start`).
+   */
+  let lastRoot: Element | null = null;
   let detachLongTasks: (() => void) | null = null;
-  let domRoot: Element | null = null;
 
   /**
    * Event records for the stage split, one slot per `noteEvent`. `at`/`rx` are
@@ -445,9 +450,9 @@ export function createInstrumentation(deps: InstrumentationDeps = {}): Instrumen
       setStage(currentSlot(), stage === "model" ? recModel : recScene, wallClock());
     },
     observeDom(root: Element | null): void {
+      lastRoot = root;
       detachMutations?.();
       detachMutations = null;
-      domRoot = root;
       if (root) detachMutations = observeMutations(root, (count) => {
         mutations += count;
       });
@@ -467,8 +472,19 @@ export function createInstrumentation(deps: InstrumentationDeps = {}): Instrumen
         longTaskCount++;
         longTaskWorstMs = Math.max(longTaskWorstMs, durationMs);
       });
+      // Re-attach the DOM observer: `stop()` detaches it (a deck switch or a
+      // renderer rebuild stops and starts the instrument), and the element the
+      // deck promised to watch is still the one to watch. Without this the
+      // mutation and element counters silently freeze at their last values —
+      // measured as `mutations: 0` in the reduced-motion transition window
+      // (`d05`), where pressing `M` rebuilds the renderer.
+      if (lastRoot !== null && detachMutations === null) {
+        detachMutations = observeMutations(lastRoot, (count) => {
+          mutations += count;
+        });
+      }
       timer = setTimer(() => {
-        if (domRoot) domElements = countElements(domRoot);
+        if (lastRoot) domElements = countElements(lastRoot);
       }, 1000);
     },
     stop(): void {
@@ -480,7 +496,6 @@ export function createInstrumentation(deps: InstrumentationDeps = {}): Instrumen
       detachLongTasks = null;
       detachMutations?.();
       detachMutations = null;
-      domRoot = null;
     },
     snapshot(): DeckSample {
       const sample = takeSample();

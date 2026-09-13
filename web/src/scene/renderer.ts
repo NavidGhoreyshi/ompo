@@ -23,14 +23,25 @@
  */
 
 import * as THREE from "three";
+import { SEVERITY_RINGS, type AlertSeverity, type DeckAlert, type DeckAlertKind } from "./alerts.ts";
+import { cueEntity, type SceneDelta } from "./deltas.ts";
 import { TIER_BUDGETS, type QualityTier } from "./tier.ts";
 import { cameraPose, gridPlan, PAD_D, PAD_W, RING_MARGIN } from "./rail.ts";
 import { SHAFT_SEGMENTS, shaftSegments } from "./focus.ts";
 import { CAMERA_FOV, type DeckCamera, type DeckModel, type RailNode, type RenderStats } from "./types.ts";
 
 export interface DeckRenderer {
-  /** Diff-apply a model. Returns false when the digest was already drawn. */
-  applyModel(model: DeckModel): boolean;
+  /**
+   * Diff-apply a model, then turn `deltas` into transitions. Returns false when
+   * the digest was already drawn (in which case no cue is created either — the
+   * scene is already showing that state).
+   *
+   * The state itself is applied **first and unconditionally**: colour, height,
+   * marks and beacons are the model's values from this call onward, and a cue
+   * only adds a decaying highlight on top. There is no path where the scene
+   * says "verifying" while the model says "running".
+   */
+  applyModel(model: DeckModel, deltas?: readonly SceneDelta[]): boolean;
   setCamera(state: DeckCamera): void;
   /** Pointer feedback: the pad under the cursor, or `null`. View state only. */
   setHover(nodeId: string | null): void;
@@ -47,7 +58,7 @@ export interface DeckRenderer {
   setTier(tier: QualityTier): void;
   render(): RenderStats;
   info(): RenderStats;
-  /** True while an animation (the intro fade) still wants frames. */
+  /** True while a transition cue or the intro fade still wants frames. */
   animating(): boolean;
   /** Digest of the last model handed to `applyModel` ("" before the first). */
   appliedDigest(): string;
@@ -138,6 +149,61 @@ const MARKER_H = 0.85;
 const MARKER_OFFSET = 0.22;
 
 /**
+ * Alert beacons (`d05`): a flat ring on the floor around the affected pad,
+ * drawn from one instanced mesh. This is the alert's **non-colour** channel:
+ * severity is the ring count (high: two concentric rings, medium: one,
+ * advisory: one, nested and dimmer) — a pattern that survives greyscale and a
+ * screenshot, while the DOM stack carries the words.
+ *
+ * The ring is wider than the pad's footprint (half-diagonal ≈ 1.83 world
+ * units) so it is never hidden under a pad, and it sits just above the floor.
+ * No pulse animation: a steady scene with a legible pattern beats a scene that
+ * never stops moving (and an idle deck must keep drawing zero frames).
+ */
+const BEACON_INNER = 2.0;
+const BEACON_OUTER = 2.34;
+const BEACON_Y = 0.03;
+/** Advisory's ring is nested inside the standard one, and dimmed. */
+const BEACON_ADVISORY_SCALE = 0.94;
+const BEACON_RING_STEP = 1.22;
+const BEACON_SEGMENTS = 24;
+/** Ring colour per alert kind. Redundant with the ring count and the text. */
+const BEACON_TOKENS: Record<DeckAlertKind, TokenName> = {
+  failed: "destructive",
+  "blocked-env": "warning",
+  wedged: "warning",
+  "double-loop": "destructive",
+  "verify-failed": "warning",
+  "review-rejected": "ring",
+  "verdict-stall": "muted",
+};
+/** Brightness per severity: a third, redundant channel on top of count and text. */
+const BEACON_DIM: Record<AlertSeverity, number> = { high: 1, medium: 0.85, advisory: 0.55 };
+/**
+ * Beacon pool: every tier's cap, two rings each. Allocated once, like the
+ * station pool — an alert arriving never allocates a mesh.
+ */
+const BEACON_POOL = TIER_BUDGETS.high.maxBeacons * 2;
+
+/**
+ * Transition cue durations (`d05`), per tier: `d00`'s minimal tier stays at or
+ * below the 200 ms it budgeted, the others at the roadmap's ≤ 400 ms. Reduced
+ * motion is 0 — the renderer then creates no cues at all, so `stats.tweens` is
+ * exactly 0 rather than "an animation that completed instantly".
+ */
+const CUE_MS: Record<QualityTier, number> = { minimal: 200, standard: 320, high: 320 };
+/** Cues alive at once. Transitions are rare; past this the oldest is dropped. */
+const CUE_CAP = 48;
+/** A cue's start scale (beacons grow in, a cleared one shrinks out). */
+const CUE_START_SCALE = 0.42;
+/** A newly filled stage mark stands this fraction of its height on arrival. */
+const CUE_MARK_SCALE = 0.35;
+/** How far a status change lerps the pad toward the focus token at t=0. */
+const CUE_PULSE = 0.5;
+/** The scene's clear colour: a cleared beacon fades toward it (a floor fade). */
+const BEACON_FLOOR = 0x0a0e14;
+
+/**
  * Stations (`d03`–`d04`): one short box per filled stage mark, standing on the
  * worker's own pad. Geometry, not text (CP-3), instanced into one draw call
  * whose capacity is fixed at creation. Every live worker draws from this one
@@ -195,6 +261,32 @@ interface LineBuffer {
   written: number;
 }
 
+/**
+ * One transition in flight (`d05`). A cue is *presentation only*: it never
+ * holds the state to be shown, it holds how far the highlight has decayed.
+ * The entity it belongs to is the key, so a worker changing state twice in a
+ * second gets one cue at the newer target — the roadmap's interruption rule,
+ * with no queue to grow.
+ */
+export type CueKind = "pulse" | "marks" | "beacon-in" | "beacon-out";
+
+interface Cue {
+  kind: CueKind;
+  /** The slice this cue is about (what `animatedEntities` counts). */
+  id: string;
+  start: number;
+  durationMs: number;
+  /** `marks`: filled marks the station had before the transition. */
+  fromMarks?: number;
+  /** `beacon-out`: where the ring stood and what it looked like. */
+  x?: number;
+  z?: number;
+  y?: number;
+  scale?: number;
+  colour?: THREE.Color;
+  rings?: number;
+}
+
 export function createDeckRenderer(canvas: HTMLCanvasElement, tier: QualityTier, options: DeckRendererOptions = {}): DeckRenderer {
   const now = options.now ?? (() => performance.now());
   let budget = TIER_BUDGETS[tier];
@@ -242,6 +334,8 @@ export function createDeckRenderer(canvas: HTMLCanvasElement, tier: QualityTier,
   markerGeometry.translate(0, 0.5, 0);
   const stationGeometry = new THREE.BoxGeometry(STATION_W, 1, STATION_W);
   stationGeometry.translate(0, 0.5, 0);
+  const beaconGeometry = new THREE.RingGeometry(BEACON_INNER, BEACON_OUTER, BEACON_SEGMENTS);
+  beaconGeometry.rotateX(-Math.PI / 2);
   const surfaceMaterial = new THREE.MeshBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0 });
   const lineMaterial = new THREE.LineBasicMaterial({ vertexColors: true, transparent: true, opacity: 0 });
 
@@ -305,6 +399,7 @@ export function createDeckRenderer(canvas: HTMLCanvasElement, tier: QualityTier,
   const pads = createInstances(padGeometry, PAD_CAPACITY);
   const markers = createInstances(markerGeometry, MARKER_CAPACITY);
   const stations = createInstances(stationGeometry, STATION_POOL);
+  const beacons = createInstances(beaconGeometry, BEACON_POOL);
   const edges = createLines(LINE_CAPACITY);
   const outlines = createLines(LINE_CAPACITY);
 
@@ -336,6 +431,10 @@ export function createDeckRenderer(canvas: HTMLCanvasElement, tier: QualityTier,
     stations: 0,
     stationMarks: 0,
     markers: 0,
+    beacons: 0,
+    tweens: 0,
+    animatedEntities: 0,
+    sceneWrites: 0,
     stationSegments: 0,
     fps: 0,
   };
@@ -350,6 +449,16 @@ export function createDeckRenderer(canvas: HTMLCanvasElement, tier: QualityTier,
   let hoverId: string | null = null;
   /** Pad instance index → slice id, in the order the last model was written. */
   let padIds: string[] = [];
+  /**
+   * Transition cues (`d05`): one entry per entity, keyed by entity, so a
+   * second transition on the same worker **interrupts and re-targets** the
+   * first instead of queueing behind it. The map is small (≤ `CUE_CAP`) and
+   * only touched on a model change or while a cue is live.
+   */
+  const cues = new Map<string, Cue>();
+  let cueMs = options.reducedMotion ? 0 : CUE_MS[tier];
+  /** True while the last paint drew a cue overlay (see `render`). */
+  let paintedWithCues = false;
 
   // Frame intervals, for the fps reading only. Fixed ring, no allocation.
   const intervals = new Float64Array(32);
@@ -438,14 +547,87 @@ export function createDeckRenderer(canvas: HTMLCanvasElement, tier: QualityTier,
   const outlineColour = new THREE.Color();
   const nodeColour = new THREE.Color();
   const stationColour = new THREE.Color();
+  const beaconColour = new THREE.Color();
+  const beaconScratch = new THREE.Color();
+  /** The clear colour as a colour, for a cleared beacon's fade-out. */
+  const beaconFloor = new THREE.Color(BEACON_FLOOR);
+  /** Ring colour for one alert kind (severity is the ring count, not this). */
+  const beaconToken = (kind: DeckAlertKind): THREE.Color => tokens[BEACON_TOKENS[kind]];
+
+  const cueProgress = (cue: Cue, at: number): number => {
+    if (cue.durationMs <= 0) return 1;
+    return Math.min(1, Math.max(0, (at - cue.start) / cue.durationMs));
+  };
+  const ease = (t: number): number => t * t * (3 - 2 * t);
 
   /**
-   * Rewrite every rail buffer from `model`. Called on a model change only: the
-   * digest early-out is what keeps a 1 Hz event stream from touching the GPU,
-   * and the buffers are rewritten in place (no geometry, material or object is
-   * recreated unless the pad/edge count outgrows its capacity).
+   * Re-target a cue. Keyed by entity, so a worker that changes state twice in
+   * the same second animates twice from the *newer* target — never a queue
+   * that grows, and never a second highlight chasing the first.
    */
-  const writeRail = (model: DeckModel): void => {
+  const addCue = (entity: string, cue: Cue): void => {
+    cues.delete(entity);
+    cues.set(entity, cue);
+    while (cues.size > CUE_CAP) {
+      const oldest = cues.keys().next();
+      if (oldest.done === true) break;
+      cues.delete(oldest.value);
+    }
+  };
+
+  /** Drop finished cues. Called once per frame, only while any exist. */
+  const pruneCues = (at: number): void => {
+    if (cues.size === 0) return;
+    for (const [entity, cue] of cues) {
+      if (cueProgress(cue, at) >= 1) cues.delete(entity);
+    }
+  };
+
+  const animatedIds: string[] = [];
+  const animatedEntityCount = (): number => {
+    animatedIds.length = 0;
+    for (const cue of cues.values()) {
+      if (!animatedIds.includes(cue.id)) animatedIds.push(cue.id);
+    }
+    return animatedIds.length;
+  };
+
+  /** One alert's rings, at `scale`, in `colour` (dimmed by severity). */
+  const pushBeacon = (x: number, y: number, z: number, rings: number, scale: number, dim: number, colour: THREE.Color): void => {
+    for (let r = 0; r < rings; r++) {
+      const ringScale = scale * (r === 0 ? 1 : BEACON_RING_STEP);
+      beaconScratch.copy(colour).multiplyScalar(dim);
+      pushInstance(beacons, x, y + r * 0.012, z, ringScale, 1, ringScale, beaconScratch);
+    }
+  };
+
+  /** Rings a cleared beacon still owes the current frame. */
+  const clearingRings = (): number => {
+    let total = 0;
+    for (const cue of cues.values()) {
+      if (cue.kind === "beacon-out") total += cue.rings ?? 1;
+    }
+    return total;
+  };
+
+  /**
+   * Write every instanced buffer from `model`, with the transition cues live
+   * at `at` folded in.
+   *
+   * Two rules make this the whole of the deck's animation:
+   *
+   *  1. **The state is the model's, from this write onward.** Colour, height,
+   *     mark count and beacon set are never interpolated: a pad shows its new
+   *     status colour on the first frame, and a cue may only *add* a decaying
+   *     highlight (a pad pulse, a new mark growing, a beacon arriving or
+   *     leaving). There is no frame where the scene shows a state the model
+   *     does not.
+   *  2. **Nothing moves that is not a change.** With no cues this function
+   *     runs once per model change; with cues it runs per frame until they
+   *     expire, and the frame that ends the last one writes the final state
+   *     again so nothing animated is left painted.
+   */
+  const writeInstances = (model: DeckModel, at: number): void => {
     const padsNeeded = model.nodes.filter((n) => !n.ghost && !n.inCycle).length;
     const markersNeeded = model.nodes.reduce((sum, n) => sum + (n.alert === null ? 0 : n.alert === "blocked-env" ? 2 : 1), 0);
     const nodesById = new Map(model.nodes.map((n) => [n.id, n]));
@@ -453,37 +635,33 @@ export function createDeckRenderer(canvas: HTMLCanvasElement, tier: QualityTier,
     // mesh. The model decided the slots (`lanes.ts`); this decides only paint.
     const pooled = model.stations.filter((station) => station.stack === 0);
     const hidden = model.stations.length - pooled.length;
+    // Beacons (`d05`): one ring per severity step, per alert the model chose to
+    // draw (a run-level alert has no pad, so it is DOM-only by construction).
+    const beaconRings = model.beaconAlerts.reduce(
+      (sum, alert) => sum + (alert.sliceId !== null && nodesById.has(alert.sliceId) ? SEVERITY_RINGS[alert.severity] : 0),
+      0,
+    );
     ensureInstances(pads, padGeometry, padsNeeded);
     ensureInstances(markers, markerGeometry, markersNeeded);
     ensureInstances(stations, stationGeometry, pooled.length * SHAFT_SEGMENTS + Math.min(hidden, STATION_STACK_CAP) + 1);
-    ensureLines(edges, model.edges.length * (EDGE_SEGMENTS / 2 + 1) * 2 + 16);
-    ensureLines(outlines, model.nodes.length * 8 + 16);
+    ensureInstances(beacons, beaconGeometry, beaconRings + clearingRings());
 
     pads.count = 0;
     markers.count = 0;
     stations.count = 0;
-    edges.written = 0;
-    outlines.written = 0;
+    beacons.count = 0;
     padIds = [];
 
     for (const node of model.nodes) {
-      if (node.ghost || node.inCycle) {
-        // Outline only: the pad does not exist as a slice (unknown dep) or its
-        // position in the graph is unreliable (cycle). Drawn as a footprint.
-        outlineColour.copy(tokens[node.ghost ? "muted" : "destructive"]);
-        outlineColour.multiplyScalar(node.ghost ? 0.9 : 0.8);
-        const hw = PAD_W / 2;
-        const hd = PAD_D / 2;
-        const y = 0.015;
-        pushLine(outlines, node.x - hw, y, node.z - hd, node.x + hw, y, node.z - hd, outlineColour);
-        pushLine(outlines, node.x + hw, y, node.z - hd, node.x + hw, y, node.z + hd, outlineColour);
-        pushLine(outlines, node.x + hw, y, node.z + hd, node.x - hw, y, node.z + hd, outlineColour);
-        pushLine(outlines, node.x - hw, y, node.z + hd, node.x - hw, y, node.z - hd, outlineColour);
-        continue;
-      }
-
+      if (node.ghost || node.inCycle) continue; // footprints are lines (writeRail)
       const style = PAD_STYLES[node.status] ?? DEFAULT_PAD_STYLE;
       padColour(node, model.focusId, nodeColour);
+      // A status change brightens the pad's *own* new colour and decays back to
+      // it: the change is visible, and no frame shows a height or hue between
+      // two states. This is the difference between "worker X changed" and
+      // "something moved and changed colour".
+      const pulse = cues.get(`pulse:${node.id}`);
+      if (pulse !== undefined) nodeColour.lerp(tokens.ring, CUE_PULSE * (1 - ease(cueProgress(pulse, at))));
       pushInstance(pads, node.x, 0, node.z, 1, style.height, 1, nodeColour);
       padIds.push(node.id);
 
@@ -515,6 +693,12 @@ export function createDeckRenderer(canvas: HTMLCanvasElement, tier: QualityTier,
       const marks = station.wedged ? Math.max(1, shaftSegments(station.stage)) : shaftSegments(station.stage);
       stationColour.copy(tokens[station.wedged ? "warning" : (STATION_TOKENS[node.status] ?? "info")]);
       if (!station.focused) stationColour.multiplyScalar(SECONDARY_DIM);
+      // A mark that just filled grows into place. The *count* is the model's
+      // (the station is as tall as the new stage from this frame); only the
+      // added marks' size animates, and each grows from its own base.
+      const arrival = cues.get(`marks:${station.id}`);
+      const fromMarks = arrival === undefined ? marks : Math.min(marks, arrival.fromMarks ?? marks);
+      const grow = arrival === undefined ? 1 : CUE_MARK_SCALE + (1 - CUE_MARK_SCALE) * ease(cueProgress(arrival, at));
       for (let i = 0; i < marks; i++) {
         const broken = station.wedged && i === marks - 1;
         pushInstance(
@@ -523,7 +707,7 @@ export function createDeckRenderer(canvas: HTMLCanvasElement, tier: QualityTier,
           height + STATION_GAP + i * (STATION_H + STATION_GAP),
           node.z,
           1,
-          STATION_H,
+          i >= fromMarks ? STATION_H * grow : STATION_H,
           1,
           stationColour,
         );
@@ -557,10 +741,82 @@ export function createDeckRenderer(canvas: HTMLCanvasElement, tier: QualityTier,
       }
     }
 
+    // Beacons: the alert's rings around its own pad, severity as ring count and
+    // brightness, colour as the redundant channel. Arriving beacons grow in;
+    // cleared ones shrink out *from where they stood*, fading toward the floor.
+    for (const alert of model.beaconAlerts) {
+      const node = alert.sliceId === null ? undefined : nodesById.get(alert.sliceId);
+      if (node === undefined) continue;
+      const arrival = cues.get(`beacon:${alert.sliceId}|${alert.kind}`);
+      const grow = arrival === undefined ? 1 : CUE_START_SCALE + (1 - CUE_START_SCALE) * ease(cueProgress(arrival, at));
+      const scale = grow * (alert.severity === "advisory" ? BEACON_ADVISORY_SCALE : 1);
+      pushBeacon(node.x, BEACON_Y, node.z, SEVERITY_RINGS[alert.severity], scale, BEACON_DIM[alert.severity], beaconToken(alert.kind));
+    }
+    for (const cue of cues.values()) {
+      if (cue.kind !== "beacon-out" || cue.colour === undefined) continue;
+      const t = ease(cueProgress(cue, at));
+      const grow = CUE_START_SCALE + (1 - CUE_START_SCALE) * t;
+      beaconColour.copy(cue.colour).lerp(beaconFloor, t);
+      pushBeacon(cue.x ?? 0, cue.y ?? BEACON_Y, cue.z ?? 0, cue.rings ?? 1, grow, BEACON_DIM.high, beaconColour);
+    }
+
+    finishInstances(pads);
+    finishInstances(markers);
+    finishInstances(stations);
+    finishInstances(beacons);
+
+    stats.instances = pads.count + markers.count + stations.count + beacons.count;
+    stats.stations = drawnStations;
+    stats.stationMarks = stations.count;
+    stats.markers = markers.count;
+    stats.beacons = beacons.count;
+    stats.stationSegments = focusedSegments;
+    stats.tweens = cues.size;
+    stats.animatedEntities = animatedEntityCount();
+    stats.sceneWrites += 1;
+    stats.vertices =
+      gridVertices +
+      pads.count * 24 +
+      markers.count * 24 +
+      stations.count * 24 +
+      beacons.count * 24 +
+      edges.written +
+      outlines.written +
+      ringGeometry.getAttribute("position").count;
+  };
+
+  /**
+   * Rewrite every rail buffer from `model`. Called on a model change only: the
+   * digest early-out is what keeps a 1 Hz event stream from touching the GPU,
+   * and the buffers are rewritten in place (no geometry, material or object is
+   * recreated unless the pad/edge count outgrows its capacity).
+   */
+  const writeRail = (model: DeckModel): void => {
+    writeInstances(model, now());
+    const byId = new Map(model.nodes.map((n) => [n.id, n]));
+
+    outlines.written = 0;
+    for (const node of model.nodes) {
+      if (!node.ghost && !node.inCycle) continue;
+      // Outline only: the pad does not exist as a slice (unknown dep) or its
+      // position in the graph is unreliable (cycle). Drawn as a footprint.
+      outlineColour.copy(tokens[node.ghost ? "muted" : "destructive"]);
+      outlineColour.multiplyScalar(node.ghost ? 0.9 : 0.8);
+      const hw = PAD_W / 2;
+      const hd = PAD_D / 2;
+      const y = 0.015;
+      pushLine(outlines, node.x - hw, y, node.z - hd, node.x + hw, y, node.z - hd, outlineColour);
+      pushLine(outlines, node.x + hw, y, node.z - hd, node.x + hw, y, node.z + hd, outlineColour);
+      pushLine(outlines, node.x + hw, y, node.z + hd, node.x - hw, y, node.z + hd, outlineColour);
+      pushLine(outlines, node.x - hw, y, node.z + hd, node.x - hw, y, node.z - hd, outlineColour);
+    }
+    ensureLines(edges, model.edges.length * (EDGE_SEGMENTS / 2 + 1) * 2 + 16);
+    ensureLines(outlines, model.nodes.length * 8 + 16);
+
+    edges.written = 0;
     // Dependency edges: an arc per edge (height separates crossings), drawn as
     // contiguous segments when satisfied and every other segment when not, so
     // "satisfied" survives greyscale as line pattern as well as brightness.
-    const byId = new Map(model.nodes.map((n) => [n.id, n]));
     for (const edge of model.edges) {
       const from = byId.get(edge.from);
       const to = byId.get(edge.to);
@@ -590,9 +846,6 @@ export function createDeckRenderer(canvas: HTMLCanvasElement, tier: QualityTier,
       }
     }
 
-    finishInstances(pads);
-    finishInstances(markers);
-    finishInstances(stations);
     finishLines(edges);
     finishLines(outlines);
 
@@ -617,24 +870,83 @@ export function createDeckRenderer(canvas: HTMLCanvasElement, tier: QualityTier,
       scene.add(grid);
     }
 
-    stats.instances = pads.count + markers.count + stations.count;
-    stats.stations = drawnStations;
-    stats.stationMarks = stations.count;
-    stats.markers = markers.count;
-    stats.stationSegments = focusedSegments;
     stats.vertices =
-      gridVertices + pads.count * 24 + markers.count * 24 + stations.count * 24 + edges.written + outlines.written + ringGeometry.getAttribute("position").count;
-    applied = model;
+      gridVertices +
+      pads.count * 24 +
+      markers.count * 24 +
+      stations.count * 24 +
+      beacons.count * 24 +
+      edges.written +
+      outlines.written +
+      ringGeometry.getAttribute("position").count;
+  };
+
+  /**
+   * Turn an applied model's deltas into cues. Under reduced motion `cueMs` is
+   * 0 and no cue is created at all — the counters then report "no transitions
+   * ran" rather than "they ran instantly", which is the difference the
+   * acceptance test can see.
+   *
+   * The scene only animates what it draws: an alert with no beacon (past the
+   * tier's cap, or run-level) gets its row in the DOM stack and no cue.
+   */
+  const enqueue = (model: DeckModel, deltas: readonly SceneDelta[], at: number): void => {
+    if (cueMs <= 0 || deltas.length === 0) return;
+    const nodesById = new Map(model.nodes.map((n) => [n.id, n]));
+    const beaconed = new Set(model.beaconAlerts.map((alert) => `${alert.sliceId ?? ""}|${alert.kind}`));
+    for (const delta of deltas) {
+      const entity = cueEntity(delta);
+      if (entity === null) continue; // recorded, not animated (`attempt`)
+      if (delta.kind === "status") {
+        addCue(entity, { kind: "pulse", id: delta.id, start: at, durationMs: cueMs });
+        continue;
+      }
+      if (delta.kind === "stage") {
+        const fromMarks = shaftSegments(delta.from);
+        if (shaftSegments(delta.to) > fromMarks) {
+          addCue(entity, { kind: "marks", id: delta.id, start: at, durationMs: cueMs, fromMarks });
+        }
+        continue;
+      }
+      if (delta.kind === "alert") {
+        // The scene only animates what it draws: an alert past the tier's
+        // beacon cap has its stack row and no cue.
+        if (delta.alert.sliceId === null || !beaconed.has(`${delta.alert.sliceId}|${delta.alert.kind}`)) continue;
+        addCue(entity, { kind: "beacon-in", id: delta.alert.sliceId, start: at, durationMs: cueMs });
+        continue;
+      }
+      if (delta.kind === "alert-cleared") {
+        const sliceId = delta.id;
+        if (sliceId === null) continue;
+        const node = nodesById.get(sliceId);
+        if (node === undefined) continue;
+        addCue(entity, {
+          kind: "beacon-out",
+          id: sliceId,
+          start: at,
+          durationMs: Math.min(cueMs, 200),
+          x: node.x,
+          y: BEACON_Y,
+          z: node.z,
+          rings: SEVERITY_RINGS[delta.severity],
+          colour: beaconToken(delta.alertKind).clone(),
+        });
+      }
+    }
   };
 
   return {
-    applyModel(model: DeckModel): boolean {
+    applyModel(model: DeckModel, deltas: readonly SceneDelta[] = []): boolean {
       if (model.digest === digest && applied !== null) {
         applied = model;
         return false;
       }
       digest = model.digest;
+      // State first, transition second: the write below is the model's own
+      // values, and the cue only adds a decaying highlight on top of them.
       writeRail(model);
+      applied = model;
+      enqueue(model, deltas, now());
       return true;
     },
     setCamera(state: DeckCamera): void {
@@ -698,6 +1010,7 @@ export function createDeckRenderer(canvas: HTMLCanvasElement, tier: QualityTier,
     },
     setTier(next: QualityTier): void {
       budget = TIER_BUDGETS[next];
+      cueMs = options.reducedMotion ? 0 : CUE_MS[next];
       if (cssWidth > 0 && cssHeight > 0) {
         const nextScale = budget.resolutionScale;
         width = Math.max(1, Math.round(cssWidth * nextScale));
@@ -717,6 +1030,23 @@ export function createDeckRenderer(canvas: HTMLCanvasElement, tier: QualityTier,
         if (intervalCount < intervals.length) intervalCount++;
       }
       lastRenderAt = at;
+
+      // Transition cues: the only per-frame scene work in the deck. While one
+      // is live the instance buffers are re-written with its decay folded in;
+      // the frame that ends the last cue writes the final state once more, so
+      // a cleared beacon is not left on the floor.
+      if (cues.size > 0) {
+        pruneCues(at);
+        if (cues.size > 0) {
+          if (applied) {
+            writeInstances(applied, at);
+            paintedWithCues = true;
+          }
+        } else if (paintedWithCues && applied) {
+          writeInstances(applied, at);
+          paintedWithCues = false;
+        }
+      }
 
       const progress = fadeProgress();
       if (gridMaterial.opacity !== progress) gridMaterial.opacity = progress;
@@ -745,7 +1075,7 @@ export function createDeckRenderer(canvas: HTMLCanvasElement, tier: QualityTier,
       return stats;
     },
     animating(): boolean {
-      return !disposed && fadeProgress() < 1;
+      return !disposed && (fadeProgress() < 1 || cues.size > 0);
     },
     appliedDigest(): string {
       return digest;
@@ -753,12 +1083,13 @@ export function createDeckRenderer(canvas: HTMLCanvasElement, tier: QualityTier,
     dispose(): void {
       if (disposed) return;
       disposed = true;
-      scene.remove(grid, pads.mesh, markers.mesh, stations.mesh, edges.mesh, outlines.mesh, ring);
+      scene.remove(grid, pads.mesh, markers.mesh, stations.mesh, beacons.mesh, edges.mesh, outlines.mesh, ring);
       grid.geometry.dispose();
       gridMaterial.dispose();
       padGeometry.dispose();
       markerGeometry.dispose();
       stationGeometry.dispose();
+      beaconGeometry.dispose();
       ringGeometry.dispose();
       ringMaterial.dispose();
       surfaceMaterial.dispose();
@@ -766,8 +1097,10 @@ export function createDeckRenderer(canvas: HTMLCanvasElement, tier: QualityTier,
       pads.mesh.dispose();
       markers.mesh.dispose();
       stations.mesh.dispose();
+      beacons.mesh.dispose();
       edges.mesh.geometry.dispose();
       outlines.mesh.geometry.dispose();
+      cues.clear();
       renderer.dispose();
       try {
         renderer.forceContextLoss();

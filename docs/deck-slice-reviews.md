@@ -1,4 +1,4 @@
-# Deck slice reviews (d00–d04)
+# Deck slice reviews (d00–d05)
 
 Performance observations per slice, in the terms the operator cares about: what a frame costs, what
 an event costs, what the DOM does while nobody is looking, and whether the surface is still usable
@@ -818,3 +818,272 @@ count and then locating each id on a board. That advantage is bounded and honest
 camera, it needs the pads to be legible at 0.5×, and it is worth nothing for a one-worker run —
 which is exactly why the lane list, the station line and the live window are DOM and behave like
 the dashboard's own.
+
+---
+
+## d05 — lifecycle choreography and alerts
+
+Reproduce everything below with:
+
+```bash
+bun run web:build
+bun test tests/deck-alerts.test.ts tests/deck-deltas.test.ts tests/deck-churn.test.ts
+bunx playwright test tests/e2e/deck-transitions.e2e.ts --workers=1 --reporter=list   # the five bursts
+bunx playwright test tests/e2e/deck.e2e.ts --workers=1 --reporter=list              # the surface specs
+bun run test:e2e                                                                    # all surfaces, parallel
+```
+
+Raw artifacts: `captures/deck-validation/d05-transitions.json` (every scenario: the delta batch the
+deck recorded, cue peaks sampled at rAF cadence, and a windowed instrument sample per burst),
+`captures/deck-d05-transitions.png` (the simultaneous burst), `captures/deck-d05-transitions-reduced.png`
+(the same deck with motion off), `captures/deck-d05-alerts-rail.png` (the whole rail with two
+alerting pads, taken with a throwaway script against the shared fixture — the view where the ring
+pattern has to survive competition). The transition run owns its own project, its own run
+(`d05-transitions`) and its own server (`tests/e2e/deck-workflow-harness.ts`, port 4481); the shared
+fixture over port 4319 carries the alert-stack assertions, because it always has an alerting slice.
+
+### Bundle
+
+| Artifact | d04 | d05 | Δ |
+|---|---|---|---|
+| `assets/Deck-*.js` (the deck + `three`) | 572.43 kB / 147.04 kB gzip | 586.26 kB / 151.22 kB gzip | **+13.8 kB / +4.2 kB gzip** |
+| `assets/index-*.js` (the dashboard shell) | 455.25 kB / 137.36 kB gzip | 455.26 kB / 137.36 kB gzip | +0.01 kB |
+| `assets/index-*.css` | 86.83 kB / 15.40 kB gzip | 90.55 kB / 15.88 kB gzip | +3.7 kB (the alert stack, the banner, the deck's motion switch) |
+
+Two new pure modules (`alerts.ts` 293 lines, `deltas.ts` 121 lines) and the renderer's cue engine are
+the whole of the deck-side growth. The dashboard's chunk moves by ~10 bytes — the shell names the
+lazy deck chunk, so a new chunk hash shows up there and nowhere else; no dashboard code changed.
+
+### 1. The transition contract: state first, cue second
+
+The brief's rule for this slice is "never fabricate state", and it decides the whole design:
+
+```
+application state (DTO)  ──►  model (pure projection)  ──►  semantic scene state   ← switches at once
+                                                             │
+                                                             └─►  cue (decaying highlight)  ← may animate
+```
+
+`renderer.applyModel(model, deltas)` writes the model's own values **first and unconditionally**
+(status colour, pad height, stage-mark count, beacon set), then turns the deltas into *cues*:
+one cue per entity (`cueEntity` in `deltas.ts`), bounded at 48, dropped
+when they expire. A cue can only *add*: a pad's new status colour brightened toward the focus token
+and decaying back to it (≤ 320 ms; 200 ms on `minimal`; **0 on reduced motion, where no cue is
+created at all**), a newly filled stage mark growing from 35 % to its height, a beacon scaling in on
+arrival and out from where it stood when cleared. No pad height, no status colour and no mark count
+is ever interpolated *between* two states — there is no frame in which the scene shows a state the
+model is not in, which is exactly what makes a dropped or late animation a cosmetic problem rather
+than a lie.
+
+Deltas come from `diffModels(prev, next)` — pure, and emitted only when the digest moved, so an
+event that changes nothing scene-visible produces none. `attempt` deltas (a generation handoff) are
+recorded and animate nothing: `d03` measured that a handoff buys zero frames, and `d05` keeps it
+that way (`sceneDeltas` filters them; the unit test pins it).
+
+Measured, across five scenarios: `tweens` peaks at 1–4 and returns to **0** in every one — the
+counter identity that says nothing was queued, delayed or left painted. `sceneWrites` (instance
+buffer rewrites) moves 3–26 per scenario, i.e. one per model application plus one per animated
+frame, and nothing at all while nothing changes.
+
+### 2. Scenario A — one worker: Work → Verify
+
+`alpha` is claimed and then `workerFinished` lands (`storeApi.workerFinished`), through the real
+SSE path (900 ms poll) into the deck:
+
+| Metric | Value |
+|---|---|
+| the deck's own delta record | `[{status, alpha, running → verifying}]` — one change, one worker |
+| lane row after | `alpha · verifying · Verify` |
+| peak cues / animated entities | 1 / 1 |
+| frames in the window | 4 (p50 2.8 ms, p95 4.9 ms, worst 4.9 ms) |
+| commits / DOM mutations | 4 / 16 · 0 long tasks |
+| instance count | 20 → 21: the station grew **one stage mark** (13 → 14 marks overall) |
+| geometry | `geometries` 8 → 8, `drawCalls` 6: no rebuild, no reallocation |
+| pads moved | **no** (`positions` byte-identical) |
+| event → visible | 577 ms total: transport 540 ms, DOM 37 ms, model 78 ms, scene 109 ms (the stage clocks overlap; the model build and the frame land inside the poll's shadow) |
+
+### 3. Scenario B — three workers at once (the case this slice exists for)
+
+One store tick, three transitions, one model change:
+
+```
+zeta:  running  → verifying        (Work → Verify)
+beta:  running  → blocked-env      (Work → Blocked)  + its high alert
+gamma: verifying → done            (Verify → Complete)
+```
+
+| Metric | Value |
+|---|---|
+| delta batch (one application) | `[status beta running→blocked-env, status gamma verifying→done, status zeta running→verifying, alert beta blocked-env]` |
+| peak cues / animated entities | 4 / 3 — three independent cues plus the beacon arrival, **not** a queue |
+| lane rows after | `zeta · verifying`, `beta` and `gamma` left the live set; the mirror says `gamma · done` |
+| alert stack after | `beta · high · blocked-env · "port 5432 refused — the environment is not up"` |
+| frames in the window | 3 (p50 4.4 ms, p95 = worst 9.3 ms) |
+| commits / DOM mutations | 7 / 25 · 0 long tasks |
+| instances / objects | 21 → 21 / 27 → 29: beta's and gamma's stations left the pool, zeta's grew a mark, beta's two markers and the beacon's two rings arrived |
+| geometry | `geometries` 8 → 8, `drawCalls` 8 (markers + beacons) |
+| pads moved | **no** — station identity survives three simultaneous state changes |
+| event → visible | p50 645 ms (transport 607–608 ms over 4 records; DOM 38 / model 123 / scene 150 ms) |
+
+The three transitions are separable because each is its own entity: the worker's pad pulse, its
+station's mark, and the alert's rings all animate on their own clocks, and the delta record names
+each transition with its `from`/`to`. Nothing was serialised to make the result easier to film.
+
+### 4. Scenario C — an alert while another worker is focused
+
+`delta` is pinned and framed; `alpha` (a *different* worker) fails its gate.
+
+| Metric | Value |
+|---|---|
+| delta record | `status alpha verifying→failed`, `alert alpha failed`, `alert-cleared alpha verify-failed` |
+| focus / camera | `focused = delta`, `pinned = delta`, camera JSON **byte-identical** across the alert |
+| stack after | `alpha · high · failed · "gate bun test failed — 2 tests"` above `beta`'s blocked-env |
+| peak beacons | 5 rings across the window (alpha's 2, beta's 2, the transient verify-failed's 1) |
+| frames / commits / mutations | 3 (p50 4.1, p95 = worst 15.8 ms) / 7 / 25 · 1 long task (96 ms) |
+| event → visible | p50 735 ms (transport 711–717 ms of it) |
+
+The poll caught the *intermediate* state here — `verify_failed` raises a medium alert for one
+cadence, then the terminal failure replaces it with a high one (the deck reported both, in order).
+That is the transport's granularity, read honestly, and it is also the first evidence that alert
+replacement works: the medium beacon left as the high one arrived.
+
+### 5. Scenario D — the focused worker completes, and the focus policy, stated
+
+Policy, in the deck's own terms (`focusTarget`, `d03`, unchanged by this slice):
+
+1. **Pinned** (the operator pressed `F` on this worker): focus **stays** on that slice. Its station
+   leaves the pool because it is no longer live, the pad shows `done`, and the camera does not move
+   — a pin exists precisely to stop the view following the work. `Esc` releases it.
+2. **Unpinned**: the focus target recomputes to the live primary — `preferredSliceId`'s ranking
+   over the live set, i.e. the same slice the dashboard's board and the TUI's cursor would pick,
+   never "whatever is first in the array". The camera follows it, because that is `d03`'s documented
+   auto-follow while nothing is pinned.
+
+Measured: pinned → `focused` still `epsilon`, camera byte-identical, one cue, 3 frames (p50 1.0,
+p95 = worst 12.5 ms), event→visible 840 ms (816 of it transport — a full poll interval on a busy
+box). Released (`Esc`) → focus moved to `zeta` (the live set was `zeta`, `delta`), the camera moved,
+and the lane row `zeta` carries `data-focused="true"`.
+
+### 6. Scenario E — reduced motion: the same change, no cue at all
+
+`M` sets `motion: reduced` (persisted in `ompo.deck.prefs`, shown in the HUD, and published as
+`data-motion="reduced"` so the DOM's own row motion stops too). Then a live worker fails
+(`running → failed` plus a high alert) in one model change:
+
+| Metric | Value |
+|---|---|
+| peak cues / animated entities | **0 / 0** — not "fast", none |
+| the change itself | stack gained `delta · high · failed · "gate bun test failed — 2 tests"`; the lane row left the live set |
+| frames | 2 (p50 1.1 ms, p95 1.2 ms), commits 4, DOM mutations 21 |
+| event → visible | p50 365 ms (transport 348 / DOM 17 / model 22 / scene 24 ms) |
+| HUD | `motion: reduced`, `transitions 0 cues · 0 entities` |
+
+### 7. Alerts: multi-channel by construction
+
+`deriveAlerts` implements §D.8 exactly, from the DTOs the server already produces: `failed` (high),
+`blocked-env` (high), `wedged` (high, from `AgentRow.wedged`/`staleForMs`), `double-loop` (high,
+run-level), `verify-failed` (medium, from the newest `verify_failed` event while the slice is live
+or queued), `review-rejected` (medium, from `SliceDetail.review`), `verdict-stall` (advisory, from
+`SliceDetail.verdictStall`, worded "gates idle", never "stuck"). One condition is one alert however
+many events produced it, and severity is expressed on four channels at once:
+
+| Channel | How |
+|---|---|
+| shape/pattern | rings around the pad: **two** concentric for high, **one** for medium, one nested and smaller for advisory — legible in greyscale |
+| position | the rings circle the *worker's own pad*, so an alert is where the work is |
+| text | the stack row: severity word + glyph (`!!` / `!` / `i`) + slice id + one line of the store's own reason |
+| colour | red / amber / violet, redundant with all of the above |
+
+Dismissal is per alarm instance (`runId|sliceId|kind|lastSeq`, stored in
+`localStorage["ompo.deck.dismissed"]`), so acknowledging a condition clears that alarm and a
+recurrence — a second failure, a later wedge — raises a new one. There is deliberately no "dismiss
+all". Beacons are capped by `tier.maxBeacons` with overflow counted in the HUD
+(`alerts: N · M over the beacon cap`) while every alert keeps its stack row. Measured on the shared
+fixture: 2 alerts → 4 beacon rings → `instances` 23, `objects` 31, `drawCalls` 8; with no alert or
+marker drawn the same scene issues 6 calls, so the beacon mesh costs one draw call *only* while a
+ring is up (an empty instanced mesh is skipped by the renderer).
+
+Two honest limits: `review-rejected` and `verdict-stall` read `SliceDetail`, which the shell fetches
+for the *selected* slice, so those two kinds cover the slice the operator has open until `d06`'s
+dock fetches on demand; and a `blocked-env` slice has no `reason` in the run record, so the message
+comes from the event that parked it (`slice_blocked_env.detail`) rather than from a field that does
+not exist.
+
+### 8. What the deck does worse, and open findings
+
+1. **The transport still owns the clock.** Event→visible was 196–816 ms in these windows, and 180–742
+   of those milliseconds are the 900 ms store poll; the deck's own stages are 16–525 ms and the
+   scene is never the largest. Nothing here justifies changing the transport, and nothing here can
+   beat it — the honest statement is that a state change can be *up to a poll interval old* before
+   the deck even hears about it. Transitions are choreographed inside that budget, not around it.
+2. **An instrument defect this slice found and fixed.** The reduced-motion window read
+   `mutations: 0` while its alert row demonstrably appeared (the other windows read 16–44). Cause:
+   `instrument.stop()` detaches the `MutationObserver`, and a renderer rebuild — which pressing `M`
+   now causes, through the context key — stops and restarts the instrument without re-attaching, so
+   the mutation count and the element census **freeze at their last value for the rest of the
+   session**. Fixed in `instrument.ts` (`start()` re-attaches to the element the deck promised to
+   watch), unit-tested, and re-measured: the same window now records 21 mutations. Earlier slices'
+   mutation figures are unaffected — the rebuild path only became reachable from a key (`M`) here.
+3. **Long tasks are the box.** 0–2 per transition window (worst 96 ms) on a machine also running
+   Chromium, the fixture server and Playwright. Scenario A's pre-fix runs showed up to 4 (worst
+   194 ms) while the window still contained page-load work.
+4. **The station's mark count is part of the state, so it changes.** A status change moves
+   `instances` by ±1 (the column grows a mark) — this is the information, not churn, but it means
+   `instances` is no longer a constant across a transition the way it is across a focus switch.
+5. **`attempt` deltas animate nothing.** A generation handoff is recorded and drawn as nothing at
+   all. Deliberate (`d03`'s zero-frame property), but a handoff is a real transition and the DOM
+   shows it only in the lane row's `g` counter.
+6. **`review-rejected`/`verdict-stall` cover one slice** (the selected one) until `d06` fetches
+   detail on demand — noted in §7.
+7. **The beacons have not been looked at by a human on a real screen.** They are measured
+   (rings 2/1/1 at 0.94–1.22 scale, one instanced mesh, no idle frames) and captured in the
+   screenshots, but "is the pattern obvious at 0.5× on a busy deck" is a judgement this file cannot
+   make for the operator.
+8. **Row motion settled.** `.omp-live-row` enter/leave was 320 ms / 220 ms against the roadmap's
+   ≤ 150 ms row budget (§D.6). `d05` settled it at **150 ms in / 120 ms out** in `theme.css`, for the
+   deck and the dashboard alike, since they share the component.
+
+### 9. Acceptance criteria (d05)
+
+| Criterion | Result |
+|---|---|
+| 1. For `slice_claimed → worker_finished → verify_failed → slice_retried`, the deck applies those states in order and reports 0 queued tweens at the end | ✔ `tests/deck-deltas.test.ts` (running → verifying → done as one delta per step) and every measured scenario ends at `tweens: 0` |
+| 2. A failed slice produces exactly one high alert with its `reason`; dismissing removes the row and the beacon; a new failure re-raises | ✔ unit: one alert per condition, dismissal key includes the evidence seq; browser: the row appears with the store's words, dismissing removes row **and** beacon, the dismissal survives a reload; recurrence re-raises by key (unit) |
+| 3. With reduced motion, no tween runs for any transition and the stack behaves identically | ✔ scenario E: `maxTweens 0`, `maxAnimated 0` across a real `running → failed` + alert; HUD `0 cues`; the stack row is identical |
+| 4. Beacons never exceed `tier.maxBeacons`; overflow is counted in the HUD and the stack lists every alert | ✔ by construction (`beaconAlerts = alerts.slice(0, maxBeacons)`, HUD `alerts: N · M over the beacon cap`) and unit-tested ordering; no browser run has exceeded a cap |
+| 5. The alert stack never overlaps the live window | ✔ e2e: bounding-box disjointness asserted on the shared fixture (`.omp-deck-alerts` vs `.omp-deck-live`) |
+| 6. Gates clean | ✔ `bunx tsc --noEmit`, `bun test` (747 pass / 0 fail, 57 files), `git diff --check`, `bunx playwright test tests/e2e/deck.e2e.ts --workers=1` (28 passed), `bunx playwright test tests/e2e/deck-transitions.e2e.ts --workers=1` (1 passed, 5 scenarios), `bun run test:e2e` (48 passed) |
+
+### 10. Verdict
+
+**PASS — recommendation, not a decision** (`docs/desktop-3d-roadmap.md` §0.5 rule 1: the operator
+fills in the decision block at `d03v`). The slice's own success criterion — *can an operator glance
+at the deck during active work and correctly identify meaningful state transitions across several
+concurrent workers without reading the underlying logs* — is answered **yes, with one measured
+caveat**: yes, because every transition is reported by the deck as a named delta (worker, from, to),
+drawn on the worker's own pad, and separately for each worker in a burst of three; the caveat is the
+poll — event→visible ran 365–840 ms in these windows, 348–818 ms of it transport, so a change can be
+a poll interval old before the deck has it. "Glance and see it now" is really "glance and see the
+last poll". What the deck must not do — animate a state it does not have, move
+a station because its status changed, or let an alert depend on colour — it demonstrably does not.
+
+Restrictions, in the order they would bite:
+
+1. **The transport is the ceiling** (finding 1). Anything that needs sub-second comprehension is a
+   transport question, and this slice deliberately did not touch it.
+2. **The beacon pattern is unverified by human eyes** (finding 7): the numbers and the captures are
+   in hand; the aesthetic judgement is not.
+3. **Two alert kinds cover one slice each** (finding 6) until `d06` fetches detail on demand.
+4. **M10 remains owed** (`d03v`): the timed deck-vs-dashboard-vs-TUI comparison still has not run.
+
+### 11. What a polished 2D dashboard would lose
+
+A 2D dashboard can absolutely show transitions: a row that changes colour and appends a line does
+it. What it cannot show is *where* the change happened and *which* of several simultaneous changes
+belongs to which worker in one glance — the deck's answer is that each worker owns a place, and a
+change happens *at that place*: the column grows a mark, the pad brightens on its own colour, and a
+ring pattern appears around the pad that is in trouble. Three workers changing state at once is
+three places changing, not three rows mutating in a list you have to re-read. The advantage is
+bounded: it needs the pads to be legible (they are, at 0.5×), it needs the camera to be pointed
+somewhere useful (the off-screen markers and the lane list cover the rest), and for a single worker
+the dashboard's row is still the cheaper place to read the same fact.

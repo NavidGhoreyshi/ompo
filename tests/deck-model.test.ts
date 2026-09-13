@@ -107,7 +107,9 @@ function input(overrides: Partial<DeckInput> = {}): DeckInput {
     pinnedId: null,
     prefs: DEFAULT_DECK_PREFS,
     live: true,
+    dismissed: new Set<string>(),
     maxStations: 8,
+    maxBeacons: 32,
     ...overrides,
   };
 }

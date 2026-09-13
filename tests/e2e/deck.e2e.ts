@@ -44,6 +44,14 @@ interface DeckHook {
   stationMarks: number;
   markers: number;
   stationOverflow: number;
+  /** Alert + transition state (`d05`). */
+  alerts: number;
+  alertsOverflow: number;
+  beacons: number;
+  tweens: number;
+  animatedEntities: number;
+  motion: "full" | "reduced";
+  deltas: { kind: string; id: string | null; from?: string; to?: string }[];
   offScreen: string[];
   camera: DeckCamera;
   stationSegments: number;
@@ -350,7 +358,11 @@ test.describe("deck rail", () => {
     expect(hook.stations).toBe(3);
     expect(hook.stationMarks).toBe(7);
     expect(hook.markers).toBeGreaterThanOrEqual(2); // `envblock`'s blocked-env double
-    expect(hook.instances).toBe(hook.nodes + hook.markers + hook.stationMarks);
+    // Alert beacons (`d05`): one ring per severity step, so a high alert draws
+    // two. Read, not assumed — another spec can retry the fixture's failure.
+    expect(hook.alerts).toBeGreaterThanOrEqual(1);
+    expect(hook.beacons).toBeGreaterThanOrEqual(hook.alerts);
+    expect(hook.instances).toBe(hook.nodes + hook.markers + hook.stationMarks + hook.beacons);
     expect(hook.drawCalls).toBeLessThanOrEqual(8);
     expect(hook.selected).not.toBeNull();
     // Every pad exists as a real button for keyboard and AT users.
@@ -500,7 +512,7 @@ test.describe("deck focus", () => {
     expect(point!.x).toBeLessThan(box?.width ?? 0);
     expect(point!.y).toBeLessThan(box?.height ?? 0);
     expect(hook.stationSegments).toBeGreaterThan(0);
-    expect(hook.instances).toBe(hook.nodes + hook.markers + hook.stationMarks);
+    expect(hook.instances).toBe(hook.nodes + hook.markers + hook.stationMarks + hook.beacons);
     // `command` framing, not the whole rail: the camera is aimed at the
     // station's own position and much closer than the rail's fit.
     const station = hook.positions.find((p) => p.id === PRIMARY)!;
@@ -759,14 +771,17 @@ test.describe("deck focus", () => {
     console.log(`deck-text-isolation ${JSON.stringify({ frames: after.frames, loop: after.loop, commits: after.commits, commitsPerSec: after.commitsPerSec, mutations: after.mutations, mutationsPerSec: after.mutationsPerSec, domElements: after.domElements, liveRows: state.liveRows, logLines: state.logLines, fixtureMoved: statusesAfter !== statusesBefore })}`);
     // The scene-visible state is byte-identical across five seconds of tail
     // polling (M6's claim at slice scale), and the frame count is 0 in an
-    // isolated run. The ≤ 1 allowance is for a *status change* arriving from
-    // outside this test — under `fullyParallel` the fixture run is shared with
-    // the other specs — which is a scene change by definition, not text.
+    // isolated run. A *status change* arriving from outside this test — under
+    // `fullyParallel` the fixture run is shared with the other specs — is a
+    // scene change by definition, not text: it buys its model frame plus the
+    // transition cues (`d05`: ≤ 200 ms at the `minimal` tier's 30 fps, i.e.
+    // ≤ 8 frames), so the strict claim is only made when the fixture is quiet.
     if (statusesAfter === statusesBefore) {
       expect(state.digest).toBe(digestBefore);
       expect(after.frames).toBe(0);
     } else {
-      expect(after.frames).toBeLessThanOrEqual(1);
+      expect(after.frames).toBeLessThanOrEqual(8);
+      expect(after.renderer?.tweens ?? 0).toBe(0);
     }
     expect(after.mutationsPerSec).toBeLessThanOrEqual(60); // M5
     expect(after.commitsPerSec).toBeLessThanOrEqual(4); // M5
@@ -885,6 +900,101 @@ test.describe("deck degraded operation", () => {
   });
 });
 
+test.describe("deck alerts", () => {
+  test.use({ viewport: { width: 1440, height: 900 } });
+
+  test("an alerting slice gets a readable row, and dismissing clears row and beacon", async ({ page }) => {
+    await gotoDeck(page);
+    await page.waitForTimeout(900);
+
+    // The fixture parks one slice as `blocked-env` — the one alerting condition
+    // no other spec retries or completes away (the failed slice is raced by the
+    // latency spec, which legitimately retries it).
+    const stack = page.locator(".omp-deck-alerts");
+    await expect(stack).toHaveCount(1);
+    const row = page.locator('.omp-deck-alert[data-slice-id="envblock"]');
+    await expect(row).toHaveCount(1);
+    await expect(row).toHaveAttribute("data-severity", "high");
+    await expect(row).toHaveAttribute("data-kind", "blocked-env");
+    // The words are the event's own (`serve.ts` parks it with the long
+    // catastrophic reason), truncated to one line.
+    await expect(row.locator(".omp-deck-alert-message")).toContainText("worker exited 1");
+    // Severity is a word and a glyph, not a colour.
+    await expect(row.locator(".omp-deck-alert-severity")).toHaveText("high");
+    await expect(row.locator(".omp-deck-alert-glyph")).toHaveText("!!");
+    await expect(page.locator(".omp-deck-metric[data-alert-count]")).toHaveText(/alerts: [0-9]+/);
+
+    const before = await readHook(page);
+    console.log(
+      `deck-alerts ${JSON.stringify({ alerts: before.alerts, beacons: before.beacons, instances: before.instances, objects: before.objects, drawCalls: before.drawCalls })}`,
+    );
+    expect(before.alerts).toBeGreaterThanOrEqual(1);
+    expect(before.beacons).toBeGreaterThanOrEqual(before.alerts);
+    expect(before.instances).toBe(before.nodes + before.markers + before.stationMarks + before.beacons);
+
+    // The stack never covers the window the operator reads.
+    const stackBox = await stack.boundingBox();
+    const liveBox = await page.locator(".omp-deck-live").boundingBox();
+    expect(stackBox).not.toBeNull();
+    expect(liveBox).not.toBeNull();
+    const disjoint =
+      stackBox!.x >= liveBox!.x + liveBox!.width ||
+      liveBox!.x >= stackBox!.x + stackBox!.width ||
+      stackBox!.y >= liveBox!.y + liveBox!.height ||
+      liveBox!.y >= stackBox!.y + stackBox!.height;
+    expect(disjoint).toBe(true);
+
+    // Dismissal: one row, one click, and the beacon goes with it — animated
+    // while the motion setting allows it.
+    const watching = watchCues(page, 2000);
+    await row.locator(".omp-deck-alert-dismiss").click();
+    await expect(row).toHaveCount(0);
+    await expect.poll(async () => (await readHook(page)).beacons).toBeLessThan(before.beacons);
+    const peaks = await watching;
+    expect(peaks.maxTweens).toBeGreaterThan(0);
+    expect((await readHook(page)).alerts).toBe(before.alerts - 1);
+
+    // The acknowledgement is view state and it survives a reload: the key is
+    // the run, the slice, the kind and the evidence seq.
+    await page.reload();
+    await page.locator(".omp-deck-canvas").waitFor();
+    await expect(page.locator('.omp-deck-alert[data-slice-id="envblock"]')).toHaveCount(0);
+  });
+
+  test("M holds the scene still: a transition applies with no cue at all", async ({ page }) => {
+    await gotoDeck(page);
+    await page.waitForTimeout(900);
+    await page.locator(".omp-deck").press("m");
+    await expect.poll(async () => (await readHook(page)).motion).toBe("reduced");
+    await expect(page.locator(".omp-deck-metric[data-motion]")).toHaveText(/motion: reduced/);
+    await expect(page.locator(".omp-deck")).toHaveAttribute("data-motion", "reduced");
+
+    // A dismissal is a real transition (the alert-cleared delta), and with the
+    // scene held still it must cost exactly zero cues — not a fast animation,
+    // none. The status-change variant of this claim runs in
+    // `deck-transitions.e2e.ts`, which owns its run and can move a worker.
+    const before = await readHook(page);
+    const row = page.locator('.omp-deck-alert[data-slice-id="envblock"]');
+    await expect(row).toHaveCount(1);
+    const watching = watchCues(page, 3000);
+    await row.locator(".omp-deck-alert-dismiss").click();
+    await expect.poll(async () => (await readHook(page)).alerts).toBe(before.alerts - 1);
+    const peaks = await watching;
+    const after = await readHook(page);
+    console.log(`deck-reduced-motion ${JSON.stringify({ ...peaks, tweens: after.tweens, motion: after.motion })}`);
+
+    expect(peaks.maxTweens).toBe(0);
+    expect(peaks.maxAnimated).toBe(0);
+    expect(after.tweens).toBe(0);
+    await page.locator(".omp-deck").press("h");
+    await expect(page.locator(".omp-deck-panel")).toContainText("0 cues");
+
+    // And the switch is a switch.
+    await page.locator(".omp-deck").press("m");
+    await expect.poll(async () => (await readHook(page)).motion).toBe("full");
+  });
+});
+
 /**
  * A pad's canvas-relative CSS pixel position, through the debug hook the deck
  * installs. `null` when the pad is off screen (or nothing is drawn).
@@ -896,6 +1006,30 @@ function padPoint(page: Page, id: string): Promise<{ x: number; y: number } | nu
     if (!hook?.screenPosition) throw new Error("window.__ompoDeck.screenPosition is not installed");
     return hook.screenPosition(sliceId);
   }, id);
+}
+
+/**
+ * Cue peaks at rAF cadence (`d05`), for the window a transition lands in: the
+ * counters are per-frame, and a reduced-motion claim is about a *maximum* that
+ * never rises, not about a reading after the fact.
+ */
+async function watchCues(page: Page, windowMs: number): Promise<{ maxTweens: number; maxAnimated: number; peakBeacons: number }> {
+  return page.evaluate(async (ms) => {
+    const hook = (window as unknown as { __ompoDeck?: { tweens?: number; animatedEntities?: number; beacons?: number } }).__ompoDeck;
+    let maxTweens = 0;
+    let maxAnimated = 0;
+    let peakBeacons = 0;
+    const until = performance.now() + ms;
+    while (performance.now() < until) {
+      maxTweens = Math.max(maxTweens, hook?.tweens ?? 0);
+      maxAnimated = Math.max(maxAnimated, hook?.animatedEntities ?? 0);
+      peakBeacons = Math.max(peakBeacons, hook?.beacons ?? 0);
+      const { promise, resolve } = Promise.withResolvers<void>();
+      requestAnimationFrame(() => resolve());
+      await promise;
+    }
+    return { maxTweens, maxAnimated, peakBeacons };
+  }, windowMs);
 }
 
 /**

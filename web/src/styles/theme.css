@@ -1220,12 +1220,16 @@ input:focus-visible,
 }
 
 .omp-live-row[data-motion="enter"] {
-  animation: omp-live-enter 320ms var(--omp-ease-out) both;
+  /* `d05` settled this against the roadmap's row budget (§D.6: ≤ 150 ms): the
+   * motion was 320 ms in / 220 ms out, and a row that arrives faster is a row
+   * that can be read faster. The transform is 6 px, so the shorter duration
+   * does not read as a jump. */
+  animation: omp-live-enter 150ms var(--omp-ease-out) both;
 }
 
 .omp-live-row[data-motion="leave"] {
   overflow: hidden;
-  animation: omp-live-leave var(--omp-dur-state) var(--omp-ease-out) both;
+  animation: omp-live-leave var(--omp-dur-instant) var(--omp-ease-out) both;
 }
 
 @keyframes omp-live-enter {
@@ -3720,6 +3724,18 @@ button[data-slot="select-trigger"] {
   }
 }
 
+/* The deck's own reduced-motion switch (`M`, slice d05): the same treatment the
+ * OS preference gets, applied to the deck subtree only, so the scene's cues and
+ * the DOM's row motion are off together and the operator can see *everything*
+ * hold still while still reading every state change. */
+.omp-deck[data-motion="reduced"] *,
+.omp-deck[data-motion="reduced"] *::before,
+.omp-deck[data-motion="reduced"] *::after {
+  animation-duration: 0.01ms !important;
+  animation-iteration-count: 1 !important;
+  transition-duration: 0.01ms !important;
+}
+
 @media (prefers-reduced-motion: reduce) {
   *,
   *::before,
@@ -4348,6 +4364,198 @@ button[data-slot="select-trigger"] {
 .omp-livefeed-resume:hover,
 .omp-livefeed-resume:focus-visible {
   border-color: var(--omp-cyan);
+}
+
+/* ---------- deck alerts (slice d05): the stack, the beacons' text side, and
+ * the run-level banner. Bottom-right, because the HUD owns the top, the lane
+ * strip the top-right corner and the live window the bottom-left: the stack
+ * never covers the window it competes with, and it never covers a lane row.
+ * Severity is a glyph + the word + the accent border, never the accent alone. */
+.omp-deck-alertcol {
+  position: absolute;
+  right: 10px;
+  bottom: 10px;
+  width: min(460px, 44%);
+  max-height: 46%;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  pointer-events: none;
+  font-family: var(--omp-mono);
+  font-size: 11.5px;
+}
+
+.omp-deck-banner,
+.omp-deck-alerts {
+  pointer-events: auto;
+  border: 1px solid var(--omp-border);
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--omp-panel) 92%, transparent);
+}
+
+.omp-deck-banner {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  margin: 0;
+  padding: 5px 8px;
+  color: var(--omp-text);
+  border-color: color-mix(in srgb, var(--omp-red) 60%, var(--omp-border));
+}
+
+.omp-deck-banner-text {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.omp-deck-alerts {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+
+.omp-deck-alerts-head {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  width: 100%;
+  padding: 5px 8px;
+  font: inherit;
+  text-align: left;
+  color: var(--omp-secondary);
+  background: transparent;
+  border: 0;
+  border-radius: 10px 10px 0 0;
+  cursor: pointer;
+}
+
+.omp-deck-alerts-head:hover,
+.omp-deck-alerts-head:focus-visible {
+  color: var(--omp-text);
+  background: var(--omp-panel-2);
+}
+
+.omp-deck-alerts-count {
+  color: var(--omp-text);
+  font-weight: 600;
+}
+
+.omp-deck-alerts-highest {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.omp-deck-alerts-toggle {
+  margin-left: auto;
+}
+
+.omp-deck-alerts-list {
+  margin: 0;
+  padding: 0 4px 4px;
+  list-style: none;
+  display: grid;
+  gap: 2px;
+  min-height: 0;
+  overflow-y: auto;
+}
+
+.omp-deck-alert {
+  display: flex;
+  align-items: baseline;
+  gap: 4px;
+  border-left: 2px solid transparent;
+  border-radius: 6px;
+}
+
+.omp-deck-alert[data-severity="high"] {
+  border-left-color: var(--omp-red);
+}
+
+.omp-deck-alert[data-severity="medium"] {
+  border-left-style: dashed;
+  border-left-color: var(--omp-amber, #ffb838);
+}
+
+.omp-deck-alert[data-severity="advisory"] {
+  border-left-color: var(--omp-border);
+}
+
+.omp-deck-alert-row {
+  display: grid;
+  grid-template-columns: 2ch 7ch 12ch minmax(0, 1fr);
+  gap: 6px;
+  align-items: baseline;
+  flex: 1 1 auto;
+  min-width: 0;
+  padding: 3px 6px;
+  font: inherit;
+  text-align: left;
+  color: var(--omp-secondary);
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  cursor: pointer;
+}
+
+.omp-deck-alert-row:hover,
+.omp-deck-alert-row:focus-visible {
+  color: var(--omp-text);
+  background: var(--omp-panel-2);
+  border-color: var(--omp-border);
+}
+
+.omp-deck-alert-glyph {
+  color: var(--omp-muted);
+  font-weight: 600;
+}
+
+.omp-deck-alert[data-severity="high"] .omp-deck-alert-glyph {
+  color: var(--omp-red);
+}
+
+.omp-deck-alert[data-severity="medium"] .omp-deck-alert-glyph {
+  color: var(--omp-amber, #ffb838);
+}
+
+.omp-deck-alert-severity,
+.omp-deck-alert-slice {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--omp-muted);
+}
+
+.omp-deck-alert-slice {
+  color: var(--omp-text);
+}
+
+.omp-deck-alert-message {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.omp-deck-alert-dismiss {
+  flex: none;
+  padding: 2px 6px;
+  font: inherit;
+  color: var(--omp-muted);
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 999px;
+  cursor: pointer;
+}
+
+.omp-deck-alert-dismiss:hover,
+.omp-deck-alert-dismiss:focus-visible {
+  color: var(--omp-text);
+  border-color: var(--omp-border);
+  background: var(--omp-panel-2);
 }
 
 .omp-deck-notice,

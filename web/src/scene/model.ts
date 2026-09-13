@@ -20,6 +20,7 @@
 import { depSatisfied, layoutDag } from "../lib/dag.ts";
 import { buildPipelineStages, currentStageIndex } from "../lib/pipeline.ts";
 import { isLiveStatus, preferredSliceId } from "../lib/selection.ts";
+import { activeAlerts, deriveAlerts, scanEvents, type DeckAlert } from "./alerts.ts";
 import { focusTarget, liveSliceIds } from "./focus.ts";
 import { stationSlots } from "./lanes.ts";
 import { railBounds, railPositions } from "./rail.ts";
@@ -66,6 +67,7 @@ function digestOf(
   nodes: RailNode[],
   edges: RailEdge[],
   stations: DeckStation[],
+  beacons: DeckAlert[],
 ): string {
   const parts: string[] = [runId ?? "", live ? "live" : "idle", focusId ?? ""];
   for (const n of nodes) {
@@ -86,6 +88,14 @@ function digestOf(
   for (const s of stations) {
     parts.push(`${s.id}\u0001${s.stack}\u0001${s.stage}\u0001${s.wedged ? 1 : 0}`);
   }
+  // Beacons (`d05`): the alerts the scene draws, by kind and severity — the
+  // ring pattern and its colour. The *text* and the evidence seq are
+  // deliberately absent: a new event on an already-beaconed slice must not
+  // repaint the scene, and the stack is DOM that re-renders at model cadence
+  // anyway.
+  for (const a of beacons) {
+    parts.push(`\u0003${a.sliceId ?? "-"}\u0001${a.kind}\u0001${a.severity}`);
+  }
   return parts.join("\u0002");
 }
 
@@ -102,6 +112,9 @@ function emptyModel(runId: string | null, live: boolean): DeckModel {
     liveIds: [],
     stations: [],
     stationOverflow: 0,
+    alerts: [],
+    beaconAlerts: [],
+    alertsOverflow: 0,
     warnings: [],
     focusId: null,
     bounds: railBounds([]),
@@ -145,6 +158,7 @@ export function buildDeckModel(input: DeckInput): DeckModel {
   const sliceDetail = input.sliceDetail;
 
   const agentById = new Map(input.agents.map((row) => [row.id, row]));
+  const seqIndex = scanEvents(input.events);
 
   const nodes: RailNode[] = layout.nodes.map((n) => {
     const slice = byId.get(n.id);
@@ -168,6 +182,7 @@ export function buildDeckModel(input: DeckInput): DeckModel {
       inCycle: cycleIds.has(n.id),
       reason: slice?.reason ?? null,
       alert: alertFor(n.status),
+      seq: seqIndex.bySlice.get(n.id) ?? 0,
       live: isLiveStatus(n.status),
       stage: stage.stage,
       stageLabel: stage.label,
@@ -218,6 +233,19 @@ export function buildDeckModel(input: DeckInput): DeckModel {
       focused: slot.id === focusId,
     };
   });
+  // Alerts (`d05`): the §D.8 taxonomy over the same DTOs the rail is built
+  // from, minus what the operator has dismissed. The scene draws the first
+  // `maxBeacons` of them (severity order, so the cap can only cost a beacon to
+  // an advisory alert while a high one is up); the stack renders them all.
+  const derived = deriveAlerts({
+    slices,
+    agents: input.agents,
+    events: input.events,
+    sliceDetail,
+    loops: detail.loops ?? [],
+  });
+  const alerts = activeAlerts(derived, input.dismissed, detail.runId);
+  const beaconAlerts = alerts.slice(0, Math.max(0, Math.floor(input.maxBeacons)));
   return {
     runId: detail.runId,
     live: input.live,
@@ -229,9 +257,12 @@ export function buildDeckModel(input: DeckInput): DeckModel {
     liveIds: stations.map((station) => station.id),
     stations,
     stationOverflow: stationLayout.overflow,
+    alerts,
+    beaconAlerts,
+    alertsOverflow: alerts.length - beaconAlerts.length,
     warnings: stationLayout.warnings,
     focusId,
     bounds: railBounds(positions.values()),
-    digest: digestOf(detail.runId, input.live, focusId, nodes, edges, stations),
+    digest: digestOf(detail.runId, input.live, focusId, nodes, edges, stations, beaconAlerts),
   };
 }

@@ -1,0 +1,745 @@
+{
+  "runId": "d05-transitions",
+  "scenarios": {
+    "A_one_worker": {
+      "deltas": [
+        {
+          "kind": "status",
+          "id": "alpha",
+          "from": "running",
+          "to": "verifying"
+        }
+      ],
+      "peaks": {
+        "maxTweens": 1,
+        "maxAnimated": 1,
+        "peakBeacons": 0
+      },
+      "before": {
+        "instances": 20,
+        "objects": 26,
+        "stationMarks": 13,
+        "geometries": 8,
+        "digest": "d05-transitions\u0002idle\u0002alpha\u0002alpha\u0001running\u0001\u00011001\u00012\u0002beta\u0001running\u0001\u00010001\u00012\u0002gamma\u0001verifying\u0001\u00010001\u00014\u0002zeta\u0001running\u0001\u00010001\u00012\u0002delta\u0001running\u0001\u00010001\u00012\u0002epsilon\u0001running\u0001\u00010001\u00012\u0002eta\u0001pending\u0001\u00010000\u0001-1\u0002alpha\u00010\u00012\u00010\u0002beta\u00010\u00012\u00010\u0002gamma\u00010\u00014\u00010\u0002zeta\u00010\u00012\u00010\u0002delta\u00010\u00012\u00010\u0002epsilon\u00010\u00012\u00010"
+      },
+      "after": {
+        "instances": 21,
+        "objects": 27,
+        "stationMarks": 14,
+        "geometries": 8,
+        "digest": "d05-transitions\u0002idle\u0002alpha\u0002alpha\u0001verifying\u0001\u00011001\u00014\u0002beta\u0001running\u0001\u00010001\u00012\u0002gamma\u0001verifying\u0001\u00010001\u00014\u0002zeta\u0001running\u0001\u00010001\u00012\u0002delta\u0001running\u0001\u00010001\u00012\u0002epsilon\u0001running\u0001\u00010001\u00012\u0002eta\u0001pending\u0001\u00010000\u0001-1\u0002alpha\u00010\u00014\u00010\u0002beta\u00010\u00012\u00010\u0002gamma\u00010\u00014\u00010\u0002zeta\u00010\u00012\u00010\u0002delta\u00010\u00012\u00010\u0002epsilon\u00010\u00012\u00010"
+      },
+      "lane": {
+        "id": "alpha",
+        "status": "verifying",
+        "stage": "Verify",
+        "focused": true
+      },
+      "window": {
+        "at": "1970-01-01T00:00:12.757Z",
+        "surface": "deck",
+        "tier": "minimal",
+        "windowMs": 4681,
+        "frames": 2,
+        "framesPerSec": 0.43,
+        "frameMs": {
+          "p50": 2.400000000372529,
+          "p95": 15.300000000745058,
+          "worst": 15.300000000745058,
+          "samples": 2
+        },
+        "commits": 5,
+        "commitsPerSec": 1.07,
+        "mutations": 16,
+        "mutationsPerSec": 3.42,
+        "domElements": 158,
+        "layoutMs": 0,
+        "longTasks": {
+          "count": 2,
+          "worstMs": 168
+        },
+        "heap": {
+          "supported": true,
+          "usedBytes": 10000000,
+          "reason": ""
+        },
+        "events": {
+          "applied": 1,
+          "perSec": 0.21,
+          "markMisses": 0
+        },
+        "latencyMs": {
+          "p50": 797,
+          "p95": 797,
+          "worst": 797,
+          "samples": 1
+        },
+        "latencyStages": {
+          "transport": {
+            "p50": 739,
+            "p95": 739,
+            "worst": 739,
+            "samples": 1
+          },
+          "dom": {
+            "p50": 58,
+            "p95": 58,
+            "worst": 58,
+            "samples": 1
+          },
+          "model": {
+            "p50": 177,
+            "p95": 177,
+            "worst": 177,
+            "samples": 1
+          },
+          "scene": {
+            "p50": 278,
+            "p95": 278,
+            "worst": 278,
+            "samples": 1
+          },
+          "samples": 1
+        },
+        "renderer": {
+          "drawCalls": 6,
+          "triangles": 252,
+          "lines": 18,
+          "objects": 27,
+          "instances": 21,
+          "programs": 4,
+          "textures": 0,
+          "geometries": 8,
+          "vertices": 536,
+          "pixels": 238068,
+          "fullScreenLayers": 0,
+          "linePixels": 13053,
+          "shadedPixels": 13053,
+          "stations": 6,
+          "stationMarks": 14,
+          "markers": 0,
+          "beacons": 0,
+          "tweens": 0,
+          "animatedEntities": 0,
+          "sceneWrites": 5,
+          "stationSegments": 3,
+          "fps": 0.9
+        },
+        "loop": {
+          "frames": 5,
+          "deferred": 0,
+          "idleStops": 0,
+          "hiddenDrops": 0,
+          "maxFps": 30
+        },
+        "estimate": {
+          "shadedPixels": 13053,
+          "shaderMs": 0.117477,
+          "basis": "shadedPixels = backing pixels × full-screen layers + grid-line upper bound; ms at 9 ns/px (d00)"
+        }
+      },
+      "padMoved": false
+    },
+    "B_simultaneous": {
+      "deltas": [
+        {
+          "kind": "status",
+          "id": "beta",
+          "from": "running",
+          "to": "blocked-env"
+        },
+        {
+          "kind": "status",
+          "id": "gamma",
+          "from": "verifying",
+          "to": "done"
+        },
+        {
+          "kind": "status",
+          "id": "zeta",
+          "from": "running",
+          "to": "verifying"
+        },
+        {
+          "kind": "alert",
+          "id": "beta",
+          "to": "blocked-env"
+        }
+      ],
+      "peaks": {
+        "maxTweens": 4,
+        "maxAnimated": 3,
+        "peakBeacons": 2
+      },
+      "lanesAfter": [
+        {
+          "id": "alpha",
+          "status": "verifying",
+          "stage": "Verify",
+          "focused": true
+        },
+        {
+          "id": "zeta",
+          "status": "verifying",
+          "stage": "Verify",
+          "focused": false
+        },
+        {
+          "id": "delta",
+          "status": "running",
+          "stage": "Work",
+          "focused": false
+        },
+        {
+          "id": "epsilon",
+          "status": "running",
+          "stage": "Work",
+          "focused": false
+        }
+      ],
+      "alerts": [
+        {
+          "id": "beta",
+          "severity": "high",
+          "kind": "blocked-env",
+          "message": "port 5432 refused — the environment is not up"
+        }
+      ],
+      "gammaMirror": "done",
+      "before": {
+        "instances": 21,
+        "objects": 27,
+        "stationMarks": 14,
+        "markers": 0
+      },
+      "after": {
+        "instances": 21,
+        "objects": 29,
+        "stationMarks": 10,
+        "markers": 2
+      },
+      "window": {
+        "at": "1970-01-01T00:00:19.861Z",
+        "surface": "deck",
+        "tier": "minimal",
+        "windowMs": 6471,
+        "frames": 2,
+        "framesPerSec": 0.31,
+        "frameMs": {
+          "p50": 1.599999999627471,
+          "p95": 1.8999999985098839,
+          "worst": 1.8999999985098839,
+          "samples": 2
+        },
+        "commits": 5,
+        "commitsPerSec": 0.77,
+        "mutations": 24,
+        "mutationsPerSec": 3.71,
+        "domElements": 154,
+        "layoutMs": 0.09999999962747097,
+        "longTasks": {
+          "count": 3,
+          "worstMs": 73
+        },
+        "heap": {
+          "supported": true,
+          "usedBytes": 10000000,
+          "reason": ""
+        },
+        "events": {
+          "applied": 1,
+          "perSec": 0.15,
+          "markMisses": 0
+        },
+        "latencyMs": {
+          "p50": 226,
+          "p95": 226,
+          "worst": 226,
+          "samples": 1
+        },
+        "latencyStages": {
+          "transport": {
+            "p50": 181,
+            "p95": 202,
+            "worst": 202,
+            "samples": 4
+          },
+          "dom": {
+            "p50": 24,
+            "p95": 24,
+            "worst": 24,
+            "samples": 1
+          },
+          "model": {
+            "p50": 139,
+            "p95": 139,
+            "worst": 139,
+            "samples": 1
+          },
+          "scene": {
+            "p50": 226,
+            "p95": 226,
+            "worst": 226,
+            "samples": 1
+          },
+          "samples": 4
+        },
+        "renderer": {
+          "drawCalls": 8,
+          "triangles": 324,
+          "lines": 18,
+          "objects": 29,
+          "instances": 21,
+          "programs": 4,
+          "textures": 0,
+          "geometries": 8,
+          "vertices": 536,
+          "pixels": 238068,
+          "fullScreenLayers": 0,
+          "linePixels": 13053,
+          "shadedPixels": 13053,
+          "stations": 4,
+          "stationMarks": 10,
+          "markers": 2,
+          "beacons": 2,
+          "tweens": 0,
+          "animatedEntities": 0,
+          "sceneWrites": 8,
+          "stationSegments": 3,
+          "fps": 0.9
+        },
+        "loop": {
+          "frames": 7,
+          "deferred": 0,
+          "idleStops": 0,
+          "hiddenDrops": 0,
+          "maxFps": 30
+        },
+        "estimate": {
+          "shadedPixels": 13053,
+          "shaderMs": 0.117477,
+          "basis": "shadedPixels = backing pixels × full-screen layers + grid-line upper bound; ms at 9 ns/px (d00)"
+        }
+      },
+      "padMoved": false
+    },
+    "C_alert_while_focused": {
+      "deltas": [
+        {
+          "kind": "status",
+          "id": "alpha",
+          "from": "verifying",
+          "to": "failed"
+        },
+        {
+          "kind": "alert",
+          "id": "alpha",
+          "to": "failed"
+        },
+        {
+          "kind": "alert-cleared",
+          "id": "alpha",
+          "to": "verify-failed"
+        }
+      ],
+      "peaks": {
+        "maxTweens": 3,
+        "maxAnimated": 1,
+        "peakBeacons": 5
+      },
+      "alerts": [
+        {
+          "id": "alpha",
+          "severity": "high",
+          "kind": "failed",
+          "message": "gate bun test failed — 2 tests"
+        },
+        {
+          "id": "beta",
+          "severity": "high",
+          "kind": "blocked-env",
+          "message": "port 5432 refused — the environment is not up"
+        }
+      ],
+      "focused": "delta",
+      "cameraHeld": true,
+      "window": {
+        "at": "1970-01-01T00:00:30.107Z",
+        "surface": "deck",
+        "tier": "minimal",
+        "windowMs": 6344,
+        "frames": 4,
+        "framesPerSec": 0.63,
+        "frameMs": {
+          "p50": 11.799999998882413,
+          "p95": 23.700000001117587,
+          "worst": 23.700000001117587,
+          "samples": 4
+        },
+        "commits": 6,
+        "commitsPerSec": 0.95,
+        "mutations": 24,
+        "mutationsPerSec": 3.78,
+        "domElements": 141,
+        "layoutMs": 0.09999999962747097,
+        "longTasks": {
+          "count": 5,
+          "worstMs": 142
+        },
+        "heap": {
+          "supported": true,
+          "usedBytes": 10000000,
+          "reason": ""
+        },
+        "events": {
+          "applied": 1,
+          "perSec": 0.16,
+          "markMisses": 0
+        },
+        "latencyMs": {
+          "p50": 686,
+          "p95": 686,
+          "worst": 686,
+          "samples": 1
+        },
+        "latencyStages": {
+          "transport": {
+            "p50": 652,
+            "p95": 652,
+            "worst": 652,
+            "samples": 2
+          },
+          "dom": {
+            "p50": 34,
+            "p95": 34,
+            "worst": 34,
+            "samples": 1
+          },
+          "model": {
+            "p50": 41,
+            "p95": 41,
+            "worst": 41,
+            "samples": 1
+          },
+          "scene": {
+            "p50": 133,
+            "p95": 133,
+            "worst": 133,
+            "samples": 1
+          },
+          "samples": 2
+        },
+        "renderer": {
+          "drawCalls": 8,
+          "triangles": 396,
+          "lines": 18,
+          "objects": 29,
+          "instances": 21,
+          "programs": 4,
+          "textures": 0,
+          "geometries": 8,
+          "vertices": 536,
+          "pixels": 238068,
+          "fullScreenLayers": 0,
+          "linePixels": 13053,
+          "shadedPixels": 13053,
+          "stations": 3,
+          "stationMarks": 7,
+          "markers": 3,
+          "beacons": 4,
+          "tweens": 0,
+          "animatedEntities": 0,
+          "sceneWrites": 16,
+          "stationSegments": 2,
+          "fps": 1.9
+        },
+        "loop": {
+          "frames": 15,
+          "deferred": 0,
+          "idleStops": 0,
+          "hiddenDrops": 0,
+          "maxFps": 30
+        },
+        "estimate": {
+          "shadedPixels": 13053,
+          "shaderMs": 0.117477,
+          "basis": "shadedPixels = backing pixels × full-screen layers + grid-line upper bound; ms at 9 ns/px (d00)"
+        }
+      }
+    },
+    "D_focused_completes": {
+      "pinned": {
+        "deltas": [
+          {
+            "kind": "status",
+            "id": "epsilon",
+            "from": "running",
+            "to": "done"
+          }
+        ],
+        "focusedAfter": "epsilon",
+        "cameraHeld": true,
+        "peaks": {
+          "maxTweens": 0,
+          "maxAnimated": 0,
+          "peakBeacons": 4
+        },
+        "window": {
+          "at": "1970-01-01T00:00:38.897Z",
+          "surface": "deck",
+          "tier": "minimal",
+          "windowMs": 6258,
+          "frames": 1,
+          "framesPerSec": 0.16,
+          "frameMs": {
+            "p50": 1.099999999627471,
+            "p95": 1.099999999627471,
+            "worst": 1.099999999627471,
+            "samples": 1
+          },
+          "commits": 5,
+          "commitsPerSec": 0.8,
+          "mutations": 43,
+          "mutationsPerSec": 6.87,
+          "domElements": 140,
+          "layoutMs": 0.09999999962747097,
+          "longTasks": {
+            "count": 4,
+            "worstMs": 174
+          },
+          "heap": {
+            "supported": true,
+            "usedBytes": 10000000,
+            "reason": ""
+          },
+          "events": {
+            "applied": 1,
+            "perSec": 0.16,
+            "markMisses": 0
+          },
+          "latencyMs": {
+            "p50": 908,
+            "p95": 908,
+            "worst": 908,
+            "samples": 1
+          },
+          "latencyStages": {
+            "transport": {
+              "p50": 850,
+              "p95": 850,
+              "worst": 850,
+              "samples": 2
+            },
+            "dom": {
+              "p50": 58,
+              "p95": 58,
+              "worst": 58,
+              "samples": 1
+            },
+            "model": {
+              "p50": 203,
+              "p95": 203,
+              "worst": 203,
+              "samples": 1
+            },
+            "scene": {
+              "p50": 414,
+              "p95": 414,
+              "worst": 414,
+              "samples": 1
+            },
+            "samples": 2
+          },
+          "renderer": {
+            "drawCalls": 8,
+            "triangles": 372,
+            "lines": 18,
+            "objects": 27,
+            "instances": 19,
+            "programs": 4,
+            "textures": 0,
+            "geometries": 8,
+            "vertices": 488,
+            "pixels": 238068,
+            "fullScreenLayers": 0,
+            "linePixels": 13053,
+            "shadedPixels": 13053,
+            "stations": 2,
+            "stationMarks": 5,
+            "markers": 3,
+            "beacons": 4,
+            "tweens": 0,
+            "animatedEntities": 0,
+            "sceneWrites": 20,
+            "stationSegments": 0,
+            "fps": 2.7
+          },
+          "loop": {
+            "frames": 24,
+            "deferred": 0,
+            "idleStops": 0,
+            "hiddenDrops": 0,
+            "maxFps": 30
+          },
+          "estimate": {
+            "shadedPixels": 13053,
+            "shaderMs": 0.117477,
+            "basis": "shadedPixels = backing pixels × full-screen layers + grid-line upper bound; ms at 9 ns/px (d00)"
+          }
+        }
+      },
+      "released": {
+        "focusedAfter": "zeta",
+        "liveCount": 2,
+        "cameraMoved": true
+      }
+    },
+    "E_reduced_motion": {
+      "peaks": {
+        "maxTweens": 0,
+        "maxAnimated": 0,
+        "peakBeacons": 6
+      },
+      "alerts": [
+        {
+          "id": "delta",
+          "severity": "high",
+          "kind": "failed",
+          "message": "gate bun test failed — 2 tests"
+        },
+        {
+          "id": "alpha",
+          "severity": "high",
+          "kind": "failed",
+          "message": "gate bun test failed — 2 tests"
+        },
+        {
+          "id": "beta",
+          "severity": "high",
+          "kind": "blocked-env",
+          "message": "port 5432 refused — the environment is not up"
+        }
+      ],
+      "motion": "reduced",
+      "beacons": 6,
+      "before": {
+        "alerts": 2,
+        "beacons": 4,
+        "instances": 19
+      },
+      "after": {
+        "alerts": 3,
+        "beacons": 6,
+        "instances": 20
+      },
+      "window": {
+        "at": "1970-01-01T00:00:48.465Z",
+        "surface": "deck",
+        "tier": "minimal",
+        "windowMs": 5165,
+        "frames": 2,
+        "framesPerSec": 0.39,
+        "frameMs": {
+          "p50": 3.199999999254942,
+          "p95": 5.5,
+          "worst": 5.5,
+          "samples": 2
+        },
+        "commits": 4,
+        "commitsPerSec": 0.77,
+        "mutations": 21,
+        "mutationsPerSec": 4.07,
+        "domElements": 134,
+        "layoutMs": 0.09999999962747097,
+        "longTasks": {
+          "count": 3,
+          "worstMs": 155
+        },
+        "heap": {
+          "supported": true,
+          "usedBytes": 10000000,
+          "reason": ""
+        },
+        "events": {
+          "applied": 1,
+          "perSec": 0.19,
+          "markMisses": 0
+        },
+        "latencyMs": {
+          "p50": 152,
+          "p95": 152,
+          "worst": 152,
+          "samples": 1
+        },
+        "latencyStages": {
+          "transport": {
+            "p50": 113,
+            "p95": 113,
+            "worst": 113,
+            "samples": 1
+          },
+          "dom": {
+            "p50": 39,
+            "p95": 39,
+            "worst": 39,
+            "samples": 1
+          },
+          "model": {
+            "p50": 82,
+            "p95": 82,
+            "worst": 82,
+            "samples": 1
+          },
+          "scene": {
+            "p50": 88,
+            "p95": 88,
+            "worst": 88,
+            "samples": 1
+          },
+          "samples": 1
+        },
+        "renderer": {
+          "drawCalls": 8,
+          "triangles": 456,
+          "lines": 18,
+          "objects": 28,
+          "instances": 20,
+          "programs": 3,
+          "textures": 0,
+          "geometries": 8,
+          "vertices": 512,
+          "pixels": 238068,
+          "fullScreenLayers": 0,
+          "linePixels": 13053,
+          "shadedPixels": 13053,
+          "stations": 1,
+          "stationMarks": 3,
+          "markers": 4,
+          "beacons": 6,
+          "tweens": 0,
+          "animatedEntities": 0,
+          "sceneWrites": 3,
+          "stationSegments": 3,
+          "fps": 0.5
+        },
+        "loop": {
+          "frames": 3,
+          "deferred": 0,
+          "idleStops": 0,
+          "hiddenDrops": 0,
+          "maxFps": 30
+        },
+        "estimate": {
+          "shadedPixels": 13053,
+          "shaderMs": 0.117477,
+          "basis": "shadedPixels = backing pixels × full-screen layers + grid-line upper bound; ms at 9 ns/px (d00)"
+        }
+      }
+    }
+  },
+  "notes": {
+    "motion": "full",
+    "pollMs": 900,
+    "tier": "chromium"
+  }
+}
