@@ -387,6 +387,30 @@ async function hoverPad(page: Page, id: string): Promise<boolean> {
   return true;
 }
 
+/**
+ * Element counts per deck surface, for the churn step's boundedness claim.
+ * The band and the alert column are counted separately because they track the
+ * run (recorded buckets, live conditions) rather than the burst's own output.
+ */
+async function deckElementCounts(page: Page): Promise<{ elements: number; time: number; alerts: number }> {
+  return page.evaluate(() => {
+    const count = (selector: string): number => document.querySelector(selector)?.querySelectorAll("*").length ?? 0;
+    return {
+      elements: document.querySelectorAll("*").length,
+      time: count(".omp-deck-time"),
+      alerts: count(".omp-deck-alertcol"),
+    };
+  });
+}
+
+/** The surfaces the transcript/control burst must not grow. */
+function burstSurface(counts: { elements: number; time: number; alerts: number }): number {
+  return counts.elements - counts.time - counts.alerts;
+}
+
+/** Ceiling for the whole document, well above every measured fixture. */
+const DECK_DOM_CEILING = 600;
+
 /** Wait for the 240 ms enter/leave motion to clear, so row counts are real. */
 async function settleMotion(page: Page): Promise<void> {
   await expect.poll(async () => (await readDom(page)).ghostRows, { timeout: 8_000 }).toBe(0);
@@ -838,6 +862,7 @@ test.describe("deck d03 workflow", () => {
       if ((await readDom(page)).expanded === "true") await page.locator(".omp-deck").press("e");
       await page.waitForTimeout(600);
       const latestBefore = await readSample(page, "latest");
+      const countsBefore = await deckElementCounts(page);
       s7.numbers.domBefore = (await readDom(page)).rows;
 
       const statuses: number[] = [];
@@ -869,9 +894,22 @@ test.describe("deck d03 workflow", () => {
       requireContract([...contractMissing, ...missingDom(compact)], ["dom:.omp-deck-live"]);
       expect(compact.rows).toBeLessThanOrEqual(5);
       expect(compact.rows).toBeGreaterThan(0);
-      // The deck's DOM is bounded, not monotonically growing, under churn.
+      // The deck's DOM is bounded, not monotonically growing, under churn — and
+      // "bounded" is per surface, because two of them are *supposed* to track
+      // the run rather than the burst: the temporal band draws one bar/button
+      // per recorded bucket (`d07`, capped at `RIBBON_MAX_BUCKETS` + 1) and the
+      // alert column holds one row per live condition, including the newest
+      // rejected control intent (`d08`). What the burst actually stresses — the
+      // live window, the pad mirror, the lane strip, the action bar — must not
+      // grow at all, and the deck as a whole stays under a fixed ceiling: 420
+      // transcript lines and 100 events buy no rows and no panels.
+      const countsAfter = await deckElementCounts(page);
+      const burstSurfaceBefore = burstSurface(countsBefore);
+      const burstSurfaceAfter = burstSurface(countsAfter);
+      churn.domBurstSurface = [burstSurfaceBefore, burstSurfaceAfter];
       expect(beforeElements).toBeGreaterThan(0);
-      expect(afterElements).toBeLessThanOrEqual(Math.round(beforeElements * 1.3));
+      expect(burstSurfaceAfter).toBeLessThanOrEqual(Math.round(burstSurfaceBefore * 1.3));
+      expect(countsAfter.elements).toBeLessThanOrEqual(DECK_DOM_CEILING);
 
       await page.locator(".omp-deck").press("e");
       await expect.poll(async () => (await readDom(page)).expanded, { timeout: 8_000 }).toBe("true");

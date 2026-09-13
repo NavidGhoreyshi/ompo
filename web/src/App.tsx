@@ -265,15 +265,20 @@ export default function App() {
         /* offline tick — next poll retries */
       }
     }, POLL_MS);
-    // Operator sessions start/end without emitting run events (prompt + log
-    // files only), so refresh the list on a slow tick regardless of SSE.
-    const sessPoll = setInterval(() => {
+    // Two lists change without emitting run events, so SSE cannot refresh
+    // them: operator sessions appear and end as files (prompt/log only), and
+    // an agent row's `wedged` flag is *silence* — a stale transcript crossing
+    // the server's threshold while nothing at all happens. The deck's
+    // wedged-loop recovery (`d08`) and its stall alerts read the second one,
+    // which is why this tick exists rather than a fetch per event.
+    const slowPoll = setInterval(() => {
       void api.sessions(runId).then(setSessions).catch(() => {});
+      void api.agents(runId).then(setAgents).catch(() => {});
     }, 10000);
     return () => {
       es?.close();
       clearInterval(poll);
-      clearInterval(sessPoll);
+      clearInterval(slowPoll);
     };
   }, [runId, loadRun, pushTimeline]);
 

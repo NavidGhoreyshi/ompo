@@ -190,6 +190,7 @@ const BEACON_TOKENS: Record<DeckAlertKind, TokenName> = {
   "verify-failed": "warning",
   "review-rejected": "ring",
   "verdict-stall": "muted",
+  "control-rejected": "warning",
 };
 /** Brightness per severity: a third, redundant channel on top of count and text. */
 const BEACON_DIM: Record<AlertSeverity, number> = { high: 1, medium: 0.85, advisory: 0.55 };

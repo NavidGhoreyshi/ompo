@@ -38,7 +38,8 @@ export type DeckAlertKind =
   | "review-rejected"
   | "wedged"
   | "verdict-stall"
-  | "double-loop";
+  | "double-loop"
+  | "control-rejected";
 
 export type AlertSeverity = "high" | "medium" | "advisory";
 
@@ -55,6 +56,7 @@ const SEVERITY_BY_KIND: Record<DeckAlertKind, AlertSeverity> = {
   "double-loop": "high",
   "verify-failed": "medium",
   "review-rejected": "medium",
+  "control-rejected": "medium",
   "verdict-stall": "advisory",
 };
 
@@ -172,6 +174,12 @@ export interface EventIndex {
   verifyFailed: Map<string, RunEvent>;
   /** Newest event per slice, whatever its type — the fallback reason source. */
   newest: Map<string, RunEvent>;
+  /**
+   * The newest rejected control intent in the window (`d08`). One row, not one
+   * per rejection: the operator's live question is "did my press land", and a
+   * newer rejection supersedes the older one exactly like a re-failure does.
+   */
+  controlRejected: RunEvent | null;
 }
 
 export function scanEvents(events: readonly RunEvent[]): EventIndex {
@@ -179,8 +187,12 @@ export function scanEvents(events: readonly RunEvent[]): EventIndex {
   const verifyFailed = new Map<string, RunEvent>();
   const newest = new Map<string, RunEvent>();
   let run = 0;
+  let controlRejected: RunEvent | null = null;
   for (const event of events) {
     if (event.seq > run) run = event.seq;
+    if (event.type === "control_rejected" && (controlRejected === null || event.seq > controlRejected.seq)) {
+      controlRejected = event;
+    }
     const sliceId = event.sliceId;
     if (sliceId === undefined) continue;
     const previous = bySlice.get(sliceId);
@@ -191,7 +203,7 @@ export function scanEvents(events: readonly RunEvent[]): EventIndex {
     const failed = verifyFailed.get(sliceId);
     if (failed === undefined || event.seq > failed.seq) verifyFailed.set(sliceId, event);
   }
-  return { bySlice, run, verifyFailed, newest };
+  return { bySlice, run, verifyFailed, newest, controlRejected };
 }
 
 /**
@@ -278,6 +290,22 @@ export function deriveAlerts(input: AlertInput): DeckAlert[] {
   if (input.loops.length > 1) {
     const pids = input.loops.map((loop) => loop.pid).join(", ");
     push("double-loop", null, `${input.loops.length} loop processes on this run — pids ${pids}`, run);
+  }
+
+  // A rejected control intent (`d08`). The event's own detail is the server's
+  // explanation (`control.ts` writes `${kind}: ${message}`), so the row repeats
+  // the operator's press and the server's words verbatim — the deck never
+  // paraphrases a rejection it did not make. Keyed by the rejection's seq, so
+  // dismissing one sticks until a *newer* rejection exists.
+  const rejected = index.controlRejected;
+  if (rejected !== null) {
+    const detail = (rejected.detail ?? "").trim();
+    push(
+      "control-rejected",
+      rejected.sliceId ?? null,
+      detail.length > 0 ? truncateDetail(detail, 120) : "control intent rejected (no message recorded)",
+      rejected.seq,
+    );
   }
 
   const boardOrder = new Map(input.slices.map((slice, index) => [slice.id, index]));

@@ -35,6 +35,7 @@ import type { EdgeMarker } from "./camera.ts";
 import type { RibbonBucket } from "./history.ts";
 import type { DeckModel, RailNode, ReplayState } from "./types.ts";
 import HistoryWall from "./HistoryWall.tsx";
+import DeckControlBar from "./ControlBar.tsx";
 
 /**
  * Severity as a glyph, next to the plain word. The stack never depends on
@@ -139,6 +140,11 @@ export default function DeckOverlay({
   onToggleWall,
   onOpenRun,
   onVerifyReplay,
+  live,
+  loops,
+  onControlDone,
+  selectedId,
+  slices,
 }: {
   model: DeckModel;
   /** Pad under the pointer, if any — previewed without changing selection. */
@@ -206,6 +212,16 @@ export default function DeckOverlay({
   onToggleWall: () => void;
   onOpenRun: (runId: string) => void;
   onVerifyReplay: () => void;
+  /** The run's live flag (`RunDetail.live`) — the action bar's quiescent recast. */
+  live: boolean;
+  /** Recorded loop processes for this run (`RunDetail.loops.length`). */
+  loops: number;
+  /** The shell's refetch after a control attempt — the dashboard's own callback. */
+  onControlDone: () => void;
+  /** The app's selection, before it is resolved against this run's DTOs (`d08`). */
+  selectedId: string | null;
+  /** The current run's slice DTOs — the list a control press must address. */
+  slices: SliceSummary[];
 }) {
   const nodeById = new Map(model.nodes.map((node) => [node.id, node]));
   const selected = model.nodes.find((node) => node.selected) ?? null;
@@ -236,6 +252,17 @@ export default function DeckOverlay({
   const banners = model.alerts.filter((alert) => alert.sliceId === null);
   const rows = model.alerts.filter((alert) => alert.sliceId !== null);
   const highest = model.alerts[0] ?? null;
+
+  // Control (`d08`): the action bar acts on the *selection*, never on the
+  // hover preview — and only when the selection still exists in the run on
+  // screen, so a run switch in flight disables the bar instead of letting a
+  // press address the previous run's slice by name. "Stalled" is the deck's
+  // own existing stall signal — a wedged worker or an idle verdict already on
+  // the alert stack — so the wedged-loop recovery appears when the surface is
+  // already saying "stuck", and never as an extra button on a healthy run.
+  const controlTarget = selectedId === null ? null : (slices.find((slice) => slice.id === selectedId) ?? null);
+  const stalled = model.alerts.some((alert) => alert.kind === "wedged" || alert.kind === "verdict-stall");
+  const targetWedged = controlTarget !== null && agents.find((row) => row.id === controlTarget.id)?.wedged === true;
 
   // ---- the temporal layer (`d07`) ----
   //
@@ -511,103 +538,18 @@ export default function DeckOverlay({
         )}
       </div>
 
-      {/* The bottom band: the selected/hovered line, the live window and the
-          alert column. Normal layout: line bottom-right, window bottom-left,
-          alerts bottom-right — the wrapper is `display: contents`, so nothing
-          moves. With the dock open (`d06`) it becomes one grid in the column
-          the dock leaves: the line names the subject, the window and the
-          alerts share the row beneath it. */}
+      {/* The bottom band: the live window bottom-left, and one right-hand
+          column that stacks the alert column above the selected line and its
+          action bar (`d08`). One column, because two panels anchored to the
+          same corner would overlap the moment either grew — and the bar is
+          *clickable*, so "the alerts paint over it" is not a cosmetic bug.
+          Normal layout: the wrapper is absolute in the corner; with the dock
+          open (`d06`) it becomes `display: contents`, so its two children take
+          the grid cells they had before (the line spanning both columns, the
+          window and the alerts sharing the row beneath it). */}
       <div className="omp-deck-bottom">
-        <p className="omp-deck-line" data-kind={hovered ? "hover" : "selected"}>
-          <span className="omp-deck-line-hint">{hovered ? "hover" : "selected"}</span>
-          {shown ? (
-            <>
-              <StatusBadge status={shown.status} />
-              <code className="omp-deck-line-id">{shown.id}</code>
-              <span className="omp-deck-line-title" title={shown.title}>
-                {shown.title}
-              </span>
-              <span className="omp-deck-line-meta">
-                gen {shown.generation} · attempt {shown.attempts}
-                {shown.effort ? ` · ${shown.effort}` : ""}
-              </span>
-              {/* The selected slice's observed attempts (`d07`), from the
-                  dashboard's own segmentation: how many tries, how long each,
-                  which one is open. Read, never re-derived. */}
-              {attempts.length > 0 && (
-                <span className="omp-deck-line-attempts" title={attempts.map(attemptLabel).join(" · ")}>
-                  {attempts.slice(-4).map((attempt) => (
-                    <span key={`${attempt.attempt}:${attempt.startSeq}`} data-open={attempt.open ? "true" : "false"}>
-                      {attemptLabel(attempt)}
-                    </span>
-                  ))}
-                  {attempts.length > 4 && <span>+{attempts.length - 4}</span>}
-                </span>
-              )}
-              {action && (
-                <span className="omp-deck-line-action" title={action}>
-                  {action}
-                </span>
-              )}
-              {/* Inspecting acts on the *selection*; while the pointer is
-                  previewing another pad the line is a hover readout, so the
-                  affordance is not offered there. */}
-              {hovered === null && !dockOpen && (
-                <button
-                  type="button"
-                  className="omp-deck-inspect omp-deck-line-inspect"
-                  aria-label={`Inspect ${shown.id} in the dock`}
-                  onClick={() => onInspect(shown.id)}
-                >
-                  Inspect
-                </button>
-              )}
-            </>
-          ) : (
-            <span className="omp-deck-line-meta">nothing selected</span>
-          )}
-        </p>
-
-        {/* The live window: the dashboard's own component, driven but never
-            forked. Freeze and expand are the deck's view state, so the keyboard
-            can own them (Space / E) without reaching into the window.
-            At a historical cursor the window is *paused instead of retargeted*:
-            it shows the run as it is now, and mixing that with a recorded scene
-            would make the surface say two tenses at once — and every scrub step
-            would re-subject it (and re-fetch). The note names the way back, so
-            the live workflow is one key away rather than hidden. */}
-        {model.historySeq === null ? (
-          <div className="omp-deck-live">
-            <LiveFeed
-              runId={model.runId}
-              slice={focusSlice}
-              agent={focusAgent}
-              events={events}
-              frozen={frozen}
-              onFrozenChange={onFrozenChange}
-              expanded={expanded}
-              onExpandedChange={onExpandedChange}
-            />
-          </div>
-        ) : (
-          <div className="omp-deck-live omp-deck-live-past" role="status">
-            {/* No button here on purpose: the band above already carries
-                `RETURN TO LIVE`, and a second control for the same act is the
-                duplication this surface exists to avoid. The note says what is
-                missing and where the way back is. */}
-            <p className="omp-deck-live-note">
-              The live window is paused while the deck shows the recorded state at seq {model.historySeq} — press{" "}
-              <kbd>L</kbd> or <strong>RETURN TO LIVE</strong> above.
-            </p>
-          </div>
-        )}
-
-        {/* Run-level alerts (`d05`) and the slice stack share one bottom-right
-            column: the HUD owns the top, the lane strip the top-right, the live
-            window the bottom-left. A banner is for a condition that is not one
-            slice's problem (two loop processes). */}
-        {(banners.length > 0 || rows.length > 0) && (
-          <div className="omp-deck-alertcol">
+        <div className="omp-deck-right">
+        <div className="omp-deck-alertcol">
           {banners.map((alert) => (
             <p key={`${alert.kind}:${alert.lastSeq}`} className="omp-deck-banner" data-kind={alert.kind} data-severity={alert.severity} role="alert">
               <span className="omp-deck-alert-glyph" aria-hidden="true">
@@ -696,8 +638,114 @@ export default function DeckOverlay({
               )}
             </section>
           )}
+        </div>
+
+        {/* The selection's panel: the line names the subject, the action bar
+            (`d08`) acts on it. They share one wrapper so the bar appears
+            exactly where the selection is named, and the panel grows upward as
+            one object instead of covering the window or the alert column. */}
+        <div className="omp-deck-linewrap">
+        <DeckControlBar
+          runId={model.runId}
+          target={controlTarget}
+          selectedId={selectedId}
+          events={events}
+          live={live}
+          loops={loops}
+          stalled={stalled}
+          historySeq={model.historySeq}
+          wedged={targetWedged}
+          onControlDone={onControlDone}
+        />
+        <p className="omp-deck-line" data-kind={hovered ? "hover" : "selected"}>
+          <span className="omp-deck-line-hint">{hovered ? "hover" : "selected"}</span>
+          {shown ? (
+            <>
+              <StatusBadge status={shown.status} />
+              <code className="omp-deck-line-id">{shown.id}</code>
+              <span className="omp-deck-line-title" title={shown.title}>
+                {shown.title}
+              </span>
+              <span className="omp-deck-line-meta">
+                gen {shown.generation} · attempt {shown.attempts}
+                {shown.effort ? ` · ${shown.effort}` : ""}
+              </span>
+              {/* The selected slice's observed attempts (`d07`), from the
+                  dashboard's own segmentation: how many tries, how long each,
+                  which one is open. Read, never re-derived. */}
+              {attempts.length > 0 && (
+                <span className="omp-deck-line-attempts" title={attempts.map(attemptLabel).join(" · ")}>
+                  {attempts.slice(-4).map((attempt) => (
+                    <span key={`${attempt.attempt}:${attempt.startSeq}`} data-open={attempt.open ? "true" : "false"}>
+                      {attemptLabel(attempt)}
+                    </span>
+                  ))}
+                  {attempts.length > 4 && <span>+{attempts.length - 4}</span>}
+                </span>
+              )}
+              {action && (
+                <span className="omp-deck-line-action" title={action}>
+                  {action}
+                </span>
+              )}
+              {/* Inspecting acts on the *selection*; while the pointer is
+                  previewing another pad the line is a hover readout, so the
+                  affordance is not offered there. */}
+              {hovered === null && !dockOpen && (
+                <button
+                  type="button"
+                  className="omp-deck-inspect omp-deck-line-inspect"
+                  aria-label={`Inspect ${shown.id} in the dock`}
+                  onClick={() => onInspect(shown.id)}
+                >
+                  Inspect
+                </button>
+              )}
+            </>
+          ) : (
+            <span className="omp-deck-line-meta">nothing selected</span>
+          )}
+        </p>
+        </div>
+        </div>
+
+        {/* The live window: the dashboard's own component, driven but never
+            forked. Freeze and expand are the deck's view state, so the keyboard
+            can own them (Space / E) without reaching into the window.
+            At a historical cursor the window is *paused instead of retargeted*:
+            it shows the run as it is now, and mixing that with a recorded scene
+            would make the surface say two tenses at once — and every scrub step
+            would re-subject it (and re-fetch). The note names the way back, so
+            the live workflow is one key away rather than hidden. */}
+        {model.historySeq === null ? (
+          <div className="omp-deck-live">
+            <LiveFeed
+              runId={model.runId}
+              slice={focusSlice}
+              agent={focusAgent}
+              events={events}
+              frozen={frozen}
+              onFrozenChange={onFrozenChange}
+              expanded={expanded}
+              onExpandedChange={onExpandedChange}
+            />
+          </div>
+        ) : (
+          <div className="omp-deck-live omp-deck-live-past" role="status">
+            {/* No button here on purpose: the band above already carries
+                `RETURN TO LIVE`, and a second control for the same act is the
+                duplication this surface exists to avoid. The note says what is
+                missing and where the way back is. */}
+            <p className="omp-deck-live-note">
+              The live window is paused while the deck shows the recorded state at seq {model.historySeq} — press{" "}
+              <kbd>L</kbd> or <strong>RETURN TO LIVE</strong> above.
+            </p>
           </div>
         )}
+
+        {/* Run-level alerts (`d05`) and the slice stack live in the column
+            above; a banner is for a condition that is not one slice's problem
+            (two loop processes). */}
       </div>
 
       {/* The accessibility backbone: every pad is a real button, in roadmap

@@ -1,13 +1,25 @@
 import { useEffect, useMemo, useState } from "react";
 import { LuCheck, LuMinus, LuPause, LuPlay, LuPlus, LuRotateCcw, LuSkipForward, LuSquare } from "react-icons/lu";
 import type { IconType } from "react-icons";
+import { api, type ControlIntent, type RunEvent, type SliceSummary } from "../api.ts";
 import {
-  api,
-  type ControlIntent,
-  type ControlKind,
-  type RunEvent,
-  type SliceSummary,
-} from "../api.ts";
+  DESTRUCTIVE,
+  SLICE_ACTIONS,
+  findOutcome,
+  jobsError,
+  jobsIntent,
+  parkReasonError,
+  pendingFrom,
+  restartOutcome,
+  restartReasonError,
+  resumeOutcome,
+  runIntent,
+  sliceIntent,
+  type DirectOutcome,
+  type PendingIntent,
+  type RunKind,
+  type SliceKind,
+} from "../lib/control.ts";
 import { Badge } from "./ui/badge.tsx";
 import { Button } from "./ui/button.tsx";
 import { StatusSymbol } from "./icons.tsx";
@@ -27,43 +39,13 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from ".
  * control_applied / control_rejected.
  */
 
-type SliceKind = "retry" | "skip" | "park" | "kill";
-type RunKind = "pause" | "resume";
-
-const SLICE_ACTIONS: readonly { kind: SliceKind; label: string; hint: string; icon: IconType }[] = [
-  { kind: "retry", label: "Retry", hint: "re-queue the slice with one more attempt", icon: LuRotateCcw },
-  { kind: "skip", label: "Skip", hint: "mark skipped — needs confirmation", icon: LuSkipForward },
-  { kind: "park", label: "Park", hint: "park with a reason (required)", icon: LuPause },
-  { kind: "kill", label: "Kill", hint: "kill the slice — needs confirmation", icon: LuSquare },
-];
-
-/** Destructive slice actions arm an inline confirm before the same API call. */
- const DESTRUCTIVE: Partial<Record<SliceKind, true>> = { skip: true, kill: true };
-
-interface PendingIntent {
-  seq: number;
-  kind: ControlKind;
-  sliceId?: string;
-  jobs?: number;
-}
-
-interface DirectOutcome {
-  ok: boolean;
-  message: string;
-}
-
-function outcomeMatches(e: RunEvent, pending: PendingIntent): boolean {
-  if (e.seq <= pending.seq) return false;
-  if (e.type !== "control_applied" && e.type !== "control_rejected") return false;
-  if ((e.sliceId ?? undefined) !== pending.sliceId) return false;
-  // Applied/rejected details are `${kind}: ${message}` (control.ts applyIntent).
-  if (typeof e.detail === "string" && e.detail.length > 0) {
-    if (e.detail === pending.kind) return true;
-    if (e.detail.startsWith(`${pending.kind}:`)) return true;
-    // Fall through to scope+recency matching when the payload shape drifts.
-  }
-  return true;
-}
+/** Icons are the dashboard's half of `SLICE_ACTIONS`: words and kinds are shared. */
+const SLICE_ICONS: Record<SliceKind, IconType> = {
+  retry: LuRotateCcw,
+  skip: LuSkipForward,
+  park: LuPause,
+  kill: LuSquare,
+};
 
 export default function ControlPanel({
   runId,
@@ -127,12 +109,7 @@ export default function ControlPanel({
     try {
       const res = await api.control(runId, body);
       if (res.applied === "queued") {
-        setPending({
-          seq: res.seq,
-          kind: res.kind,
-          ...(res.sliceId ? { sliceId: res.sliceId } : {}),
-          ...(pendingJobs !== undefined ? { jobs: pendingJobs } : {}),
-        });
+        setPending(pendingFrom(res, pendingJobs));
       } else {
         setPending(null);
         setDirect({ ok: res.ok, message: res.message });
@@ -147,15 +124,13 @@ export default function ControlPanel({
 
   function sendSlice(kind: SliceKind) {
     if (!target) return;
-    if (kind === "park" && !reason.trim()) {
-      setRequestError("park needs a reason (what to fix before resume)");
+    const bad = kind === "park" ? parkReasonError(reason) : null;
+    if (bad !== null) {
+      setRequestError(bad);
       return;
     }
     setConfirmKind(null);
-    const body: ControlIntent = { kind };
-    body.sliceId = target;
-    if (reason.trim()) body.reason = reason.trim();
-    void sendIntent(body);
+    void sendIntent(sliceIntent(kind, target, reason));
   }
 
   function clickSlice(kind: SliceKind) {
@@ -167,13 +142,12 @@ export default function ControlPanel({
   }
 
   function sendRun(kind: RunKind) {
-    const body: ControlIntent = { kind };
-    if (reason.trim()) body.reason = reason.trim();
-    void sendIntent(body);
+    void sendIntent(runIntent(kind, reason));
   }
   async function sendRestart() {
-    if (!reason.trim()) {
-      setRequestError("restart-loop needs a reason (what wedged the loop)");
+    const bad = restartReasonError(reason);
+    if (bad !== null) {
+      setRequestError(bad);
       return;
     }
     setBusy(true);
@@ -181,11 +155,7 @@ export default function ControlPanel({
     setDirect(null);
     try {
       const res = await api.restartLoop(runId, reason.trim());
-      if ("message" in res) {
-        setDirect({ ok: res.ok, message: res.message });
-      } else {
-        setDirect({ ok: true, message: `loop restarted (pid ${res.pid}, log ${res.log}) — liveness follows on Activity` });
-      }
+      setDirect(restartOutcome(res));
       onDone();
     } catch (err) {
       setRequestError(err instanceof Error ? err.message : String(err));
@@ -200,7 +170,7 @@ export default function ControlPanel({
     setDirect(null);
     try {
       const res = await api.resume(runId);
-      setDirect({ ok: res.ok, message: `resume loop spawned (pid ${res.pid}, log ${res.log}) — liveness follows on Activity` });
+      setDirect(resumeOutcome(res));
       onDone();
     } catch (err) {
       setRequestError(err instanceof Error ? err.message : String(err));
@@ -209,14 +179,13 @@ export default function ControlPanel({
     }
   }
   function sendJobs(value: number) {
-    if (!Number.isInteger(value) || value < 1 || value > 32) {
-      setRequestError(`set-jobs needs an integer jobs 1..32 (got ${value})`);
+    const bad = jobsError(value);
+    if (bad !== null) {
+      setRequestError(bad);
       return;
     }
     setJobs(String(value));
-    const body: ControlIntent = { kind: "set-jobs", jobs: value };
-    if (reason.trim()) body.reason = reason.trim();
-    void sendIntent(body, value);
+    void sendIntent(jobsIntent(value, reason), value);
   }
 
   function stepJobs(delta: -1 | 1) {
@@ -227,15 +196,7 @@ export default function ControlPanel({
   }
 
   // Orchestrator-confirmed outcome for the queued intent, from actual events.
-  const outcome = useMemo(() => {
-    if (!pending) return null;
-    let best: RunEvent | null = null;
-    for (const e of events) {
-      if (!outcomeMatches(e, pending)) continue;
-      if (!best || e.seq < best.seq) best = e;
-    }
-    return best;
-  }, [events, pending]);
+  const outcome = useMemo(() => (pending === null ? null : findOutcome(events, pending)), [events, pending]);
 
   // Recent control traffic in scope: the selected slice plus run-level
   // (pause/resume/set-jobs carry no sliceId). Newest first, capped.
@@ -276,7 +237,7 @@ export default function ControlPanel({
         )}
         {SLICE_ACTIONS.map((a) => {
           const armed = confirmKind === a.kind;
-          const Icon = a.icon;
+          const Icon = SLICE_ICONS[a.kind];
           return (
             <Button
               key={a.kind}

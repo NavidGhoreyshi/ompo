@@ -1496,6 +1496,11 @@ export default function Deck({
       onToggleWall={toggleWall}
       onOpenRun={onOpenRun}
       onVerifyReplay={onVerifyReplay}
+      live={live}
+      loops={detail?.loops?.length ?? 0}
+      onControlDone={onControlDone}
+      selectedId={selected}
+      slices={detail?.slices ?? []}
     />
   );
 

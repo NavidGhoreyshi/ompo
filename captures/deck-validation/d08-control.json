@@ -1,0 +1,61 @@
+{
+  "runId": "d08-control",
+  "otherRun": "d08-probe",
+  "port": 4484,
+  "bodyEquality": [
+    {
+      "action": "retry",
+      "dashboard": "{\"kind\":\"retry\",\"sliceId\":\"beta\",\"reason\":\"waiting on CI\"}",
+      "deck": "{\"kind\":\"retry\",\"sliceId\":\"beta\",\"reason\":\"waiting on CI\"}"
+    },
+    {
+      "action": "skip",
+      "dashboard": "{\"kind\":\"skip\",\"sliceId\":\"beta\",\"reason\":\"waiting on CI\"}",
+      "deck": "{\"kind\":\"skip\",\"sliceId\":\"beta\",\"reason\":\"waiting on CI\"}"
+    },
+    {
+      "action": "park",
+      "dashboard": "{\"kind\":\"park\",\"sliceId\":\"beta\",\"reason\":\"waiting on CI\"}",
+      "deck": "{\"kind\":\"park\",\"sliceId\":\"beta\",\"reason\":\"waiting on CI\"}"
+    },
+    {
+      "action": "kill",
+      "dashboard": "{\"kind\":\"kill\",\"sliceId\":\"beta\",\"reason\":\"waiting on CI\"}",
+      "deck": "{\"kind\":\"kill\",\"sliceId\":\"beta\",\"reason\":\"waiting on CI\"}"
+    },
+    {
+      "action": "pause",
+      "dashboard": "{\"kind\":\"pause\",\"reason\":\"waiting on CI\"}",
+      "deck": "{\"kind\":\"pause\",\"reason\":\"waiting on CI\"}"
+    },
+    {
+      "action": "resume",
+      "dashboard": "{\"kind\":\"resume\",\"reason\":\"waiting on CI\"}",
+      "deck": "{\"kind\":\"resume\",\"reason\":\"waiting on CI\"}"
+    },
+    {
+      "action": "set-jobs",
+      "dashboard": "{\"kind\":\"set-jobs\",\"jobs\":4}",
+      "deck": "{\"kind\":\"set-jobs\",\"jobs\":4}"
+    }
+  ],
+  "queued": {
+    "text": "◌ QUEUED #10 retry beta — waiting for the loop to confirm; the outcome lands on the event log, not here.",
+    "body": "{\"kind\":\"retry\",\"sliceId\":\"beta\"}",
+    "skipBody": "{\"kind\":\"skip\",\"sliceId\":\"beta\"}",
+    "requests": 2
+  },
+  "restartLoop": {
+    "requests": 1,
+    "body": "{\"reason\":\"worker silent 30m, loop starved\"}"
+  },
+  "idle": {
+    "frames": 0,
+    "commits": 0,
+    "domElements": 215,
+    "drawCalls": 10
+  },
+  "quiescent": {
+    "note": "Quiescent (no live loop) — or restart it with ompo resume --run d08-control"
+  }
+}

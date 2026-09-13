@@ -3977,12 +3977,61 @@ button[data-slot="select-trigger"] {
   display: contents;
 }
 
-.omp-deck-line {
+/* The selection's panel (`d08`): the selected line and the action bar that
+ * acts on it. The wrapper owns the corner position the line used to own, so
+ * the bar appears exactly where the selection is named and the panel grows
+ * upward as one object — never over the live window or the alert column. */
+.omp-deck-linewrap {
   position: absolute;
   right: 10px;
   bottom: 10px;
   width: fit-content;
   max-width: min(620px, calc(100% - 20px));
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 6px;
+  pointer-events: none;
+}
+
+/* The deck's right-hand column (`d08`): the alert column above the selected
+ * line and its action bar, anchored to the bottom-right corner as one stack.
+ * Two panels anchored to the same corner overlap the moment either grows, and
+ * the bar is clickable — an alert stack painting over it is a real defect, not
+ * a cosmetic one. Stacking them fixes it once, for every combination of
+ * alerts, selection and window size. */
+.omp-deck-right {
+  position: absolute;
+  right: 10px;
+  bottom: 10px;
+  width: min(620px, 46%);
+  max-height: 62%;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 6px;
+  pointer-events: none;
+}
+
+/* Inside the column the two panels are ordinary blocks: the column owns the
+ * corner, the width and the bound; the alert list scrolls inside it. */
+.omp-deck-right .omp-deck-alertcol {
+  position: static;
+  width: 100%;
+  max-width: 460px;
+  max-height: none;
+}
+
+.omp-deck-right .omp-deck-linewrap {
+  position: static;
+  width: fit-content;
+  max-width: 100%;
+}
+
+.omp-deck-line {
+  position: static;
+  width: fit-content;
+  max-width: 100%;
   display: flex;
   align-items: center;
   gap: 8px;
@@ -4737,10 +4786,24 @@ button[data-slot="select-trigger"] {
   pointer-events: none;
 }
 
-.omp-deck[data-dock="open"] .omp-deck-line {
+/* With the dock open (`d06`) the column hands its two panels back to the
+ * bottom band's grid, which is where they were before `d08`: the line spans
+ * both columns, the window and the alerts share the row beneath it. */
+.omp-deck[data-dock="open"] .omp-deck-right {
+  display: contents;
+}
+
+.omp-deck[data-dock="open"] .omp-deck-linewrap {
   position: static;
   grid-column: 1 / -1;
   justify-self: start;
+  width: auto;
+  max-width: 100%;
+  align-items: stretch;
+}
+
+.omp-deck[data-dock="open"] .omp-deck-line {
+  position: static;
   max-width: 100%;
 }
 
@@ -5235,6 +5298,214 @@ button[data-slot="select-trigger"] {
 .omp-deck-line-attempts span[data-open="true"] {
   border-style: dashed;
   color: var(--omp-secondary);
+}
+
+/* ---------- deck control (slice d08) ----------
+ * The action bar that acts on the selection: the dashboard's actions, in the
+ * place the operator is looking. It is DOM, so it costs the scene nothing —
+ * no frame, no draw call, no allocation — and it re-renders on selection and
+ * status change (the SSE cadence), never per frame.
+ *
+ * A past cursor disables every action and says why on the bar itself (the same
+ * dashed, signal-coloured frame the time band uses for "not now"): the deck is
+ * showing a recorded state, and a button that would act on the live run from
+ * inside the past is the one press this surface must not offer. */
+.omp-deck-control {
+  pointer-events: auto;
+  width: fit-content;
+  max-width: 100%;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 5px 8px 6px;
+  border: 1px solid var(--omp-border);
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--omp-panel) 90%, transparent);
+  color: var(--omp-secondary);
+  font-family: var(--omp-mono);
+  font-size: 11px;
+}
+
+.omp-deck-control[data-history="past"] {
+  border-style: dashed;
+  border-color: color-mix(in srgb, var(--omp-signal) 55%, var(--omp-border));
+}
+
+.omp-deck-control-row {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+  flex-wrap: wrap;
+}
+
+.omp-deck-control-label {
+  flex: none;
+  color: var(--omp-muted);
+}
+
+.omp-deck-control-label code {
+  color: var(--omp-text);
+}
+
+.omp-deck-control-button {
+  flex: none;
+  font: inherit;
+  line-height: 1;
+  color: var(--omp-secondary);
+  background: transparent;
+  border: 1px solid var(--omp-border);
+  border-radius: 6px;
+  padding: 3px 8px;
+  cursor: pointer;
+}
+
+.omp-deck-control-button:hover,
+.omp-deck-control-button:focus-visible {
+  color: var(--omp-text);
+  background: var(--omp-panel-2);
+}
+
+.omp-deck-control-button:disabled {
+  opacity: 0.45;
+  cursor: default;
+}
+
+/* An armed destructive action says so in words *and* in weight: the label
+ * itself becomes `Confirm <kind>`, so the second press is never a surprise. */
+.omp-deck-control-button[data-armed="true"] {
+  color: var(--omp-text);
+  border-color: var(--omp-amber, #ffb838);
+}
+
+.omp-deck-control-reason {
+  /* Wide enough to read what was typed: the row wraps before this box
+   * shrinks below the placeholder's own length. */
+  flex: 1 1 16ch;
+  min-width: 14ch;
+  font: inherit;
+  color: var(--omp-text);
+  background: var(--omp-panel-2);
+  border: 1px solid var(--omp-border);
+  border-radius: 6px;
+  padding: 3px 6px;
+}
+
+.omp-deck-control-jobs {
+  flex: none;
+  width: 4ch;
+  text-align: center;
+  font: inherit;
+  color: var(--omp-text);
+  background: var(--omp-panel-2);
+  border: 1px solid var(--omp-border);
+  border-radius: 6px;
+  padding: 3px 4px;
+}
+
+.omp-deck-control-note {
+  flex: 1 1 auto;
+  min-width: 0;
+  margin: 0;
+  color: var(--omp-muted);
+}
+
+.omp-deck-control-note code {
+  color: var(--omp-text);
+}
+
+.omp-deck-control-status {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.omp-deck-control-status p {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+  margin: 0;
+  min-width: 0;
+}
+
+.omp-deck-control-verb {
+  flex: none;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  font-size: 10px;
+  color: var(--omp-muted);
+}
+
+.omp-deck-control-status p[data-outcome="queued"] .omp-deck-control-verb {
+  color: var(--omp-amber, #ffb838);
+}
+
+.omp-deck-control-status p[data-outcome="applied"] .omp-deck-control-verb {
+  color: var(--omp-green, #4ade80);
+}
+
+.omp-deck-control-status p[data-outcome="rejected"] .omp-deck-control-verb,
+.omp-deck-control-status p[data-outcome="error"] .omp-deck-control-verb {
+  color: var(--omp-red, #f87171);
+}
+
+.omp-deck-control-message {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  color: var(--omp-secondary);
+}
+
+.omp-deck-control-hint {
+  color: var(--omp-muted);
+}
+
+.omp-deck-control-error {
+  border: 1px solid color-mix(in srgb, var(--omp-red, #f87171) 45%, var(--omp-border));
+  border-radius: 6px;
+  padding: 2px 6px;
+}
+
+/* The queued row spins only while waiting is news (`SPIN_MS`); the row itself
+ * stays until the orchestrator's outcome arrives, and never claims success. */
+.omp-deck-control-spin {
+  flex: none;
+  color: var(--omp-muted);
+}
+
+.omp-deck-control-status p[data-awaiting="true"] .omp-deck-control-spin {
+  animation: omp-deck-spin 900ms linear infinite;
+}
+
+.omp-deck-control-dismiss {
+  flex: none;
+  font: inherit;
+  line-height: 1;
+  color: var(--omp-muted);
+  background: transparent;
+  border: 1px solid var(--omp-border);
+  border-radius: 6px;
+  padding: 2px 6px;
+  cursor: pointer;
+}
+
+.omp-deck-control-dismiss:hover,
+.omp-deck-control-dismiss:focus-visible {
+  color: var(--omp-text);
+}
+
+@keyframes omp-deck-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+/* Reduced motion: the spinner's motion is the only animation here, and the
+ * row keeps its words either way. */
+.omp-deck[data-motion="reduced"] .omp-deck-control-spin {
+  animation: none;
 }
 
 .omp-surface-toggle {

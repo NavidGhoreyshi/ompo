@@ -1561,3 +1561,157 @@ moment: the pads, the dependencies between them, and which workers were in fligh
 spatial objects the operator learned in the live view, and moving the cursor moves *them*, not a
 table's rows. The deck's advantage is bounded and specific: it is the only surface where "what was
 the state at 14:22" is answered by looking at the same map the operator watches at 14:23.
+
+## d08 — control from the deck: the dashboard's actions at the selection
+
+The slice's question: can the operator act on what they are looking at — retry, skip, park, kill,
+pause, resume, set-jobs, restart-loop — without leaving the spatial surface, with the *same*
+guards, confirmations and queued-vs-direct feedback the dashboard has, and with a queued intent
+never reported as success before the orchestrator says so?
+
+Answer: **yes, and the semantics moved rather than duplicated.**
+
+### Reproduction
+
+```bash
+bun test tests/deck-control.test.ts tests/deck-alerts.test.ts    # the pure claims
+bunx playwright test tests/e2e/deck-control.e2e.ts --workers=1   # the product claims, own fixture
+```
+
+`captures/deck-validation/d08-control.json` holds every recorded request body;
+`captures/deck-d08-control.png` shows the bar with an alert stack above it and the selected line
+below.
+
+### 1. One module of control semantics; two renderings
+
+"Control stays a pure delegation" is implemented literally. `web/src/lib/control.ts` (pure) is now
+the single source of: every `ControlIntent` body (`sliceIntent`, `runIntent`, `jobsIntent` — kind,
+subject, and a trimmed reason omitted when empty), the destructive set (`DESTRUCTIVE`), the guard
+messages (park/restart reasons, `set-jobs` bounds, the loop-local kinds a quiescent run cannot
+serve), the 202 → pending and 200 → direct view states, the outcome correlation, the wedged-loop
+gate (`restartOffered`), and the dashboard's exact quiescent sentence + command.
+
+`ControlPanel` (the dashboard's panel, also rendered by the dock) and `scene/ControlBar.tsx` (the
+deck's compact bar) are two skins over it. No rule is stated twice, so "the deck does what the
+dashboard does" is true by construction — and the e2e proves it over real HTTP anyway: **seven
+actions produce byte-identical bodies** on both surfaces (§4).
+
+One rule got *stricter* in the move: an outcome event whose detail names a kind different from the
+pending intent's (`skip: …` arriving while a `retry` is queued) no longer settles that intent. The
+old fall-through meant scope+recency could mislabel a queued intent with another intent's message;
+a detail that names no kind still settles, so a queued row cannot hang forever.
+
+### 2. What the deck adds, and nothing else
+
+- **A bar at the selection.** `DeckOverlay` renders `ControlBar` in the panel that already holds
+  the selected line — the line says what, the bar acts on it. The bar owns only view state (reason
+  box, armed confirm, the last intent and its outcome); the press calls `api.control` and then the
+  shell's existing `onControlDone` refetch, the same callback the dock's panel uses.
+- **Intent feedback where the operator pressed.** `queued (#N kind slice jobs=N)` with a spinner
+  that stops after 2 s (the row stays), which flips to `applied`/`rejected` only when the
+  orchestrator's own `control_applied`/`control_rejected` arrives on the event tail. A 200 (quiescent)
+  renders the direct outcome and never enters the pending state; a failed request renders the
+  message verbatim with a "Retry request" affordance and a dismiss.
+- **A rejection is an alert.** `alerts.ts` gains `control-rejected` (medium): the *newest*
+  `control_rejected` in the window is one dismissible row carrying the server's own
+  `${kind}: ${message}`. One row, not one per rejection — the same "one alert per condition" rule
+  the rest of the taxonomy uses — and a newer rejection is a new dismissal key. Both the deck and
+  the dashboard get this: a rejection from `ompo ctl` lands on the deck's stack too. The station's
+  pulse is the existing beacon-arrival cue (≤200 ms at `minimal`, 0 under reduced motion), so no
+  new animation code was written for it.
+- **Two deck-only rules.** Control acts on the *live* run: at a recorded cursor every action is
+  disabled and the bar says so (``L`` returns). And the target must exist in the current run's
+  DTOs, so a run switch in flight disables the bar instead of letting a press address the previous
+  run's slice by name.
+- **`restart-loop` is gated**: `live && loops.length >= 1 && stalled`, where *stalled* is the
+  surface's own existing signal (a `wedged` or `verdict-stall` alert). The confirm and the reason
+  requirement are the dashboard's, in the dashboard's order (arm → reason error → arm → send).
+
+### 3. The gate exposed a shell bug: the wedge signal never refreshed
+
+`restart-loop`'s "live but stalled" reads `AgentRow.wedged`, and `App` fetched agents only in
+`loadRun` — which, with SSE connected, runs on `run` frames. A *wedged* run emits no events by
+definition, so the flag could never arrive: the recovery would have been dead in exactly the
+scenario it exists for (the deck's `wedged` alert had the same problem since `d05`). Fixed in the
+shell's existing slow-tick pattern: the 10 s session refresh now also refreshes agents, with the
+reason stated at the call site. This is the one change outside the deck, and it is a fix to a
+pre-existing defect, not a new dependency.
+
+### 4. Verification (`tests/e2e/deck-control.e2e.ts`, 4 specs, real surface, own harness)
+
+| Question | Result |
+|---|---|
+| body equality, dashboard vs deck | **7/7 identical**, byte for byte: `retry`/`skip`/`park`/`kill` with a trimmed reason, `pause`/`resume` with one, `set-jobs` `{"kind":"set-jobs","jobs":4}` |
+| one path, existing kinds | every request `POST /api/runs/d08-control/control`; the kind set is the taxonomy's, nothing new |
+| a destructive confirm | first press sends nothing and relabels itself `Confirm <kind>`; the second sends; the arm clears |
+| queued ≠ success | 202 → `queued`, store statuses unchanged by the press alone; `control_applied` → `applied`; `control_rejected` → `rejected` **and** a dismissible stack row with the server's message verbatim |
+| control is live-only | at a recorded cursor all seven actions render disabled with the note, then re-enable on `L` |
+| restart-loop gate | absent on a healthy live run; after the server-derives-wedged condition appears, present, refusal without a reason, arm, then one body `{"reason":"worker silent 30m, loop starved"}` |
+| quiescent recast | no pause/resume/set-jobs/restart-loop; `Resume run` + the dashboard's exact sentence and `ompo resume --run d08-control` |
+| idle with the bar | 1.5 s window: **0 frames** |
+
+`bun test`: the new pure suites (`tests/deck-control.test.ts` 16, the `d08` block of
+`tests/deck-alerts.test.ts` 5) plus the rest of the tree.
+
+### 5. Layout: the right-hand column
+
+The bar is clickable, so "the alert stack paints over the selected line" stopped being cosmetic.
+`DeckOverlay` now puts the alert column and the line+bar into one bottom-right column
+(`.omp-deck-right`), which owns the corner and the width; the bar keeps its place at the bottom, so
+an arriving alert grows the stack *upward* instead of moving the buttons. With the dock open the
+wrapper becomes `display: contents`, so `d06`'s grid is unchanged (the line spans both columns, the
+window and the alerts share the row beneath it). Measured at 1440×900 and 1024×768: zero overlap of
+the bar with the live window, the lane strip or the line; with the dock open, zero overlap between
+the dock, the window, the bar and the alert column.
+
+### 6. Bundle
+
+| Artifact | d07 | d08 | Δ |
+|---|---|---|---|
+| `assets/Deck-*.js` | 611.77 kB / 159.53 kB gzip | 619.99 kB / 161.68 kB gzip | +8.2 kB / +2.2 kB gzip |
+| `assets/index-*.js` (shell) | 457.26 kB / 138.01 kB gzip | 458.02 kB / 138.29 kB gzip | +0.8 kB (the agents tick) |
+| `assets/index-*.css` | 99.75 kB / 17.17 kB gzip | 103.18 kB / 17.61 kB gzip | +3.4 kB / +0.4 kB gzip |
+
+The scene is untouched: **no new mesh, no new draw call, no new per-frame work**. The bar is DOM
+(~20 elements), it re-renders on selection/status change (the SSE cadence), and the only new
+network call is the shell's 10 s agents tick (already the cadence of the session list).
+
+### 7. Open findings, deliberate choices
+
+1. **A rejection alert comes from the log, not from the deck's own press.** The consequence is
+   deliberate: a rejection another client caused (`ompo ctl`) is also visible, and an old rejection
+   stays on the stack until dismissed. It is bounded by the event window and re-raises only on a
+   newer rejection.
+2. **A 400/404 has no event**, so it cannot be a stack row: the bar's own `role="alert"` row carries
+   the server's message verbatim with a retry, and dismisses. Network failure lands the same way —
+   the deck never assumes the action happened.
+3. **The action bar is always visible** (disabled with a reason when there is nothing to act on).
+   Hiding it behind a key would put the operator's control surface behind a memory test; the
+   roadmap's "contextual" is satisfied by its *content*, which follows the selection.
+4. **`Resume run` is not exercised end-to-end**: pressing it spawns a real detached loop, which no
+   fixture should do. The button, its wording and the recovery sentence are asserted; the request
+   itself is the dashboard's own path, unchanged.
+5. **The full suite's parallel run flaked two frame-budget assertions** on this box
+   (`deck.e2e.ts` "a status change … rebuilds no geometry": 5 frames against a ≤4 budget;
+   `deck-workflow.e2e.ts` pipeline sample). Both files pass with `--workers=1` (27/27 and the
+   file's own count), the same load-sensitive class `d07` recorded — and this box was running a
+   real `omp -p` worker loop while the suite ran, which is exactly the load those budgets assume
+   away.
+6. **One spec assertion had to be re-stated, not relaxed.** `deck-workflow.e2e.ts`'s churn step
+   asserted the deck's *total* element count stays within 1.3× of its start under 50 control
+   intents. Measured, the growth is +63 elements: the temporal band's bucket strip **66 → 123**
+   (one button per recorded bucket — `d07`'s, capped at `RIBBON_MAX_BUCKETS`), one new rejection
+   alert row (+7, `d08`), and **nothing else** (the live window, mirror, lanes, line and bar are
+   flat; the bar is 13 elements before and after). The assertion now says what it always meant:
+   the surfaces the burst stresses must not grow *at all*, and the document stays under a fixed
+   ceiling. Recorded here because a re-stated assertion is a claim, not a cleanup.
+7. **M10 (five timed tasks) is still owed** — unchanged by this slice, still the debt the
+   directives section names.
+
+### 8. Verdict
+
+**PASS — recommendation, not a decision.** The operator can press the dashboard's own actions from
+the spatial surface, sees exactly what the dashboard would send, and the outcome they see is the
+orchestrator's, not the client's optimism. Control remains a delegation: one pure module of
+semantics, one `POST`, one existing event correlation, and a deck that stores nothing but its own
+view state.

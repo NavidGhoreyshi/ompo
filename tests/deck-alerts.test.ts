@@ -226,3 +226,44 @@ describe("dismissal", () => {
     expect(parseDismissed('["a|1",7,null]')).toEqual(["a|1"]);
   });
 });
+
+describe("deriveAlerts: a rejected control intent (d08)", () => {
+  const rejected = (seq: number, extra: Partial<RunEvent> = {}): RunEvent => ({
+    ...event(seq, "control_rejected", "a"),
+    detail: "retry: slice is done — retry applies to failed or blocked-env slices",
+    ...extra,
+  });
+
+  test("the newest rejection is one alert, with the server's words verbatim", () => {
+    const alerts = deriveAlerts(input({ slices: [slice("a", "done")], events: [rejected(31), rejected(44)] }));
+    expect(kinds(alerts)).toEqual(["control-rejected"]);
+    const alert = alerts[0]!;
+    expect(alert).toMatchObject({ severity: "medium", sliceId: "a", lastSeq: 44 });
+    expect(alert.message).toBe("retry: slice is done — retry applies to failed or blocked-env slices");
+  });
+
+  test("a run-level rejection belongs to the run, not to a slice", () => {
+    const runLevel: RunEvent = { seq: 5, at: AT, type: "control_rejected", detail: "pause: needs a live loop" };
+    const alerts = deriveAlerts(input({ events: [runLevel] }));
+    expect(alerts[0]).toMatchObject({ kind: "control-rejected", sliceId: null, lastSeq: 5 });
+  });
+
+  test("a rejection with no message still says so rather than showing an empty row", () => {
+    const alerts = deriveAlerts(input({ events: [{ seq: 9, at: AT, type: "control_rejected" }] }));
+    expect(alerts[0]?.message).toBe("control intent rejected (no message recorded)");
+  });
+
+  test("the dismissal is per rejection: a newer rejection is a new row", () => {
+    const first = deriveAlerts(input({ events: [rejected(31)] }))[0]!;
+    const dismissed = new Set([dismissKey("run-1", first)]);
+    expect(activeAlerts([first], dismissed, "run-1")).toEqual([]);
+    const second = deriveAlerts(input({ events: [rejected(44)] }))[0]!;
+    expect(dismissKey("run-1", second)).not.toBe(dismissKey("run-1", first));
+    expect(activeAlerts([second], dismissed, "run-1")).toHaveLength(1);
+  });
+
+  test("no interaction with the rest of the taxonomy: an applied intent raises nothing", () => {
+    const applied = { ...rejected(31), type: "control_applied" } as RunEvent;
+    expect(deriveAlerts(input({ events: [applied] }))).toEqual([]);
+  });
+});
