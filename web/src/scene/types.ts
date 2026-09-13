@@ -317,6 +317,12 @@ export interface DeckProps {
   live: boolean;
   /** The app's single selection system — the same state the board writes. */
   onSelect: (sliceId: string) => void;
+  /**
+   * The dock's control outcomes run through the shell's own refresh path (the
+   * same handler the dashboard hands its inspector): refetch this run and the
+   * run list. The deck itself never fetches.
+   */
+  onControlDone: () => void;
   /** Switch back to the dashboard surface (the `D` key and the HUD button). */
   onExit: () => void;
 }
@@ -409,7 +415,7 @@ export const DECK_KEYS: DeckKey[] = [
   { key: "H / ?", codes: ["h", "?"], effect: "Keymap and budget HUD", slice: "d01" },
   { key: "D", codes: ["d"], effect: "Switch to the dashboard surface", slice: "d01" },
   { key: "F", codes: ["f"], effect: "Frame the selection (pin it)", slice: "d03" },
-  { key: "Esc", codes: ["Escape"], effect: "Release the pin, re-follow the primary", slice: "d03" },
+  { key: "Esc", codes: ["Escape"], effect: "Close the dock if it is open, else release the pin", slice: "d06" },
   { key: "Space", codes: [" "], effect: "Freeze / resume the live window", slice: "d03" },
   { key: "E", codes: ["e"], effect: "Expand the live window to the raw transcript", slice: "d03" },
   { key: "[ / ]", codes: ["[", "]"], effect: "Previous / next live worker (focus only — F frames it)", slice: "d04" },
@@ -476,6 +482,13 @@ export interface DeckDebugHook {
   stationOverflow: number;
   /** Live workers with no on-screen station, by id (`d04` edge markers). */
   offScreen: string[];
+  /**
+   * The inspection dock (`d06`): whether the 2D surface is open and which tab
+   * it shows. View state — the specs assert it does not move the camera, the
+   * selection or the scene.
+   */
+  dockOpen: boolean;
+  dockTab: string;
   /** Camera state last written to the renderer (view state, for the specs). */
   camera: DeckCamera;
   /** Filled marks of the focused station (`0` when nothing is framed). */

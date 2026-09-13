@@ -1,17 +1,25 @@
 /**
- * The deck's DOM layer (roadmap slices `d02`–`d04`).
+ * The deck's DOM layer (roadmap slices `d02`–`d04`, dock affordances `d06`).
  *
  * All text lives in the document (CP-3): the canvas draws geometry, and this
  * file draws the words — the selected (or hovered) slice's status line, the
  * focused worker's station line, the lane list of every live worker (with its
  * action line), the off-screen markers, the bounded live window, and the pad
- * list that gives the scene its keyboard and assistive-technology path.
+ * list that gives the scene its keyboard and assistive-technology path. From
+ * `d06` it also offers the way into the 2D inspection dock ("Inspect" on the
+ * selected line and on the focused lane row) — and nothing else: the dock
+ * itself, and every question it answers, lives outside the scene.
  *
  * It derives nothing: every line reads `DeckModel` fields plus the app's
  * existing helpers (`heroAction`, `liveSliceEvent`) and the dashboard's own
  * `LiveFeed` component — the same rules and the same window the dashboard uses,
  * so the two surfaces cannot disagree about what a slice is doing. No
  * fetching, no state of its own: props in, DOM out.
+ *
+ * Layout: the panels are absolutely positioned in the deck's corners. Two
+ * wrappers (`.omp-deck-top`: station line + lane strip; `.omp-deck-bottom`:
+ * selected line + live window + alert column) are `display: contents` unless
+ * the dock is open, when they become the bands of the column it leaves free.
  */
 
 import type { AgentRow, RunEvent, SliceSummary } from "../api.ts";
@@ -64,6 +72,8 @@ export default function DeckOverlay({
   onExpandedChange,
   onFocus,
   onSelect,
+  onInspect,
+  dockOpen,
   onDismiss,
   alertsCollapsed,
   onAlertsCollapsedChange,
@@ -95,6 +105,18 @@ export default function DeckOverlay({
    */
   onFocus: (sliceId: string, frame: boolean) => void;
   onSelect: (sliceId: string) => void;
+  /**
+   * Open the 2D inspection dock on this slice (`d06`). The only thing the
+   * spatial layer is allowed to say to the inspection surface: *which* worker.
+   */
+  onInspect: (sliceId: string) => void;
+  /**
+   * Whether the dock is already on screen. The Inspect affordances exist to
+   * *open* it, so they are not offered while it is open — a button that does
+   * nothing is worse than no button, and the focused lane row gets its action
+   * line back.
+   */
+  dockOpen: boolean;
   /** Acknowledge one alert (`d05`). Recurrence is a new key and re-raises. */
   onDismiss: (alert: DeckAlert) => void;
   alertsCollapsed: boolean;
@@ -142,56 +164,11 @@ export default function DeckOverlay({
 
   return (
     <div className="omp-deck-overlay">
-      <p className="omp-deck-line" data-kind={hovered ? "hover" : "selected"}>
-        <span className="omp-deck-line-hint">{hovered ? "hover" : "selected"}</span>
-        {shown ? (
-          <>
-            <StatusBadge status={shown.status} />
-            <code className="omp-deck-line-id">{shown.id}</code>
-            <span className="omp-deck-line-title" title={shown.title}>
-              {shown.title}
-            </span>
-            <span className="omp-deck-line-meta">
-              gen {shown.generation} · attempt {shown.attempts}
-              {shown.effort ? ` · ${shown.effort}` : ""}
-            </span>
-            {action && (
-              <span className="omp-deck-line-action" title={action}>
-                {action}
-              </span>
-            )}
-          </>
-        ) : (
-          <span className="omp-deck-line-meta">nothing selected</span>
-        )}
-      </p>
-
-      {/* The station line: what the scene is pointed at, in words. It answers
-          "who is the primary" without reading the 3D scene, and stays true
-          when there is no live worker at all. */}
-      <p className="omp-deck-station" data-live={focused?.live === true ? "true" : "false"}>
-        <span className="omp-deck-station-tag">{focused?.live === true ? "focused" : "quiescent run"}</span>
-        {focused ? (
-          <>
-            <StatusBadge status={focused.status} />
-            <code className="omp-deck-station-id">{focused.id}</code>
-            <span className="omp-deck-station-meta">
-              gen {focused.generation} · attempt {focused.attempts}
-              {focused.stageLabel ? ` · ${focused.stageLabel}` : ""}
-            </span>
-            <span className="omp-deck-station-meta">
-              {model.liveIds.length === 0 ? "no worker running" : `live: ${model.liveIds.length}`}
-            </span>
-          </>
-        ) : (
-          <span className="omp-deck-station-meta">showing nothing</span>
-        )}
-      </p>
-
       {/* Off-screen workers (`d04`): a marker on the viewport edge the worker's
           direction leaves, so a station the camera cannot show is still
           reachable — click it and the deck goes there. The lane list below
-          lists every live worker whether or not a marker exists. */}
+          lists every live worker whether or not a marker exists. Drawn first,
+          so no panel is ever covered by a marker. */}
       {edgeMarkers.length > 0 && (
         <div className="omp-deck-edges" role="group" aria-label="Off-screen workers">
           {edgeMarkers.map((marker) => (
@@ -217,73 +194,156 @@ export default function DeckOverlay({
         </div>
       )}
 
-      {model.stations.length > 0 && (
-        <ul className="omp-deck-lanes" aria-label="Live workers">
-          {model.stations.map((station) => {
-            const node = nodeById.get(station.id);
-            if (!node) return null;
-            const row = agents.find((agentRow) => agentRow.id === station.id);
-            const laneAction = heroAction({
-              status: node.status,
-              lastLine: row?.lastLine,
-              lastEvent: liveSliceEvent(node.status, events, node.id),
-              reason: node.reason,
-              deps: node.deps,
-            });
-            return (
-              <li key={station.id}>
-                <button
-                  type="button"
-                  className="omp-deck-lane"
-                  data-focused={station.focused ? "true" : "false"}
-                  data-primary={station.primary ? "true" : "false"}
-                  data-overflow={station.stack > 0 ? "true" : "false"}
-                  aria-current={station.focused ? "true" : undefined}
-                  title={laneAction}
-                  onClick={() => onFocus(station.id, false)}
-                >
-                  <span className="omp-deck-lane-dot" aria-hidden="true">
-                    {station.focused ? "●" : "○"}
-                  </span>
-                  <span className="omp-deck-lane-id">{station.id}</span>
-                  <span className="omp-deck-lane-status">{node.status}</span>
-                  <span className="omp-deck-lane-stage">{node.stageLabel || "—"}</span>
-                  <span className="omp-deck-lane-meta">
-                    {station.lane === null ? "L—" : `L${station.lane}`} · g{node.generation} · a{node.attempts}
-                  </span>
-                  <span className="omp-deck-lane-tail">
-                    {station.wedged && <span className="omp-deck-lane-warn">stalled</span>}
-                    <span className="omp-deck-lane-action">{laneAction}</span>
-                  </span>
-                </button>
-              </li>
-            );
-          })}
-        </ul>
-      )}
+      {/* The top band: the station line (what the scene is pointed at, in
+          words) and the lane strip (every live worker). Side by side normally;
+          stacked in the narrower column the dock leaves (`d06`). The wrapper
+          is `display: contents` until then, so neither panel moves. */}
+      <div className="omp-deck-top">
+        <p className="omp-deck-station" data-live={focused?.live === true ? "true" : "false"}>
+          <span className="omp-deck-station-tag">{focused?.live === true ? "focused" : "quiescent run"}</span>
+          {focused ? (
+            <>
+              <StatusBadge status={focused.status} />
+              <code className="omp-deck-station-id">{focused.id}</code>
+              <span className="omp-deck-station-meta">
+                gen {focused.generation} · attempt {focused.attempts}
+                {focused.stageLabel ? ` · ${focused.stageLabel}` : ""}
+              </span>
+              <span className="omp-deck-station-meta">
+                {model.liveIds.length === 0 ? "no worker running" : `live: ${model.liveIds.length}`}
+              </span>
+            </>
+          ) : (
+            <span className="omp-deck-station-meta">showing nothing</span>
+          )}
+        </p>
 
-      {/* The live window: the dashboard's own component, driven but never
-          forked. Freeze and expand are the deck's view state, so the keyboard
-          can own them (Space / E) without reaching into the window. */}
-      <div className="omp-deck-live">
-        <LiveFeed
-          runId={model.runId}
-          slice={focusSlice}
-          agent={focusAgent}
-          events={events}
-          frozen={frozen}
-          onFrozenChange={onFrozenChange}
-          expanded={expanded}
-          onExpandedChange={onExpandedChange}
-        />
+        {model.stations.length > 0 && (
+          <ul className="omp-deck-lanes" aria-label="Live workers">
+            {model.stations.map((station) => {
+              const node = nodeById.get(station.id);
+              if (!node) return null;
+              const row = agents.find((agentRow) => agentRow.id === station.id);
+              const laneAction = heroAction({
+                status: node.status,
+                lastLine: row?.lastLine,
+                lastEvent: liveSliceEvent(node.status, events, node.id),
+                reason: node.reason,
+                deps: node.deps,
+              });
+              return (
+                <li key={station.id}>
+                  <button
+                    type="button"
+                    className="omp-deck-lane"
+                    data-focused={station.focused ? "true" : "false"}
+                    data-primary={station.primary ? "true" : "false"}
+                    data-overflow={station.stack > 0 ? "true" : "false"}
+                    aria-current={station.focused ? "true" : undefined}
+                    title={laneAction}
+                    onClick={() => onFocus(station.id, false)}
+                  >
+                    <span className="omp-deck-lane-dot" aria-hidden="true">
+                      {station.focused ? "●" : "○"}
+                    </span>
+                    <span className="omp-deck-lane-id">{station.id}</span>
+                    <span className="omp-deck-lane-status">{node.status}</span>
+                    <span className="omp-deck-lane-stage">{node.stageLabel || "—"}</span>
+                    <span className="omp-deck-lane-meta">
+                      {station.lane === null ? "L—" : `L${station.lane}`} · g{node.generation} · a{node.attempts}
+                    </span>
+                    <span className="omp-deck-lane-tail">
+                      {station.wedged && <span className="omp-deck-lane-warn">stalled</span>}
+                      <span className="omp-deck-lane-action">{laneAction}</span>
+                    </span>
+                  </button>
+                  {/* The focused worker's own way into the dock (`d06`): the
+                      lane row is the "watch this" affordance, this is the
+                      "show me everything" one. Sibling, not nested — the row
+                      stays one button and one focus stop. */}
+                  {station.focused && !dockOpen && (
+                    <button
+                      type="button"
+                      className="omp-deck-inspect omp-deck-lane-inspect"
+                      aria-label={`Inspect ${station.id} in the dock`}
+                      onClick={() => onInspect(station.id)}
+                    >
+                      Inspect
+                    </button>
+                  )}
+                </li>
+              );
+            })}
+          </ul>
+        )}
       </div>
 
-      {/* Run-level alerts (`d05`) and the slice stack share one bottom-right
-          column: the HUD owns the top, the lane strip the top-right, the live
-          window the bottom-left. A banner is for a condition that is not one
-          slice's problem (two loop processes). */}
-      {(banners.length > 0 || rows.length > 0) && (
-        <div className="omp-deck-alertcol">
+      {/* The bottom band: the selected/hovered line, the live window and the
+          alert column. Normal layout: line bottom-right, window bottom-left,
+          alerts bottom-right — the wrapper is `display: contents`, so nothing
+          moves. With the dock open (`d06`) it becomes one grid in the column
+          the dock leaves: the line names the subject, the window and the
+          alerts share the row beneath it. */}
+      <div className="omp-deck-bottom">
+        <p className="omp-deck-line" data-kind={hovered ? "hover" : "selected"}>
+          <span className="omp-deck-line-hint">{hovered ? "hover" : "selected"}</span>
+          {shown ? (
+            <>
+              <StatusBadge status={shown.status} />
+              <code className="omp-deck-line-id">{shown.id}</code>
+              <span className="omp-deck-line-title" title={shown.title}>
+                {shown.title}
+              </span>
+              <span className="omp-deck-line-meta">
+                gen {shown.generation} · attempt {shown.attempts}
+                {shown.effort ? ` · ${shown.effort}` : ""}
+              </span>
+              {action && (
+                <span className="omp-deck-line-action" title={action}>
+                  {action}
+                </span>
+              )}
+              {/* Inspecting acts on the *selection*; while the pointer is
+                  previewing another pad the line is a hover readout, so the
+                  affordance is not offered there. */}
+              {hovered === null && !dockOpen && (
+                <button
+                  type="button"
+                  className="omp-deck-inspect omp-deck-line-inspect"
+                  aria-label={`Inspect ${shown.id} in the dock`}
+                  onClick={() => onInspect(shown.id)}
+                >
+                  Inspect
+                </button>
+              )}
+            </>
+          ) : (
+            <span className="omp-deck-line-meta">nothing selected</span>
+          )}
+        </p>
+
+        {/* The live window: the dashboard's own component, driven but never
+            forked. Freeze and expand are the deck's view state, so the keyboard
+            can own them (Space / E) without reaching into the window. */}
+        <div className="omp-deck-live">
+          <LiveFeed
+            runId={model.runId}
+            slice={focusSlice}
+            agent={focusAgent}
+            events={events}
+            frozen={frozen}
+            onFrozenChange={onFrozenChange}
+            expanded={expanded}
+            onExpandedChange={onExpandedChange}
+          />
+        </div>
+
+        {/* Run-level alerts (`d05`) and the slice stack share one bottom-right
+            column: the HUD owns the top, the lane strip the top-right, the live
+            window the bottom-left. A banner is for a condition that is not one
+            slice's problem (two loop processes). */}
+        {(banners.length > 0 || rows.length > 0) && (
+          <div className="omp-deck-alertcol">
           {banners.map((alert) => (
             <p key={`${alert.kind}:${alert.lastSeq}`} className="omp-deck-banner" data-kind={alert.kind} data-severity={alert.severity} role="alert">
               <span className="omp-deck-alert-glyph" aria-hidden="true">
@@ -338,7 +398,18 @@ export default function DeckOverlay({
                         data-severity={alert.severity}
                         data-slice-id={sliceId}
                       >
-                        <button type="button" className="omp-deck-alert-row" title={alert.message} onClick={() => onFocus(sliceId, false)}>
+                        <button
+                          type="button"
+                          className="omp-deck-alert-row"
+                          title={alert.message}
+                          // Taking the operator to the problem is two acts in
+                          // one: point the deck at the worker, then open the
+                          // detail (`d05`'s rule, wired to the dock in `d06`).
+                          onClick={() => {
+                            onFocus(sliceId, false);
+                            onInspect(sliceId);
+                          }}
+                        >
                           <span className="omp-deck-alert-glyph" aria-hidden="true">
                             {SEVERITY_GLYPH[alert.severity]}
                           </span>
@@ -361,8 +432,9 @@ export default function DeckOverlay({
               )}
             </section>
           )}
-        </div>
-      )}
+          </div>
+        )}
+      </div>
 
       {/* The accessibility backbone: every pad is a real button, in roadmap
           order. Visually hidden until focused so it never competes with the

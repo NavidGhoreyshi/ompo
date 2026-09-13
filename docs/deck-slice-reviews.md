@@ -1,4 +1,4 @@
-# Deck slice reviews (d00–d05)
+# Deck slice reviews (d00–d06)
 
 Performance observations per slice, in the terms the operator cares about: what a frame costs, what
 an event costs, what the DOM does while nobody is looking, and whether the surface is still usable
@@ -1052,7 +1052,7 @@ not exist.
 | 3. With reduced motion, no tween runs for any transition and the stack behaves identically | ✔ scenario E: `maxTweens 0`, `maxAnimated 0` across a real `running → failed` + alert; HUD `0 cues`; the stack row is identical |
 | 4. Beacons never exceed `tier.maxBeacons`; overflow is counted in the HUD and the stack lists every alert | ✔ by construction (`beaconAlerts = alerts.slice(0, maxBeacons)`, HUD `alerts: N · M over the beacon cap`) and unit-tested ordering; no browser run has exceeded a cap |
 | 5. The alert stack never overlaps the live window | ✔ e2e: bounding-box disjointness asserted on the shared fixture (`.omp-deck-alerts` vs `.omp-deck-live`) |
-| 6. Gates clean | ✔ `bunx tsc --noEmit`, `bun test` (747 pass / 0 fail, 57 files), `git diff --check`, `bunx playwright test tests/e2e/deck.e2e.ts --workers=1` (28 passed), `bunx playwright test tests/e2e/deck-transitions.e2e.ts --workers=1` (1 passed, 5 scenarios), `bun run test:e2e` (48 passed) |
+| 6. Gates clean | ✔ `bunx tsc --noEmit`, `bun test` (747 pass / 0 fail, 57 files), `git diff --check`, `bunx playwright test tests/e2e/deck.e2e.ts --workers=1` (27 passed), `bunx playwright test tests/e2e/deck-transitions.e2e.ts --workers=1` (1 passed, 5 scenarios), `bun run test:e2e` (48 passed) |
 
 ### 10. Verdict
 
@@ -1087,3 +1087,272 @@ three places changing, not three rows mutating in a list you have to re-read. Th
 bounded: it needs the pads to be legible (they are, at 0.5×), it needs the camera to be pointed
 somewhere useful (the off-screen markers and the lane list cover the rest), and for a single worker
 the dashboard's row is still the cheaper place to read the same fact.
+
+---
+
+## d06 — inspection dock over the existing endpoints
+
+The slice's question was a boundary, not a feature: *can an operator move from the spatial overview
+to precise inspection and back without losing spatial context, while the 3D layer stays cheap and
+the 2D inspection experience stays the dashboard's own?* The answer is **yes**, and the evidence is
+that the dock is literally the dashboard's `Inspector` (byte-identical content on all eight tabs),
+that 40 open/close passes leave the camera, the selection, the digest and the GL geometry exactly
+where they were, and that the scene issues zero frames, zero DOM mutations and zero instance-buffer
+writes while the dock is up and nothing is happening. The boundary this slice draws is the product
+decision `d03`–`d05` had been building toward: **3D selects and orients; 2D inspects.**
+
+### Bundle
+
+| Artifact | d05 | d06 | Δ |
+|---|---|---|---|
+| `assets/Deck-*.js` (the deck + `three`) | 586.26 kB / 151.22 kB gzip | 589.48 kB / 152.20 kB gzip | **+3.2 kB / +1.0 kB gzip** |
+| `assets/index-*.js` (the dashboard shell) | 455.26 kB / 137.36 kB gzip | 456.02 kB / 137.62 kB gzip | +0.8 kB (the inspector's exported tab list, the shell's `onControlDone`) |
+| `assets/index-*.css` | 90.55 kB / 15.88 kB gzip | 93.06 kB / 16.30 kB gzip | +2.5 kB (the dock, the two overlay bands, the Inspect affordance) |
+
+The deck's growth is one new component (63 lines), one pure state module (86 lines) and the CSS
+that makes room for the panel. Nothing on the GPU side changed: no new scene object, no new draw
+call, no new geometry — the dock is pure DOM, by construction.
+
+### 1. The boundary, stated and enforced
+
+Three kinds of state, and where each one lives:
+
+| Category | Owner | In this slice |
+|---|---|---|
+| **Domain state** | ompo (`App.tsx` + the store, over the existing endpoints) | run detail, slice detail, events, agents |
+| **Spatial state** | the deck (camera, selection, focus, hover, viewport framing) | unchanged by the dock |
+| **Inspection UI state** | the dock (the 2D surface) | scroll, `<details>`, filters, the control form — plus the active tab, which the deck shell holds *only* so `1`…`8` and `Esc` can address it |
+
+The one thing the spatial layer says to the inspection layer is *which slice the operator selected*
+(`onInspect`). The dock receives no renderer, no camera and no scene model; `DeckInspector.tsx`
+imports `Inspector` and nothing else — it renders with the canvas absent (the flat path already
+renders it) and under test without WebGL. Log fetching, diff parsing, verification output, review
+findings and prompt history stay where they already were.
+
+Neither the dock's openness nor its tab enters `DeckModel`: the digest is asserted identical across
+20 open/close cycles, and *even a model change cannot be caused by dock state* — the projection
+never sees it.
+
+### 2. The dock is the dashboard's inspector (acceptance 1)
+
+Measured on one run, one slice, both surfaces (`deck-inspector.e2e.ts`, scenario 1): the dock is
+opened on each of `1`…`8`, the panel text is captured, then the dashboard's own inspector is opened
+for the same slice and each tab is compared after whitespace normalisation.
+
+| Tab | chars | identical |
+|---|---|---|
+| Output | 413 | ✔ |
+| Diff | 164 | ✔ |
+| Verify | 94 | ✔ |
+| Review | 176 | ✔ |
+| Prompt | 223 | ✔ |
+| Events | 278 | ✔ |
+| Usage | 325 | ✔ |
+| Log | 117 | ✔ |
+
+The test also asserts the dock holds the real widgets (`Inspector`'s `.omp-inspector-panel` and
+`.omp-tabs`), so "same text" cannot be satisfied by a lookalike. `Inspector.tsx` changed by 15 lines:
+the tab list is exported (the keymap addresses it by position, one source for both) and the tab is
+controllable — the dashboard passes nothing and behaves exactly as before.
+
+One deliberate deviation from this slice's written spec: the roadmap's error behaviour asks for
+`ui/skeleton.tsx` while `SliceDetail` loads. The dashboard's inspector does not render a skeleton —
+it renders the same views with `detail === null`, and each view owns its own empty/loading copy — so
+the dock does exactly what the dashboard does (passes `detail` through) rather than introducing a
+skeleton only the deck shows. Matching the dashboard beats matching the spec's description of it.
+
+### 3. Opening, resizing, returning (acceptance 3, 4; brief §5)
+
+**Open.** The dock's own latency is instrumented (`recordInteraction`), measured from the intent to
+the second animation frame after the commit — the first frame the operator can see it in. Across the
+runs of this slice:
+
+| Interaction | p50 | p95 | worst |
+|---|---|---|---|
+| `inspection-open` (20 samples/run) | 92–172 ms | 155–389 ms | 254–805 ms |
+| `inspection-close` (20 samples/run) | 101–281 ms | 153–1409 ms | 209–1409 ms |
+| `inspection-tab` (single samples) | 69–180 ms | — | — |
+
+The spread is the machine, not the dock: this box was carrying other work (an eslint run, a second
+Chromium, another agent) during every measurement window, and the `d00` rule — a single sample is
+not evidence — is why the table is a range. The deterministic measures agree with each other and are
+stable across runs: keydown → the dock is in the DOM at **36–72 ms**, and keydown → the canvas
+backing store has been resized at **219–290 ms**.
+
+**Resize.** The stage narrows by the dock's width (one CSS variable drives the stage, the panels and
+the marker space) and the renderer resizes through the existing debounced path: one `setSize`, one
+frame. The keydown→resize figure above is that path exactly — commit (tens of ms) + the 150 ms
+debounce + one frame. Nothing is reallocated: the GL geometry count is unchanged across 40 resizes.
+
+**Cycles.** 20 open/close passes on a quiescent deck:
+
+| Measure | Result |
+|---|---|
+| camera, selection, focus, pin, digest, pad positions | identical to the pre-loop values (deep equality) |
+| `hook.mounted` | unchanged (no context rebuilt) |
+| `renderer.geometries` | unchanged |
+| `sceneWrites` (instance-buffer writes) | **0** across the whole window |
+| frames | 16 (≈ one per resize, `p50 0.9 ms`, `p95 8.8 ms`) |
+
+**Return.** `select → inspect → scroll → switch tab → close` (the brief's §5 walkthrough, driven by
+the real affordance on the selected line, then the panel's own X): camera, selection, focus, pin and
+frozen state identical; `sceneWrites 0` (no scene rebuild on the way back); the Inspect affordance
+reappears. One defect surfaced while writing that walkthrough and was fixed: closing the dock with
+its X left focus on a button that no longer exists, so **every deck shortcut went dead until the
+next click**. The deck now hands focus back to its surface when the dock closes (only if focus was
+inside the deck), and the spec asserts it by closing and then driving the keyboard (`C` → `rail` →
+`command`) with no mouse event in between.
+
+**While it is up.** With the dock open on a quiescent run, a 1.5 s window recorded **0 frames, 0 DOM
+mutations, 0 scene writes, 0 React commits**. The 2D layer is busy; the 3D layer is not.
+
+### 4. Layout: right side, covers nothing (acceptance 3)
+
+At 1440×900 (deck 1224×778, HUD row 68 px tall) with the dock open:
+
+| Element | Box |
+|---|---|
+| dock | x 861, y 151, 562×690 (flush right, below the HUD) |
+| stage | 660×776 (was 1222×776) |
+| station line / lane strip | stacked at the top-left of the remaining column |
+| selected line | 640×60, above the bottom row |
+| live window | 316×235, bottom-left |
+| alert column | 316×59, bottom-right of the column |
+
+Every pair the operator reads at once is asserted **disjoint**: dock ∩ HUD, dock ∩ live window,
+dock ∩ lane strip, dock ∩ station line, dock ∩ selected line, live window ∩ lane strip, live window
+∩ station line, live window ∩ alert column. The lane strip and alert stack are re-anchored into the
+column the dock leaves — no panel moves under a panel. The dock arrives in 180 ms
+(`getComputedStyle` = 180 ms), and in **0.01 ms** under the deck's own reduced-motion switch (`M`).
+
+### 5. No new endpoints (acceptance 2)
+
+The request log for a full open-all-eight-tabs interaction contains exactly these paths — all of
+them pre-existing (`src/server.ts`'s route table), none invented for the dock:
+
+```
+GET /api/health
+GET /api/runs
+GET /api/runs/d06-inspection
+GET /api/runs/d06-inspection/agents
+GET /api/runs/d06-inspection/events
+GET /api/runs/d06-inspection/events/stream
+GET /api/runs/d06-inspection/sessions
+GET /api/runs/d06-inspection/slices/alpha
+GET /api/runs/d06-inspection/slices/alpha/diff
+GET /api/runs/d06-inspection/slices/alpha/log
+GET /api/runs/d06-inspection/slices/gamma
+GET /api/runs/d06-inspection/slices/gamma/log
+GET /api/runs/d06-inspection/stats
+```
+
+The Diff and Log tabs really fetch (that is how the assertion is worth anything); the deck itself
+still issues no request of its own — it is the same shell endpoints the dashboard's inspector uses,
+called by the same components.
+
+### 6. Live while inspecting (brief §6): the explicit table
+
+Measured by mutating the run under an open dock (`deck-inspector.e2e.ts` scenario 6, artifact
+`captures/deck-validation/d06-inspection.json`). Mutations are counted inside the dock subtree and
+split: *content* (nodes/text the operator reads) vs *attributes* (React/Radix bookkeeping).
+
+| What happens | What the operator sees | Dock content mutations |
+|---|---|---|
+| the inspected worker's log grows by 121 lines | the Log tab's tail updates within its 2 s poll; the live window within its own | (its own subject — expected) |
+| **another** worker becomes active | lane strip, HUD `live: N`, scene: live | **0** (8 attribute writes) |
+| **an alert** lands (another slice fails) | stack row + beacon, `live: N` unchanged | **0** (6 attribute writes) |
+| the inspected worker completes | the dock's header flips `verifying → done` by itself, its trace and tone update; the deck's focus (`d03`) falls to the next live worker while the *selection* stays put | 26 (its subject) |
+| closing afterwards | camera and selection identical to before the close | — |
+
+Nothing "waits until the user returns" and nothing freezes: the dock is live for its subject and
+inert for everything else. The **forensic** mode is the live window's freeze (`Space`, `d03`) — the
+dock deliberately has no second freeze control, and the Log tab's tail keeps following until the
+slice stops being live, exactly as the dashboard's Log tab does.
+
+### 7. The bounded window survives inspection (brief §7)
+
+With 121 lines appended to the inspected worker's transcript: the dock's Log tab renders **100
+lines** (the existing server `tail` cap) and the live window holds **≤ 5 meaningful rows** (the
+`d03` compact window). The two concepts stay distinct:
+
+```
+live window        = the bounded now (5 rows, freeze/expand, one per focused worker)
+forensic history   = on-demand tails (Log 100 lines, Events 200, prompt tail)
+```
+
+Opening the dock neither enlarges the live window nor accumulates the event stream: the dock's
+history is fetched per tab, capped by the server, and dropped when the tab unmounts.
+
+### 8. What the deck does worse, and open findings
+
+1. **The focused lane row trades its action line for the Inspect button.** The button is a sibling
+   grid cell, so the row's own content loses ~62 px — the action text is ellipsised (still in the
+   DOM, readable by AT, and shown in full on hover and in the live window immediately below). The
+   affordance is only drawn while the dock is closed, when it is the discoverable way in. A
+   wider-window redesign of the row (icons, or an overflow menu) would fix it; nothing here needs it.
+2. **The dock re-renders on the shell's cadence, and the only DOM churn it produces is Radix's.**
+   Measured: unrelated updates produce 0 *content* mutations but 6–36 *attribute* writes, all on a
+   hidden `<input>` inside `ControlPanel`'s Select (React re-rendering the form with equal values).
+   It costs nothing measurable (no layout, no paint), but it is the honest answer to "do live updates
+   cause unnecessary inspection rerenders": the component tree re-renders, the operator's content
+   does not.
+3. **The transport is still the ceiling, unchanged.** Nothing in this slice touches it (brief §11):
+   the dock's contents are exactly as old as the shell's fetch of the selected slice — up to a poll
+   interval (900 ms store poll, 2 s Log-tab poll) — and that is the same staleness the dashboard's
+   inspector shows. The dock does not hide it: an operator can watch a running slice's Log tab lag
+   its own live window by a poll, because both polls are real.
+4. **`review-rejected`/`verdict-stall` alerts still read the selected slice only.** The dock is
+   where the operator opens other slices (`d05` finding 6), so the alerts now cover everything the
+   operator actually looks at — but nothing fetches detail for unopened slices, by design (no new
+   endpoints, no new polling).
+5. **The measurement box was busy.** Interaction latencies span 2–5× across runs (see §3); the
+   frame, commit, mutation and write counters are stable, but the latency numbers here are ranges,
+   not a budget. A quiet-machine re-measurement belongs to `d03v`/`d10`.
+6. **The flat path renders the dock but has no stage.** With no WebGL the dock still opens and
+   inspects (it is DOM), but there is no canvas to narrow, so the layout rules reduce to the dock
+   over the notice. `d09` owns the real flat projection.
+7. **M10 remains owed** (`d03v`): the timed deck-vs-dashboard-vs-TUI comparison has still not run.
+
+### 9. Acceptance criteria (d06)
+
+| Criterion | Result |
+|---|---|
+| 1. All eight tabs render for a fixture slice with content identical to the dashboard's inspector | ✔ scenario 1: eight tabs, whitespace-normalised text equality after driving both surfaces; the dock's widgets are the same components |
+| 2. Opening the dock issues no request outside the existing endpoint set | ✔ scenario 2: 13 distinct paths observed while opening every tab, all pre-existing; `/diff` and `/log` asserted to have really been fetched |
+| 3. The live window and the HUD remain fully visible (no intersection with the dock) | ✔ scenario 3: bounding-box disjointness for dock ∩ HUD, live window, station line, lane strip and selected line; stage narrowed 1222 → 660 |
+| 4. Open/close 20× leaves `geometries` constant and the camera state unchanged | ✔ scenario 4: geometries unchanged, camera/selection/focus/pin/digest/positions deep-equal, `mounted` unchanged, `sceneWrites` delta 0 |
+| 5. Gates clean | ✔ `bunx tsc --noEmit`, `bun test` (757 pass / 0 fail, 58 files), `git diff --check`, `bunx playwright test tests/e2e/deck.e2e.ts --workers=1` (27 passed), `bunx playwright test tests/e2e/deck-inspector.e2e.ts --workers=1` (6 passed), `bun run test:e2e` (54 passed) |
+
+### 10. Verdict
+
+**PASS — recommendation, not a decision** (the operator fills in the decision block at `d03v`). The
+slice's own question is answered from the real e2e workflow: an operator selects a worker, opens the
+dock (key `1`…`8`, the Inspect affordance, or an alert row), scrolls, switches tabs, and closes —
+and the camera, the selection, the focus, the frozen state and the pad geometry are all exactly what
+they were, with no scene rebuild at all on the way back. The 3D layer stays cheap while the 2D layer
+is up (0 frames, 0 mutations, 0 writes in the idle window), the dock is the dashboard's inspector
+rather than a second one, and no new endpoint or fetch was introduced.
+
+Restrictions, in the order they would bite:
+
+1. **The dock is as fresh as the shell's fetch** (finding 3). Sub-second forensics remain a
+   transport question, deliberately untouched here.
+2. **The lane row's action text is the price of the affordance** (finding 1) — a cosmetic trade with
+   a visible workaround (hover, or the live window below).
+3. **Interaction latencies are measured on a busy machine** (finding 5): ranges, not a budget; the
+   deterministic sub-measures (36–72 ms to DOM, 219–290 ms to resized canvas) are the stable ones.
+4. **M10 (five timed tasks) remains owed** (`d03v`), together with the d03–d05 caveats that have not
+   changed.
+
+### 11. What a polished 2D dashboard would lose
+
+The dashboard's inspector is a contextual drawer: it opens over the workspace, and the workspace
+behind it is a list. Moving from "what is running" to "show me this diff" is a click on a row and a
+click on a tab — the same clicks the deck now offers, and the dock's content is identical. What the
+dashboard cannot do is keep *where the work is* on screen while inspecting: its board is a list, its
+DAG a diagram in another mode, and the drawer's subject is a selection you trust rather than a place
+you can see. The deck's dock narrows the world instead of covering it, so the operator inspects one
+worker's diff while the other workers stay visible at their own positions — an inspector and a map at
+once. The advantage is bounded: the dock is not a better inspector (it is the same one), it is an
+inspector that never makes the operator leave the map, and for a single-slice run on a small window
+the dashboard's drawer remains the cheaper surface.

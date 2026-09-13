@@ -1,0 +1,93 @@
+{
+  "runId": "d06-inspection",
+  "scenarios": {
+    "log_growth": {
+      "dockLines": 100,
+      "liveRows": 5
+    },
+    "other_worker_active": {
+      "dockMutations": {
+        "content": 0,
+        "attributes": 6,
+        "log": [
+          "attributes:input.h-8.rounded-md@name",
+          "attributes:input.h-8.rounded-md@name",
+          "attributes:input.h-8.rounded-md@name",
+          "attributes:input.h-8.rounded-md@name",
+          "attributes:input.h-8.rounded-md@name",
+          "attributes:input.h-8.rounded-md@name"
+        ]
+      },
+      "panelUnchanged": true,
+      "liveCount": 2
+    },
+    "alert": {
+      "dockMutations": {
+        "content": 0,
+        "attributes": 10,
+        "log": [
+          "attributes:input.h-8.rounded-md@name",
+          "attributes:input.h-8.rounded-md@name",
+          "attributes:input.h-8.rounded-md@name",
+          "attributes:input.h-8.rounded-md@name",
+          "attributes:input.h-8.rounded-md@name",
+          "attributes:input.h-8.rounded-md@name",
+          "attributes:input.h-8.rounded-md@name",
+          "attributes:input.h-8.rounded-md@name",
+          "attributes:input.h-8.rounded-md@name",
+          "attributes:input.h-8.rounded-md@name"
+        ]
+      },
+      "message": "gate bun test failed — 2 tests",
+      "stillInspecting": "gamma"
+    },
+    "inspected_completes": {
+      "selected": "gamma",
+      "focused": "delta",
+      "dockMutations": {
+        "content": 26,
+        "attributes": 34,
+        "log": [
+          "attributes:input.h-8.rounded-md@name",
+          "attributes:input.h-8.rounded-md@name",
+          "characterData:span.omp-inspector-status",
+          "attributes:circle@r",
+          "attributes:span.omp-trace-sym@data-state",
+          "attributes:span.omp-hint.omp-trace-sub@data-state",
+          "characterData:span.omp-hint.omp-trace-sub",
+          "attributes:li.omp-trace-step@data-state",
+          "characterData:span.omp-hint.omp-trace-sub",
+          "attributes:input.h-8.rounded-md@name",
+          "attributes:input.h-8.rounded-md@name",
+          "characterData:pre.omp-code",
+          "attributes:input.h-8.rounded-md@name",
+          "attributes:input.h-8.rounded-md@name",
+          "attributes:input.h-8.rounded-md@name",
+          "attributes:input.h-8.rounded-md@name",
+          "attributes:input.h-8.rounded-md@name",
+          "attributes:input.h-8.rounded-md@name",
+          "childList:svg",
+          "childList:svg",
+          "attributes:svg@data-shape",
+          "attributes:span.omp-status-sym@data-tone",
+          "attributes:span.omp-inspector-status@data-tone",
+          "characterData:span.omp-inspector-status"
+        ]
+      },
+      "liveCount": 1
+    },
+    "after_close": {
+      "camera": {
+        "target": {
+          "x": 0,
+          "y": 0.35,
+          "z": 5.5200000000000005
+        },
+        "distance": 12.101380413708341,
+        "azimuth": 0.7853981633974483,
+        "elevation": 0.55
+      },
+      "selected": "gamma"
+    }
+  }
+}

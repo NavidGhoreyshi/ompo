@@ -1,5 +1,5 @@
 /**
- * The deck surface (roadmap slices `d01`–`d02`).
+ * The deck surface (roadmap slices `d01`–`d02`, inspection dock `d06`).
  *
  * A React boundary and nothing more: it reads preferences, probes the tier,
  * owns the renderer + frame-loop lifecycle, projects the app's state into a
@@ -12,15 +12,20 @@
  * redraws, and only when something asked for a frame (`loop.request()`), an
  * animation is in flight (the 200 ms intro fade), or the window was resized. A
  * model whose digest is unchanged (an event landed, a worker line moved) does
- * not even ask.
+ * not even ask. The stage (`.omp-deck-stage`) is the box the scene owns; the
+ * inspection dock (`d06`) narrows it — the dock's state never reaches the
+ * model, so opening it moves nothing the scene draws.
  */
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { SliceDetail } from "../api.ts";
+import { INSPECTOR_TABS, type InspectorTab } from "../components/Inspector.tsx";
 import { describeEvent } from "../lib/events.ts";
 import { appendDismissed, DISMISSED_KEY, dismissKey, parseDismissed, type DeckAlert } from "./alerts.ts";
 import { diffModels, type SceneDelta } from "./deltas.ts";
 import { buildDeckModel } from "./model.ts";
+import { DOCK_CLOSED, dockOnNewSelection, dockTabForKey, hideDock, showDockTab, type DockState } from "./dock.ts";
+import DeckInspector from "./DeckInspector.tsx";
 import DeckOverlay from "./DeckOverlay.tsx";
 import { focusTarget, nextLiveId } from "./focus.ts";
 import { applyCameraIntent, edgeAnchor, focusIntent, lerpCamera, offScreenIds, type CameraIntent, type EdgeMarker } from "./camera.ts";
@@ -88,6 +93,11 @@ interface HudReadout {
   eventsPerSec: number;
   latencyP50: number;
   latencySamples: number;
+  /** Dock latencies (`d06`): intent → painted, p50 per interaction. */
+  interactionOpen: number;
+  interactionClose: number;
+  interactionTab: number;
+  interactionSamples: number;
   deferred: number;
   idleStops: number;
 }
@@ -111,6 +121,16 @@ function sameCompactReadout(a: HudReadout, b: HudReadout): boolean {
 /** Bounds identity for "did the world change size?" — extent, not equality. */
 function boundsShape(bounds: RailBounds): string {
   return `${bounds.width},${bounds.depth},${bounds.centerX},${bounds.centerZ}`;
+}
+
+/**
+ * Run `callback` after the frame that follows the current one — the first
+ * moment a change committed in this tick can have been painted. Used for the
+ * dock's intent→painted latencies (`d06`); it schedules two frames and costs
+ * nothing on the path it measures.
+ */
+function afterPaint(callback: () => void): void {
+  requestAnimationFrame(() => requestAnimationFrame(callback));
 }
 
 function readPrefs(): DeckPrefs {
@@ -209,6 +229,8 @@ function deckHook(): DeckDebugHook {
       dismissed: [],
       stationOverflow: 0,
       offScreen: [],
+      dockOpen: false,
+      dockTab: "Output",
       camera: { ...DEFAULT_CAMERA, target: { ...DEFAULT_CAMERA.target } },
       stationSegments: 0,
       liveRows: 0,
@@ -221,7 +243,7 @@ function deckHook(): DeckDebugHook {
   return page.__ompoDeck;
 }
 
-export default function Deck({ runId, detail, events, agents, selected, sliceDetail, live, onSelect, onExit }: DeckProps) {
+export default function Deck({ runId, detail, events, agents, selected, sliceDetail, live, onSelect, onControlDone, onExit }: DeckProps) {
   const [prefs, setPrefs] = useState<DeckPrefs>(readPrefs);
   const [dismissed, setDismissed] = useState<string[]>(readDismissed);
   const [hudOpen, setHudOpen] = useState(false);
@@ -235,9 +257,18 @@ export default function Deck({ runId, detail, events, agents, selected, sliceDet
   const [expanded, setExpanded] = useState(false);
   /** Alert stack collapsed (`d05`): view state, like the window's freeze. */
   const [alertsCollapsed, setAlertsCollapsed] = useState(false);
+  /**
+   * The inspection dock (`d06`): 2D view state, like the pin and the freeze.
+   * The scene is untouched by it — `buildDeckModel` never sees this — and the
+   * only spatial effect is the stage resize when it opens (`data-dock`).
+   */
+  const [dock, setDock] = useState<DockState>(DOCK_CLOSED);
   /** `command` follows the work; `rail` is the operator's whole-run overview. */
   const [preset, setPreset] = useState<DeckCameraPreset>("command");
   const containerRef = useRef<HTMLDivElement | null>(null);
+  const stageRef = useRef<HTMLDivElement | null>(null);
+  const dockRef = useRef(dock);
+  dockRef.current = dock;
   const hudRef = useRef<HTMLDivElement | null>(null);
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const rendererRef = useRef<DeckRenderer | null>(null);
@@ -335,12 +366,24 @@ export default function Deck({ runId, detail, events, agents, selected, sliceDet
 
   /**
    * The deck subtree is the mutation/layout subject the instrument watches —
-   * HUD, overlay and pad list included, because a status change re-renders the
-   * DOM line exactly as much as it rewrites instance colours.
+   * HUD, overlay, dock and pad list included, because a status change
+   * re-renders the DOM line exactly as much as it rewrites instance colours.
+   * The dock is inside it deliberately: its mutations are part of what the
+   * operator pays for, and `d06` measures them (`§9` of the slice brief).
    */
   const containerCallback = useCallback((element: HTMLDivElement | null) => {
     containerRef.current = element;
     instrument.observeDom(element);
+  }, []);
+
+  /**
+   * The stage is the area the scene owns: it shrinks by the dock's width when
+   * the dock opens, so the camera keeps the whole world on screen instead of
+   * being covered by a panel. Measuring and observing happen here; the section
+   * above is only the instrument's subject and the key/focus scope.
+   */
+  const stageCallback = useCallback((element: HTMLDivElement | null) => {
+    stageRef.current = element;
   }, []);
 
   const markRendered = useCallback((element: HTMLSpanElement | null, seq: number) => {
@@ -500,20 +543,29 @@ export default function Deck({ runId, detail, events, agents, selected, sliceDet
   }, [ready, rendererString, contextFailed]);
 
   // Size first: a zero-size container gets no renderer at all (a 0-width
-  // projection matrix is not a recoverable state, it is a bug).
+  // projection matrix is not a recoverable state, it is a bug). The subject is
+  // the stage, which is what the dock narrows (`d06`); the measure, and the
+  // pointer-picking rect with it, lands on the first resize notification while
+  // the renderer resize is debounced, so opening the dock cannot leave picking
+  // mapped to the old rectangle.
   useEffect(() => {
-    const container = containerRef.current;
-    if (!container) return;
-    const apply = (): void => {
-      const rect = container.getBoundingClientRect();
-      if (rect.width <= 0 || rect.height <= 0) return;
+    const stage = stageRef.current;
+    if (!stage) return;
+    const measure = (): { width: number; height: number } | null => {
+      const rect = stage.getBoundingClientRect();
+      if (rect.width <= 0 || rect.height <= 0) return null;
       sizeRef.current = { width: rect.width, height: rect.height };
       // Cached for pointer picking: a forced layout per pointermove is exactly
       // the cost the deck's instrument exists to catch.
       rectRef.current = { left: rect.left, top: rect.top, width: rect.width, height: rect.height };
+      return { width: rect.width, height: rect.height };
+    };
+    const apply = (): void => {
+      const size = measure();
+      if (!size) return;
       const renderer = rendererRef.current;
       if (renderer) {
-        renderer.setSize(rect.width, rect.height);
+        renderer.setSize(size.width, size.height);
         loopRef.current?.request();
         refreshEdgeMarkers();
       } else {
@@ -523,13 +575,14 @@ export default function Deck({ runId, detail, events, agents, selected, sliceDet
     apply();
     let timer: number | null = null;
     const observer = new ResizeObserver(() => {
+      measure();
       if (timer !== null) window.clearTimeout(timer);
       timer = window.setTimeout(() => {
         timer = null;
         apply();
       }, RESIZE_DEBOUNCE_MS);
     });
-    observer.observe(container);
+    observer.observe(stage);
     return () => {
       if (timer !== null) window.clearTimeout(timer);
       observer.disconnect();
@@ -708,13 +761,45 @@ export default function Deck({ runId, detail, events, agents, selected, sliceDet
     deckHook().frozen = frozenId;
   }, [frozenId, model.focusId]);
 
-  // A different run is a different world: the pin, the freeze and the window's
-  // expansion are per-run view state, so they start clean.
+  // A different run is a different world: the pin, the freeze, the window's
+  // expansion and the dock are per-run view state, so they start clean. The
+  // dock closes outright — a panel still describing the previous run's slice
+  // would be worse than no panel (the roadmap's error rule for `d06`).
   useEffect(() => {
     setPinnedId(null);
     setFrozenId(null);
     setExpanded(false);
+    setDock(DOCK_CLOSED);
   }, [runId]);
+
+  // The dock follows the selection: it stays where it is and shows the new
+  // subject, whose tabs start on `Output` — the dashboard inspector's own rule
+  // (`Inspector.tsx`), applied by the dock because the dock owns the tab.
+  useEffect(() => {
+    setDock(dockOnNewSelection);
+  }, [selected]);
+
+  // Closing the dock hands the keyboard back to the deck: the shortcuts live on
+  // the section, so a close that leaves focus on a removed button (the panel's
+  // X, a tab trigger) would silently disable every deck key until the next
+  // click. Focus is only taken back if it was inside the deck already.
+  const dockWasOpenRef = useRef(dock.open);
+  useEffect(() => {
+    const wasOpen = dockWasOpenRef.current;
+    dockWasOpenRef.current = dock.open;
+    if (!wasOpen || dock.open) return;
+    const container = containerRef.current;
+    const active = document.activeElement;
+    if (container && (active === null || active === document.body || !container.contains(active))) {
+      container.focus({ preventScroll: true });
+    }
+  }, [dock.open]);
+
+  useEffect(() => {
+    const hook = deckHook();
+    hook.dockOpen = dock.open;
+    hook.dockTab = dock.tab;
+  }, [dock]);
 
   // Tier changes are parameters: resolution scale, fps cap and the tier label,
   // applied to the live renderer and loop.
@@ -772,6 +857,10 @@ export default function Deck({ runId, detail, events, agents, selected, sliceDet
         eventsPerSec: sample.events.perSec,
         latencyP50: sample.latencyMs.p50,
         latencySamples: sample.latencyMs.samples,
+        interactionOpen: sample.interactions.open.p50,
+        interactionClose: sample.interactions.close.p50,
+        interactionTab: sample.interactions.tab.p50,
+        interactionSamples: sample.interactions.samples,
         deferred: sample.loop.deferred,
         idleStops: sample.loop.idleStops,
       };
@@ -857,6 +946,56 @@ export default function Deck({ runId, detail, events, agents, selected, sliceDet
   );
 
   /**
+   * The inspection dock (`d06`). Opening is an explicit act — `1`…`8`, an
+   * Inspect affordance, an alert row — never a side effect of selecting: a
+   * click on a pad is a spatial act ("which slice is that?"), and reflowing
+   * the stage for every glance would make the overview unusable and the dock a
+   * second dashboard. What the dock inspects is the *selection*, which is why
+   * the shell's existing slice-detail fetch feeds it with nothing new.
+   *
+   * Each intent is measured where it happens: from the key/click to the second
+   * animation frame afterwards, i.e. the first frame the operator can see the
+   * change in (`recordInteraction`). No sample is recorded for a no-op.
+   */
+  const showDockTabIntent = useCallback(
+    (tab: InspectorTab): void => {
+      if (runId === null) return; // nothing to inspect
+      const current = dockRef.current;
+      const next = showDockTab(current, tab);
+      if (next === current) return;
+      const started = performance.now();
+      setDock(next);
+      afterPaint(() =>
+        instrument.recordInteraction(current.open ? "inspection-tab" : "inspection-open", performance.now() - started),
+      );
+    },
+    [runId],
+  );
+
+  const closeDockPanel = useCallback((): void => {
+    const current = dockRef.current;
+    const next = hideDock(current);
+    if (next === current) return;
+    const started = performance.now();
+    setDock(next);
+    afterPaint(() => instrument.recordInteraction("inspection-close", performance.now() - started));
+  }, []);
+
+  /**
+   * "Inspect": make the dock show this slice. The selection is already the
+   * dock's subject, so the affordance only has to open it (on `Output`) when it
+   * is closed — a click on Inspect must not disturb a dock the operator has
+   * positioned on another tab.
+   */
+  const inspectSlice = useCallback(
+    (sliceId: string): void => {
+      onSelect(sliceId);
+      if (!dockRef.current.open) showDockTabIntent("Output");
+    },
+    [onSelect, showDockTabIntent],
+  );
+
+  /**
    * Dismiss one alert. The key includes the evidence seq, so this clears the
    * condition as the operator sees it *now* — when it recurs (a second
    * failure, a later wedge) the new key is not in the list and the alert
@@ -925,10 +1064,20 @@ export default function Deck({ runId, detail, events, agents, selected, sliceDet
         const target = model.nodes.find((node) => node.selected)?.id ?? model.focusId;
         if (target !== null) focusOn(target, true);
       } else if (event.key === "Escape") {
-        // Release the pin: follow the primary again, from wherever we are.
-        setPinnedId(null);
-        setPreset("command");
-        frameSlice(focusTarget(detail?.slices ?? [], null));
+        // One key, one meaning at a time: the dock is the topmost layer, so it
+        // closes first; with no dock open this is the `d03` pin release.
+        if (dockRef.current.open) {
+          closeDockPanel();
+        } else {
+          setPinnedId(null);
+          setPreset("command");
+          frameSlice(focusTarget(detail?.slices ?? [], null));
+        }
+      } else if (/^[1-8]$/.test(event.key)) {
+        // The dock's tabs, by position in `INSPECTOR_TABS`: opening it when it
+        // is closed, switching it when it is already up (`d06`).
+        const tab = dockTabForKey(event.key, INSPECTOR_TABS);
+        if (tab !== null) showDockTabIntent(tab);
       } else if (event.key === " ") {
         const target = model.focusId;
         if (target !== null) setFrozenId((current) => (current === target ? null : target));
@@ -959,15 +1108,18 @@ export default function Deck({ runId, detail, events, agents, selected, sliceDet
       }
       event.preventDefault();
     },
-    [detail, dispatchCamera, focusOn, framePreset, frameSlice, onExit, prefs, preset],
+    [closeDockPanel, detail, dispatchCamera, focusOn, framePreset, frameSlice, onExit, prefs, preset, showDockTabIntent],
   );
 
   // Wheel zoom is a native listener: React's synthetic wheel events are
   // passive at the root, so `preventDefault` there would not stop the page
-  // from scrolling behind the surface.
+  // from scrolling behind the surface. It lives on the stage — the canvas and
+  // nothing else — so a wheel over any DOM panel (live window, lanes, alerts,
+  // dock) belongs to that panel and never zooms the world (`d06`: the dock is
+  // a 2D surface first).
   useEffect(() => {
-    const container = containerRef.current;
-    if (!container) return;
+    const stage = stageRef.current;
+    if (!stage) return;
     const onWheel = (event: WheelEvent): void => {
       // The transcript and the lane list scroll themselves; only the empty
       // scene area zooms.
@@ -975,14 +1127,67 @@ export default function Deck({ runId, detail, events, agents, selected, sliceDet
       event.preventDefault();
       dispatchCamera({ kind: "zoom", factor: event.deltaY > 0 ? ZOOM_STEP : 1 / ZOOM_STEP }, true);
     };
-    container.addEventListener("wheel", onWheel, { passive: false });
-    return () => container.removeEventListener("wheel", onWheel);
+    stage.addEventListener("wheel", onWheel, { passive: false });
+    return () => stage.removeEventListener("wheel", onWheel);
   }, [dispatchCamera]);
 
   useEffect(() => {
     const container = containerRef.current;
     if (container && !container.contains(document.activeElement)) container.focus({ preventScroll: true });
   }, []);
+
+  /**
+   * The DOM layer is identical whichever path renders — the canvas draws
+   * geometry, this draws the words — so it is built once, from the same
+   * props, in both branches. `d09`'s flat projection extends it rather than
+   * forking it.
+   */
+  const overlay = (
+    <DeckOverlay
+      model={model}
+      hoverId={hover}
+      agents={agents}
+      events={events}
+      focusSlice={detail?.slices.find((slice) => slice.id === model.focusId) ?? null}
+      frozen={frozenId !== null}
+      onFrozenChange={(next) => setFrozenId(next ? (model.focusId ?? null) : null)}
+      expanded={expanded}
+      onExpandedChange={setExpanded}
+      edgeMarkers={edgeMarkers}
+      onFocus={focusOn}
+      onSelect={onSelect}
+      onInspect={inspectSlice}
+      dockOpen={dock.open}
+      onDismiss={dismissAlert}
+      alertsCollapsed={alertsCollapsed}
+      onAlertsCollapsedChange={setAlertsCollapsed}
+    />
+  );
+
+  /**
+   * The inspection dock (`d06`): the dashboard's own `Inspector`, in a frame.
+   * It is a sibling of the stage, never inside it, and takes props only — no
+   * renderer, no camera, no model — so the 2D surface stays usable with the
+   * canvas absent (the flat path above renders it too).
+   */
+  const dockPanel =
+    dock.open && runId !== null ? (
+      <aside className="omp-deck-dock" aria-label="Inspection dock">
+        <DeckInspector
+          runId={runId}
+          selected={detail?.slices.find((slice) => slice.id === selected) ?? undefined}
+          detail={sliceDetail}
+          slices={detail?.slices ?? []}
+          events={events}
+          live={live}
+          wedged={agents.find((agent) => agent.id === selected)?.wedged === true}
+          tab={dock.tab}
+          onTabChange={showDockTabIntent}
+          onControlDone={onControlDone}
+          onClose={closeDockPanel}
+        />
+      </aside>
+    ) : null;
 
   if (rendererString === null || contextFailed) {
     // No scene: the deck's information layer is DOM anyway (station line, live
@@ -998,6 +1203,7 @@ export default function Deck({ runId, detail, events, agents, selected, sliceDet
         onKeyDown={onKeyDown}
         data-tier="flat"
         data-motion={reducedMotion ? "reduced" : "full"}
+        data-dock={dock.open ? "open" : "closed"}
       >
         <div className="omp-deck-notice" role="status">
           <p>3D unavailable on this device — the spatial overview is off; the live deck below still works, and the dashboard has everything else.</p>
@@ -1005,23 +1211,8 @@ export default function Deck({ runId, detail, events, agents, selected, sliceDet
             Back to dashboard
           </button>
         </div>
-        <DeckOverlay
-          model={model}
-          hoverId={hover}
-          agents={agents}
-          events={events}
-          focusSlice={detail?.slices.find((slice) => slice.id === model.focusId) ?? null}
-          frozen={frozenId !== null}
-          onFrozenChange={(next) => setFrozenId(next ? (model.focusId ?? null) : null)}
-          expanded={expanded}
-          onExpandedChange={setExpanded}
-          edgeMarkers={edgeMarkers}
-          onFocus={focusOn}
-          onSelect={onSelect}
-          onDismiss={dismissAlert}
-          alertsCollapsed={alertsCollapsed}
-          onAlertsCollapsedChange={setAlertsCollapsed}
-        />
+        {overlay}
+        {dockPanel}
       </section>
     );
   }
@@ -1036,35 +1227,26 @@ export default function Deck({ runId, detail, events, agents, selected, sliceDet
       data-hud={hudOpen ? "open" : "closed"}
       data-tier={tier}
       data-motion={reducedMotion ? "reduced" : "full"}
+      data-dock={dock.open ? "open" : "closed"}
     >
-      {/* Keyed by the context identity: a canvas whose context was lost can
-          never hand out another one, so a rebuild gets a fresh element. */}
-      <canvas
-        key={contextKey}
-        className="omp-deck-canvas"
-        ref={canvasRef}
-        aria-label="Workflow scene"
-        onPointerMove={onPointerMove}
-        onPointerLeave={onPointerLeave}
-        onPointerDown={onPointerDown}
-      />
-      <DeckOverlay
-        model={model}
-        hoverId={hover}
-        agents={agents}
-        events={events}
-        focusSlice={detail?.slices.find((slice) => slice.id === model.focusId) ?? null}
-        frozen={frozenId !== null}
-        onFrozenChange={(next) => setFrozenId(next ? (model.focusId ?? null) : null)}
-        expanded={expanded}
-        onExpandedChange={setExpanded}
-        edgeMarkers={edgeMarkers}
-        onFocus={focusOn}
-        onSelect={onSelect}
-        onDismiss={dismissAlert}
-        alertsCollapsed={alertsCollapsed}
-        onAlertsCollapsedChange={setAlertsCollapsed}
-      />
+      {/* The stage is the area the scene owns; the dock narrows it (CSS, one
+          resize, one frame) instead of covering the world, so the camera keeps
+          the whole layout on screen and `Esc` gives back the same scene. */}
+      <div className="omp-deck-stage" ref={stageCallback}>
+        {/* Keyed by the context identity: a canvas whose context was lost can
+            never hand out another one, so a rebuild gets a fresh element. */}
+        <canvas
+          key={contextKey}
+          className="omp-deck-canvas"
+          ref={canvasRef}
+          aria-label="Workflow scene"
+          onPointerMove={onPointerMove}
+          onPointerLeave={onPointerLeave}
+          onPointerDown={onPointerDown}
+        />
+      </div>
+      {overlay}
+      {dockPanel}
       <div className="omp-deck-hud" ref={hudRef}>
         <div className="omp-deck-row">
           <span className="omp-deck-chip" data-tier={tier}>
@@ -1180,6 +1362,15 @@ export default function Deck({ runId, detail, events, agents, selected, sliceDet
                 <dd>
                   {readout?.eventsPerSec.toFixed(2) ?? "—"}/s · to screen p50 {readout?.latencyP50.toFixed(0) ?? "—"} ms (
                   {readout?.latencySamples ?? 0} marks)
+                </dd>
+              </div>
+              <div>
+                <dt>inspection</dt>
+                <dd data-dock-open={dock.open ? "true" : "false"} data-dock-tab={dock.tab}>
+                  {dock.open ? `dock open · ${dock.tab}` : "dock closed"}
+                  {readout !== null && readout.interactionSamples > 0
+                    ? ` · open p50 ${readout.interactionOpen.toFixed(0)} ms · close p50 ${readout.interactionClose.toFixed(0)} ms · tab p50 ${readout.interactionTab.toFixed(0)} ms (${readout.interactionSamples})`
+                    : " · no interactions this window"}
                 </dd>
               </div>
               <div>

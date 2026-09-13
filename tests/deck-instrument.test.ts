@@ -16,6 +16,7 @@ import {
   computeSample,
   createInstrumentation,
   frameTimeStats,
+  INTERACTION_RING,
   SHADER_NS_PER_PIXEL,
   type Instrumentation,
   type SampleInput,
@@ -37,6 +38,7 @@ function input(overrides: Partial<SampleInput> = {}): SampleInput {
     frameTimes: [],
     latencies: [],
     latencyStages: { transport: [], dom: [], model: [], scene: [], samples: 0 },
+    interactions: {},
     layouts: [],
     renderer: null,
     loop: { frames: 0, deferred: 0, idleStops: 0, hiddenDrops: 0, maxFps: 30 },
@@ -388,6 +390,45 @@ describe("event pipeline stages", () => {
     // An unmarked stage is absent (zero samples), not a zero-valued sample.
     expect(sample.latencyStages.scene).toEqual({ p50: 0, p95: 0, worst: 0, samples: 0 });
     expect(sample.latencyStages.samples).toBe(2);
+  });
+
+  test("dock interactions reduce per name, and an unmeasured one is absent", () => {
+    const sample = computeSample(
+      input({
+        interactions: {
+          "inspection-open": [12, 40],
+          "inspection-tab": [8],
+          // `inspection-close` never happened: no samples, not a zero.
+        },
+      }),
+    );
+    expect(sample.interactions.open).toEqual({ p50: 12, p95: 40, worst: 40, samples: 2 });
+    expect(sample.interactions.tab).toEqual({ p50: 8, p95: 8, worst: 8, samples: 1 });
+    expect(sample.interactions.close.samples).toBe(0);
+    expect(sample.interactions.samples).toBe(3);
+  });
+});
+
+describe("recordInteraction", () => {
+  test("keeps a bounded ring per name and clears with the window", () => {
+    const h = instrumentHarness();
+    h.instrument.start();
+    for (let i = 0; i < INTERACTION_RING + 7; i++) h.instrument.recordInteraction("inspection-open", i);
+    h.instrument.recordInteraction("inspection-close", 5);
+    h.instrument.recordInteraction("inspection-open", Number.NaN); // ignored, not a sample
+
+    const first = h.instrument.snapshot();
+    // The 7 oldest samples were dropped; NaN never entered the ring.
+    expect(first.interactions.open.samples).toBe(INTERACTION_RING);
+    expect(first.interactions.open.worst).toBe(INTERACTION_RING + 6);
+    expect(first.interactions.close).toEqual({ p50: 5, p95: 5, worst: 5, samples: 1 });
+    expect(first.interactions.samples).toBe(INTERACTION_RING + 1);
+
+    // Snapshot consumes the window: the latencies measured in it do not leak
+    // into the next one.
+    const second = h.instrument.snapshot();
+    expect(second.interactions.samples).toBe(0);
+    expect(second.interactions.open.samples).toBe(0);
   });
 });
 

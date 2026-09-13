@@ -3782,11 +3782,28 @@ button[data-slot="select-trigger"] {
    * band below it (station line, lane strip) is placed from this, so a HUD
    * that wraps onto two lines never covers a worker. */
   --omp-deck-hud-h: 34px;
+  /* Width of the inspection dock (`d06`); zero while it is closed. Everything
+   * that has to make room for the dock reads this one value: the stage, the
+   * overlay panels that would otherwise sit under it, and the marker space. */
+  --omp-deck-dock-w: 0px;
   min-width: 0;
   overflow: hidden;
   background: #0a0e14;
   border: 1px solid var(--omp-border);
   border-radius: var(--omp-radius);
+}
+
+.omp-deck[data-dock="open"] {
+  --omp-deck-dock-w: min(620px, 46%);
+}
+
+/* The stage is the area the scene owns. The dock narrows it — one resize, one
+ * frame — instead of covering the world, so the camera keeps the whole layout
+ * on screen and the operator never loses sight of where the work is. */
+.omp-deck-stage {
+  position: absolute;
+  inset: 0;
+  right: var(--omp-deck-dock-w);
 }
 
 .omp-deck:focus-visible {
@@ -3944,6 +3961,16 @@ button[data-slot="select-trigger"] {
  * pad list that gives the scene its keyboard and screen-reader path. All text
  * stays in the document (CP-3); the canvas draws only geometry. ---------- */
 .omp-deck-overlay {
+  display: contents;
+}
+
+/* The two overlay bands (top: station line + lane strip; bottom: selected
+ * line + live window + alert column). `display: contents` is the whole trick:
+ * normally the bands have no box and every panel keeps the absolute position
+ * it had before `d06`; with the dock open each band becomes one flex/grid
+ * region inside the column the dock leaves. */
+.omp-deck-top,
+.omp-deck-bottom {
   display: contents;
 }
 
@@ -4165,6 +4192,9 @@ button[data-slot="select-trigger"] {
   padding: 4px;
   list-style: none;
   display: grid;
+  /* The row, plus the focused row's Inspect affordance (`d06`) in the second
+   * column. Every other row spans both. */
+  grid-template-columns: minmax(0, 1fr) auto;
   gap: 2px;
   align-content: start;
   border: 1px solid var(--omp-border);
@@ -4177,6 +4207,7 @@ button[data-slot="select-trigger"] {
 }
 
 .omp-deck-lane {
+  grid-column: 1 / -1;
   display: grid;
   grid-template-columns: 1ch 12ch 8ch 9ch auto minmax(0, 1fr);
   gap: 8px;
@@ -4201,7 +4232,40 @@ button[data-slot="select-trigger"] {
 }
 
 .omp-deck-lane[data-focused="true"] {
+  grid-column: 1;
   color: var(--omp-text);
+  border-color: var(--omp-cyan);
+}
+
+/* The Inspect affordance (`d06`): a sibling of the lane row, so the row stays
+ * one button and one focus stop. Quiet until hovered or focused — the row is
+ * the target, this is the way onward. */
+.omp-deck-lane-inspect {
+  grid-column: 2;
+  align-self: center;
+  justify-self: end;
+  margin-right: 3px;
+}
+
+.omp-deck-inspect {
+  pointer-events: auto;
+  flex: none;
+  font: inherit;
+  font-family: var(--omp-font);
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--omp-secondary);
+  background: transparent;
+  border: 1px solid var(--omp-border);
+  border-radius: 999px;
+  padding: 1px 9px;
+  cursor: pointer;
+}
+
+.omp-deck-inspect:hover,
+.omp-deck-inspect:focus-visible {
+  color: var(--omp-text);
+  background: var(--omp-panel-2);
   border-color: var(--omp-cyan);
 }
 
@@ -4556,6 +4620,138 @@ button[data-slot="select-trigger"] {
   color: var(--omp-text);
   border-color: var(--omp-border);
   background: var(--omp-panel-2);
+}
+
+/* ---------- deck inspection dock (slice d06) ----------
+ * The product boundary: 3D selects and orients, 2D inspects. The dock is a
+ * normal docked panel — never projected onto the canvas — and it renders the
+ * dashboard's own Inspector, so the two surfaces cannot drift. Opening it
+ * narrows the stage (one resize, one frame) and re-anchors the panels that
+ * would otherwise sit under it; nothing else about the deck moves. */
+.omp-deck-dock {
+  position: absolute;
+  top: calc(10px + var(--omp-deck-hud-h) + 8px);
+  right: 0;
+  bottom: 0;
+  width: var(--omp-deck-dock-w);
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+  background: var(--omp-bg-2);
+  border-left: 1px solid var(--omp-hairline);
+  /* Enter only: the panel is a surface arriving, not a state change. The
+   * roadmap's ≤ 180 ms bound, not the shell's 350 ms layout track — and instant
+   * under reduced motion, through the deck's own override rule. */
+  animation: omp-deck-dock-in 180ms var(--omp-ease-out, ease-out);
+}
+
+@keyframes omp-deck-dock-in {
+  from {
+    transform: translateX(18px);
+    opacity: 0.35;
+  }
+  to {
+    transform: none;
+    opacity: 1;
+  }
+}
+
+/* The scroll container the dashboard's drawer gives its Inspector
+ * (`.omp-inspector`), reproduced here rather than reused: that class is a
+ * shell grid/fixed-position subject, and this one must live inside the deck. */
+.omp-deck-dock-body {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  overflow-x: hidden;
+  padding: 12px 14px 20px;
+  scrollbar-gutter: stable;
+}
+
+/* The marker space is the stage, not the deck: a marker must point from the
+ * edge the operator can actually see. */
+.omp-deck[data-dock="open"] .omp-deck-edges {
+  right: var(--omp-deck-dock-w);
+}
+
+/* Top band: the station line and the lane strip stack in the column the dock
+ * leaves, instead of sharing a row that is no longer wide enough. */
+.omp-deck[data-dock="open"] .omp-deck-top {
+  position: absolute;
+  left: 10px;
+  top: calc(10px + var(--omp-deck-hud-h) + 8px);
+  width: calc(100% - var(--omp-deck-dock-w) - 20px);
+  max-height: 46%;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 6px;
+  pointer-events: none;
+}
+
+.omp-deck[data-dock="open"] .omp-deck-station {
+  position: static;
+  max-width: 100%;
+}
+
+.omp-deck[data-dock="open"] .omp-deck-lanes {
+  position: static;
+  width: min(430px, 100%);
+  max-height: 32vh;
+  pointer-events: auto;
+}
+
+/* Bottom band: the selected line names the subject above the live window
+ * (left) and the alert column (right) — three panels, two columns, no
+ * intersection with each other or with the dock. */
+.omp-deck[data-dock="open"] .omp-deck-bottom {
+  position: absolute;
+  left: 10px;
+  right: calc(var(--omp-deck-dock-w) + 10px);
+  bottom: 10px;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: 8px;
+  align-items: end;
+  pointer-events: none;
+}
+
+.omp-deck[data-dock="open"] .omp-deck-line {
+  position: static;
+  grid-column: 1 / -1;
+  justify-self: start;
+  max-width: 100%;
+}
+
+.omp-deck[data-dock="open"] .omp-deck-live {
+  position: static;
+  grid-column: 1;
+  width: auto;
+  max-height: 34vh;
+  pointer-events: auto;
+}
+
+.omp-deck[data-dock="open"] .omp-deck-alertcol {
+  position: static;
+  grid-column: 2;
+  width: auto;
+  max-height: 34vh;
+}
+
+/* The HUD's open panel grows downward on the left; it must not slide under
+ * the dock at narrow widths. */
+.omp-deck-panel {
+  max-width: min(560px, calc(100% - var(--omp-deck-dock-w) - 20px));
+}
+
+/* Narrow: the dock keeps the majority of the width — the scene is the thing
+ * that can be re-read, the report is not — and the shell's own responsive
+ * rules already stack the dashboard around it. */
+@media (max-width: 900px) {
+  .omp-deck[data-dock="open"] {
+    --omp-deck-dock-w: min(560px, 72%);
+  }
 }
 
 .omp-deck-notice,

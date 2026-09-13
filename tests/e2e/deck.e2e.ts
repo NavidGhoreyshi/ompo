@@ -113,7 +113,9 @@ test.describe("deck surface", () => {
     if (state.tier === "minimal") await expect(page.locator(".omp-deck-warn")).toHaveText(/software renderer/);
 
     const canvas = { ...(await canvasSize(page)), webgl2: await page.locator("canvas").evaluate((element) => (element as HTMLCanvasElement).getContext("webgl2") !== null) };
-    const box = await page.locator(".omp-deck").boundingBox();
+    // The scene's box is the stage (`d06`): the dock narrows it, and it is what
+    // the renderer measures and sizes the backing store from.
+    const box = await page.locator(".omp-deck-stage").boundingBox();
     expect(canvas.webgl2).toBe(true);
     // d00's rule: the backing store is the CSS size × the tier's scale.
     const scale = TIER_BUDGETS[state.tier].resolutionScale;
@@ -162,7 +164,7 @@ test.describe("deck surface", () => {
     await page.locator(".omp-deck").press("t");
     await expect.poll(async () => (await readHook(page)).tier).not.toBe(pinnedTier);
     const after = await readHook(page);
-    const box = await page.locator(".omp-deck").boundingBox();
+    const box = await page.locator(".omp-deck-stage").boundingBox();
     await expect
       .poll(async () => (await canvasSize(page)).width, { timeout: 3000 })
       .toBe(Math.round((box?.width ?? 0) * TIER_BUDGETS[after.tier].resolutionScale));
@@ -857,7 +859,7 @@ test.describe("deck degraded operation", () => {
     // The tier removes detail, not information: a smaller backing store and no
     // ambient pass, while the station, the lanes and the window are all there.
     const canvas = await canvasSize(page);
-    const box = await page.locator(".omp-deck").boundingBox();
+    const box = await page.locator(".omp-deck-stage").boundingBox();
     expect(Math.abs(canvas.width - (box?.width ?? 0) * 0.5)).toBeLessThanOrEqual(1);
 
     // A runtime tier change is a parameter change: the same context, the same

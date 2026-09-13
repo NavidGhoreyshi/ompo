@@ -24,6 +24,8 @@ export const LATENCY_RING = 512;
 const RECORD_RING = LATENCY_RING;
 /** Pending event timestamps remembered for latency matching. */
 const PENDING_EVENTS = 512;
+/** UI interactions kept per window, per name (`d06`'s dock latencies). */
+export const INTERACTION_RING = 64;
 /**
  * Fill cost measured by `scripts/deck-probe.ts` (`d00`): 9 ns per shaded
  * pixel, median across runs on this machine. Used only to turn the renderer's
@@ -72,6 +74,27 @@ export interface LatencyStageStats {
   samples: number;
 }
 
+/**
+ * The dock's own latencies (`d06`): intent → the second animation frame after
+ * the change was committed, which is the first frame the operator can see it
+ * in. Measured on the real surface, from the real key/click handlers — these
+ * are UI latencies, so they say nothing about when the *data* arrived (that is
+ * `latencyStages.transport`, recorded separately and unchanged by `d06`).
+ */
+export const INTERACTION_NAMES = ["inspection-open", "inspection-close", "inspection-tab"] as const;
+export type InteractionName = (typeof INTERACTION_NAMES)[number];
+
+export interface InteractionStats {
+  /** Dock opens: `1`…`8`, Inspect, an alert row. */
+  open: FrameTimeStats;
+  /** Dock closes: `Esc` or the panel's X. */
+  close: FrameTimeStats;
+  /** A tab change while the dock is open. */
+  tab: FrameTimeStats;
+  /** Interactions measured in this window, across the three names. */
+  samples: number;
+}
+
 /** One JSON-serialisable sample: what the gate records and the HUD shows. */
 export interface DeckSample {
   at: string;
@@ -93,6 +116,8 @@ export interface DeckSample {
   latencyMs: FrameTimeStats;
   /** The same window's event→visible latency, split by pipeline stage. */
   latencyStages: LatencyStageStats;
+  /** The dock's intent→painted latencies (`d06`), same window. */
+  interactions: InteractionStats;
   renderer: RenderStats | null;
   loop: FrameLoopStats;
   estimate: { shadedPixels: number; shaderMs: number; basis: string };
@@ -114,6 +139,8 @@ export interface SampleInput {
   frameTimes: number[];
   latencies: number[];
   latencyStages: LatencyStageSamples;
+  /** Raw interaction samples by name (`d06`); absent names read as empty. */
+  interactions: Partial<Record<InteractionName, number[]>>;
   layouts: number[];
   renderer: RenderStats | null;
   loop: FrameLoopStats;
@@ -156,6 +183,15 @@ export function computeSample(input: SampleInput): DeckSample {
       model: frameTimeStats(input.latencyStages.model),
       scene: frameTimeStats(input.latencyStages.scene),
       samples: input.latencyStages.samples,
+    },
+    interactions: {
+      open: frameTimeStats(input.interactions["inspection-open"] ?? []),
+      close: frameTimeStats(input.interactions["inspection-close"] ?? []),
+      tab: frameTimeStats(input.interactions["inspection-tab"] ?? []),
+      samples:
+        (input.interactions["inspection-open"]?.length ?? 0) +
+        (input.interactions["inspection-close"]?.length ?? 0) +
+        (input.interactions["inspection-tab"]?.length ?? 0),
     },
     renderer: input.renderer,
     loop: input.loop,
@@ -201,6 +237,13 @@ export interface Instrumentation {
    * third stage and is written by `markEventRendered`.
    */
   noteStage(stage: "model" | "scene"): void;
+  /**
+   * A UI interaction's intent→painted duration (`d06`): the caller measures it
+   * (the deck does this on the frame after the change was committed). Kept in
+   * a fixed-size ring per name, cleared with the window like every other
+   * counter — a dock latched open for an hour does not grow this.
+   */
+  recordInteraction(name: InteractionName, ms: number): void;
   /** Start counting mutations inside the deck subtree. */
   observeDom(root: Element | null): void;
   setTier(tier: QualityTier): void;
@@ -273,6 +316,12 @@ export function createInstrumentation(deps: InstrumentationDeps = {}): Instrumen
 
   const latencies: number[] = [];
   const layouts: number[] = [];
+  /** `d06` dock latencies: one bounded list per interaction name. */
+  const interactions: Record<InteractionName, number[]> = {
+    "inspection-open": [],
+    "inspection-close": [],
+    "inspection-tab": [],
+  };
   const pending = new Map<number, number>();
   const pendingAt: number[] = [];
   let detachMutations: (() => void) | null = null;
@@ -382,6 +431,7 @@ export function createInstrumentation(deps: InstrumentationDeps = {}): Instrumen
       frameTimes: frameTimes(),
       latencies: ring(latencies),
       latencyStages: stageSamples(),
+      interactions,
       layouts: ring(layouts),
       renderer: rendererSource(),
       loop: loopSource(),
@@ -401,6 +451,7 @@ export function createInstrumentation(deps: InstrumentationDeps = {}): Instrumen
     frameWrite = 0;
     latencies.length = 0;
     layouts.length = 0;
+    for (const name of INTERACTION_NAMES) interactions[name].length = 0;
     recWrite = 0;
     recCount = 0;
   };
@@ -448,6 +499,12 @@ export function createInstrumentation(deps: InstrumentationDeps = {}): Instrumen
       // Marked before any event: nothing to attribute it to, so it is ignored.
       if (recWrite === 0) return;
       setStage(currentSlot(), stage === "model" ? recModel : recScene, wallClock());
+    },
+    recordInteraction(name: InteractionName, ms: number): void {
+      if (!Number.isFinite(ms)) return;
+      const list = interactions[name];
+      list.push(ms);
+      if (list.length > INTERACTION_RING) list.splice(0, list.length - INTERACTION_RING);
     },
     observeDom(root: Element | null): void {
       lastRoot = root;

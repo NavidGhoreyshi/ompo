@@ -284,6 +284,14 @@ export default function App() {
                   sliceDetail={sliceDetail}
                   live={detail?.live ?? false}
                   onSelect={setSel}
+                  onControlDone={() => {
+                    // The dock's control outcomes settle through the same
+                    // channels the dashboard's inspector uses — the store's
+                    // events and these two refetches. No deck-specific path.
+                    if (runId === null) return;
+                    void loadRun(runId);
+                    void reloadRuns();
+                  }}
                   onExit={toggleSurface}
                 />
               </Suspense>

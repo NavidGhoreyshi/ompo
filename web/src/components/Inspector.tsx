@@ -29,9 +29,14 @@ import Usage from "./Usage.tsx";
 import VerifyView from "./VerifyView.tsx";
 import { formatDurationMs } from "../lib/format.ts";
 
-type InspectorTab = "Output" | "Diff" | "Verify" | "Review" | "Prompt" | "Events" | "Usage" | "Log";
+export type InspectorTab = "Output" | "Diff" | "Verify" | "Review" | "Prompt" | "Events" | "Usage" | "Log";
 
-const TABS: readonly { id: InspectorTab; icon: IconType }[] = [
+/**
+ * The tabs, in the order the surface renders them. Exported because the deck's
+ * dock addresses them by position (`1`…`8`, `scene/dock.ts`): a second list
+ * with a second order is exactly how two surfaces drift apart.
+ */
+export const INSPECTOR_TABS: readonly { id: InspectorTab; icon: IconType }[] = [
   { id: "Output", icon: LuFileText },
   { id: "Diff", icon: LuFileDiff },
   { id: "Verify", icon: LuShieldCheck },
@@ -60,6 +65,8 @@ export default function Inspector({
   events = [],
   live,
   wedged,
+  tab: tabProp,
+  onTabChange,
 }: {
   runId: string;
   selected: SliceSummary | undefined;
@@ -72,13 +79,29 @@ export default function Inspector({
   live?: boolean;
   /** Selected slice reads as wedged (stale transcript under a live lock). */
   wedged?: boolean;
+  /**
+   * Controlled tab. Omitted — the dashboard's drawer — the panel owns it.
+   * The deck's dock passes it so `1`…`8` address a tab directly; both modes
+   * share one reset rule (below), so the surfaces cannot disagree.
+   */
+  tab?: InspectorTab;
+  onTabChange?: (tab: InspectorTab) => void;
 }) {
-  const [tab, setTab] = useState<InspectorTab>("Output");
+  const [ownTab, setOwnTab] = useState<InspectorTab>("Output");
+  const tab = tabProp ?? ownTab;
+  const setTab = (next: InspectorTab): void => {
+    setOwnTab(next);
+    onTabChange?.(next);
+  };
 
-  // New selection starts on Output; tab state never leaks across slices.
+  // New selection starts on Output; tab state never leaks across slices. When
+  // the tab is controlled the owner applies this rule (the dock holds the tab
+  // so the deck's keys can address it) — the reset must not fight the open-on-
+  // tab-N command, which is why it lives with the state's owner.
   useEffect(() => {
-    setTab("Output");
-  }, [selected?.id]);
+    if (tabProp === undefined) setOwnTab("Output");
+    // The reset is keyed to the subject, not to the setter's identity.
+  }, [selected?.id, tabProp]);
 
   if (!selected) {
     return (
@@ -139,7 +162,7 @@ export default function Inspector({
 
       <Tabs value={tab} onValueChange={(v) => setTab(v as InspectorTab)}>
         <TabsList className="omp-tabs" aria-label="Inspector views">
-          {TABS.map((t) => {
+          {INSPECTOR_TABS.map((t) => {
             const TabIcon = t.icon;
             return (
               <TabsTrigger key={t.id} value={t.id} className="omp-tab">
