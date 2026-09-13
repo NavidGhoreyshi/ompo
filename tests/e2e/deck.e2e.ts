@@ -43,6 +43,9 @@ interface DeckHook {
   stations: number;
   stationMarks: number;
   markers: number;
+  /** The temporal layer (`d07`): ribbon bars drawn, run tiles drawn. */
+  ribbon: number;
+  tiles: number;
   stationOverflow: number;
   /** Alert + transition state (`d05`). */
   alerts: number;
@@ -64,10 +67,25 @@ interface DeckHook {
 /** Idle observation window; `DECK_IDLE_MS=20000` is how the slice review measured it. */
 const IDLE_MS = Number(process.env.DECK_IDLE_MS ?? 2000);
 
+/**
+ * The rail's instances: everything a *status* change may recolour, with the
+ * temporal layer's two pools (`d07`: ribbon bars, run tiles) excluded. The
+ * ribbon's bar count is a function of the run's recorded span — a time axis
+ * grows as the run does — so it is not part of "a status change rewrote
+ * buffers instead of geometry"; the rail identity below covers the rest.
+ */
+function railInstances(hook: DeckHook): number {
+  return hook.instances - hook.ribbon - hook.tiles;
+}
+
 async function gotoDeck(page: Page): Promise<void> {
   await page.goto("/?surface=deck");
   await page.locator(".omp-deck-canvas").waitFor();
   await page.locator(".omp-deck-hud").waitFor();
+  // The temporal window is a second fetch the shell makes after the run is
+  // known (`d07`): the surface is not settled until its ribbon exists, and a
+  // test that samples instances before that would compare two different worlds.
+  await expect.poll(async () => (await readHook(page)).ribbon, { timeout: 10_000 }).toBeGreaterThan(0);
 }
 
 function readHook(page: Page): Promise<DeckHook> {
@@ -315,9 +333,11 @@ test.describe("deck surface", () => {
     const state = await readHook(page);
     const window = await readSample(page);
     expect(window.renderer).not.toBeNull();
-    // The fixture's rail: grid + pads + markers + edges at most, one call each.
+    // The fixture's rail: grid + pads + markers + edges at most, one call
+    // each — plus the temporal layer's two (`d07`: ribbon, run wall).
     expect(window.renderer?.drawCalls).toBeGreaterThan(1);
-    expect(window.renderer?.drawCalls).toBeLessThanOrEqual(8);
+    expect(window.renderer?.drawCalls).toBeLessThanOrEqual(10);
+    expect(window.renderer?.drawCalls).toBeLessThanOrEqual(TIER_BUDGETS[state.tier].maxDrawCalls);
     expect(window.renderer?.fullScreenLayers).toBe(0);
     expect(window.renderer?.shadedPixels).toBeLessThan(state.pixels);
     expect(state.objects).toBe(state.drawCalls + state.instances);
@@ -364,8 +384,8 @@ test.describe("deck rail", () => {
     // two. Read, not assumed — another spec can retry the fixture's failure.
     expect(hook.alerts).toBeGreaterThanOrEqual(1);
     expect(hook.beacons).toBeGreaterThanOrEqual(hook.alerts);
-    expect(hook.instances).toBe(hook.nodes + hook.markers + hook.stationMarks + hook.beacons);
-    expect(hook.drawCalls).toBeLessThanOrEqual(8);
+    expect(hook.instances).toBe(hook.nodes + hook.markers + hook.stationMarks + hook.beacons + hook.ribbon + hook.tiles);
+    expect(hook.drawCalls).toBeLessThanOrEqual(10);
     expect(hook.selected).not.toBeNull();
     // Every pad exists as a real button for keyboard and AT users.
     await expect(page.locator(".omp-deck-mirror button")).toHaveCount(hook.nodes);
@@ -449,9 +469,9 @@ test.describe("deck rail", () => {
     );
     expect(positionsKey(after.positions)).toBe(positionsKey(before.positions));
     expect(after.nodes).toBe(before.nodes);
-    expect(after.instances).toBe(before.instances);
+    expect(railInstances(after)).toBe(railInstances(before));
     expect(afterSample.renderer?.geometries).toBe(beforeSample.renderer?.geometries);
-    expect(after.drawCalls).toBeLessThanOrEqual(8);
+    expect(after.drawCalls).toBeLessThanOrEqual(10);
     // The whole visual cost of one status change: a frame or two, inside budget.
     expect(afterSample.frames).toBeLessThanOrEqual(4);
     expect(afterSample.frameMs.p95).toBeLessThanOrEqual(45);
@@ -476,7 +496,7 @@ test.describe("deck rail", () => {
     const after = await readHook(page);
     const afterSample = await readSample(page);
     expect(after.selected).toBe("p-two");
-    expect(after.instances).toBe(before.instances);
+    expect(railInstances(after)).toBe(railInstances(before));
     expect(after.nodes).toBe(before.nodes);
     expect(afterSample.renderer?.geometries).toBe(beforeSample.renderer?.geometries);
     expect(after.frames).toBeGreaterThan(before.frames);
@@ -514,7 +534,7 @@ test.describe("deck focus", () => {
     expect(point!.x).toBeLessThan(box?.width ?? 0);
     expect(point!.y).toBeLessThan(box?.height ?? 0);
     expect(hook.stationSegments).toBeGreaterThan(0);
-    expect(hook.instances).toBe(hook.nodes + hook.markers + hook.stationMarks + hook.beacons);
+    expect(hook.instances).toBe(hook.nodes + hook.markers + hook.stationMarks + hook.beacons + hook.ribbon + hook.tiles);
     // `command` framing, not the whole rail: the camera is aimed at the
     // station's own position and much closer than the rail's fit.
     const station = hook.positions.find((p) => p.id === PRIMARY)!;
@@ -599,12 +619,12 @@ test.describe("deck focus", () => {
     // No rebuild and no instance churn: every live worker's station is drawn
     // whether or not it is the focus, so a switch rewrites colours only (this
     // is `d03` finding 3, closed).
-    expect(after.instances).toBe(before.instances);
+    expect(railInstances(after)).toBe(railInstances(before));
     expect(after.stationMarks).toBe(before.stationMarks);
     expect(after.stationSegments).toBeGreaterThan(0);
     expect(after.nodes).toBe(before.nodes);
     expect(afterSample.renderer?.geometries).toBe(beforeSample.renderer?.geometries);
-    expect(after.drawCalls).toBeLessThanOrEqual(8);
+    expect(after.drawCalls).toBeLessThanOrEqual(10);
     // The camera stayed where the operator put it…
     expect(after.camera).toEqual(camera);
     // …and `F` is how they ask it to follow.
@@ -874,7 +894,7 @@ test.describe("deck degraded operation", () => {
     expect(after.mounted).toBe(before.mounted);
     if ((await readSliceStatuses(page)) === statusesBefore) {
       expect(after.stationSegments).toBe(before.stationSegments);
-      expect(after.instances).toBe(before.instances);
+      expect(railInstances(after)).toBe(railInstances(before));
     }
     console.log(`deck-degraded ${JSON.stringify({ tier: [before.tier, after.tier], stationSegments: after.stationSegments, liveCount: after.liveCount, canvas })}`);
   });
@@ -896,6 +916,15 @@ test.describe("deck degraded operation", () => {
     await expect(page.locator(".omp-deck-station")).toContainText("longtitle");
     await expect(page.locator(".omp-deck-lane")).toHaveCount(3);
     await expect(page.locator(".omp-deck-live .omp-livefeed")).toBeVisible();
+    // The temporal layer is DOM as well (`d07`): the flat path keeps the time
+    // axis, and moving through history still works with no canvas at all.
+    await expect(page.locator(".omp-deck-time")).toBeVisible();
+    await expect(page.locator(".omp-deck-time-live")).toHaveText("LIVE");
+    await page.locator(".omp-deck").press(",");
+    await expect(page.locator(".omp-deck-time")).toHaveAttribute("data-history", "past");
+    await expect(page.locator(".omp-deck-live-note")).toContainText("live window is paused");
+    await page.locator(".omp-deck").press("l");
+    await expect(page.locator(".omp-deck-time")).toHaveAttribute("data-history", "live");
     await page.getByRole("button", { name: "Back to dashboard" }).click();
     await expect(page.locator(".omp-livefeed-log")).toBeVisible();
     expect(page.url()).not.toContain("surface=deck");
@@ -932,7 +961,9 @@ test.describe("deck alerts", () => {
     );
     expect(before.alerts).toBeGreaterThanOrEqual(1);
     expect(before.beacons).toBeGreaterThanOrEqual(before.alerts);
-    expect(before.instances).toBe(before.nodes + before.markers + before.stationMarks + before.beacons);
+    expect(before.instances).toBe(
+      before.nodes + before.markers + before.stationMarks + before.beacons + before.ribbon + before.tiles,
+    );
 
     // The stack never covers the window the operator reads.
     const stackBox = await stack.boundingBox();

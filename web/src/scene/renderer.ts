@@ -25,8 +25,22 @@
 import * as THREE from "three";
 import { SEVERITY_RINGS, type AlertSeverity, type DeckAlert, type DeckAlertKind } from "./alerts.ts";
 import { cueEntity, type SceneDelta } from "./deltas.ts";
+import { HISTORY_TILE_CAP } from "./model.ts";
 import { TIER_BUDGETS, type QualityTier } from "./tier.ts";
-import { cameraPose, gridPlan, PAD_D, PAD_W, RING_MARGIN } from "./rail.ts";
+import {
+  cameraPose,
+  gridPlan,
+  PAD_D,
+  PAD_W,
+  RIBBON_DEPTH,
+  RIBBON_HEIGHT,
+  RIBBON_MAX_BARS,
+  ribbonGroup,
+  RING_MARGIN,
+  TILE_D,
+  TILE_H,
+  TILE_W,
+} from "./rail.ts";
 import { SHAFT_SEGMENTS, shaftSegments } from "./focus.ts";
 import { CAMERA_FOV, type DeckCamera, type DeckModel, type RailNode, type RenderStats } from "./types.ts";
 
@@ -241,6 +255,42 @@ const EDGE_ARC = 0.08;
 const EDGE_ARC_MIN = 0.08;
 const EDGE_ARC_MAX = 0.7;
 
+/**
+ * Temporal layer (`d07`). The ribbon is one instanced mesh: at most
+ * `RIBBON_MAX_BARS` bars (the model merged the buckets beyond that) plus a
+ * single playhead instance for the history cursor, so the whole time axis is
+ * one draw call whatever the bucket count. The wall is a second mesh, one tile
+ * per run the model drew.
+ *
+ * An empty bucket still draws — a low, muted bar — because a gap in the ribbon
+ * is where nothing happened, and compressing it away would lie about the
+ * run's shape. Only the ribbon's *height* is data (event count); its width is
+ * the window's span (never the event count), which is what keeps the cost
+ * bounded by the cap rather than by the log.
+ */
+const RIBBON_POOL = RIBBON_MAX_BARS + 1;
+const RIBBON_BAR = 0.72;
+/** A bar with no events still draws this high (a baseline, not a bar). */
+const RIBBON_FLOOR_H = 0.05;
+/** The lanes in the order a tie picks its winner (the DOM strip's order). */
+const RIBBON_LANE_ORDER: readonly string[] = ["worker", "verify", "review", "control", "system"];
+/** Lane → token, the ribbon's redundant colour channel (the DOM names the lane). */
+const RIBBON_TOKENS: Record<string, TokenName> = {
+  worker: "info",
+  verify: "warning",
+  review: "ring",
+  control: "muted",
+  system: "muted",
+};
+/** Empty buckets and the rail's own floor line share the muted token, dimmed. */
+const RIBBON_EMPTY_DIM = 0.55;
+/** The playhead: a flat, wide marker under the bucket the cursor is in. */
+const PLAYHEAD_W = 1.35;
+const PLAYHEAD_H = 0.09;
+/** Wall tiles: the current run's tile is taller and ring-coloured. */
+const TILE_CURRENT_SCALE = 1.25;
+const TILE_POOL = HISTORY_TILE_CAP;
+
 const PAD_CAPACITY = 32;
 const MARKER_CAPACITY = 16;
 const LINE_CAPACITY = 1024;
@@ -336,6 +386,12 @@ export function createDeckRenderer(canvas: HTMLCanvasElement, tier: QualityTier,
   stationGeometry.translate(0, 0.5, 0);
   const beaconGeometry = new THREE.RingGeometry(BEACON_INNER, BEACON_OUTER, BEACON_SEGMENTS);
   beaconGeometry.rotateX(-Math.PI / 2);
+  // The ribbon bar: unit width/depth, grown from the floor by instance scale.
+  const ribbonGeometry = new THREE.BoxGeometry(1, 1, RIBBON_DEPTH);
+  ribbonGeometry.translate(0, 0.5, 0);
+  // A wall tile: an upright tablet, also grown from the floor.
+  const tileGeometry = new THREE.BoxGeometry(TILE_W, TILE_H, TILE_D);
+  tileGeometry.translate(0, TILE_H / 2, 0);
   const surfaceMaterial = new THREE.MeshBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0 });
   const lineMaterial = new THREE.LineBasicMaterial({ vertexColors: true, transparent: true, opacity: 0 });
 
@@ -400,6 +456,8 @@ export function createDeckRenderer(canvas: HTMLCanvasElement, tier: QualityTier,
   const markers = createInstances(markerGeometry, MARKER_CAPACITY);
   const stations = createInstances(stationGeometry, STATION_POOL);
   const beacons = createInstances(beaconGeometry, BEACON_POOL);
+  const ribbon = createInstances(ribbonGeometry, RIBBON_POOL);
+  const tiles = createInstances(tileGeometry, TILE_POOL);
   const edges = createLines(LINE_CAPACITY);
   const outlines = createLines(LINE_CAPACITY);
 
@@ -431,6 +489,8 @@ export function createDeckRenderer(canvas: HTMLCanvasElement, tier: QualityTier,
     stations: 0,
     stationMarks: 0,
     markers: 0,
+    ribbon: 0,
+    tiles: 0,
     beacons: 0,
     tweens: 0,
     animatedEntities: 0,
@@ -548,6 +608,11 @@ export function createDeckRenderer(canvas: HTMLCanvasElement, tier: QualityTier,
   const nodeColour = new THREE.Color();
   const stationColour = new THREE.Color();
   const beaconColour = new THREE.Color();
+  const ribbonColour = new THREE.Color();
+  const tileColour = new THREE.Color();
+  /** Per-bar merge scratch (`d07`): fixed size, so a cue frame allocates none. */
+  const barCounts = new Float64Array(RIBBON_MAX_BARS);
+  const barLanes = new Array<string | null>(RIBBON_MAX_BARS).fill(null);
   const beaconScratch = new THREE.Color();
   /** The clear colour as a colour, for a cleared beacon's fade-out. */
   const beaconFloor = new THREE.Color(BEACON_FLOOR);
@@ -765,10 +830,84 @@ export function createDeckRenderer(canvas: HTMLCanvasElement, tier: QualityTier,
     finishInstances(stations);
     finishInstances(beacons);
 
-    stats.instances = pads.count + markers.count + stations.count + beacons.count;
+    // ---- the temporal layer (`d07`) ----
+    //
+    // The ribbon is an *index*, so it is drawn from the model's buckets and
+    // nothing else: height = the bar's event count over the busiest bar (a
+    // per-run shape, never a cross-run comparison), colour = the busiest lane,
+    // and an empty bar keeps a low muted baseline so a quiet stretch stays
+    // visible. The model laid the strip out (`ribbonRail`): at most
+    // `RIBBON_MAX_BARS` bars, neighbours merged past that, each never thinner
+    // than `RIBBON_MIN_PITCH` — the DOM strip below still lists every bucket.
+    // The playhead is one extra instance in the same mesh: history mode costs
+    // no draw call.
+    ribbon.count = 0;
+    const rail = model.ribbonRail;
+    if (model.ribbon.length > 0 && rail.bars > 0) {
+      ensureInstances(ribbon, ribbonGeometry, rail.bars + 1);
+      barCounts.fill(0, 0, rail.bars);
+      barLanes.fill(null, 0, rail.bars);
+      const laneTotals: number[][] = [];
+      for (const bucket of model.ribbon) {
+        const bar = ribbonGroup(bucket.index, model.ribbon.length, rail.bars);
+        barCounts[bar] += bucket.count;
+        if (bucket.lane === null) continue;
+        const totals = laneTotals[bar] ?? (laneTotals[bar] = [0, 0, 0, 0, 0]);
+        const laneIndex = RIBBON_LANE_ORDER.indexOf(bucket.lane);
+        if (laneIndex >= 0) totals[laneIndex] += bucket.count;
+      }
+      for (let bar = 0; bar < rail.bars; bar++) {
+        const totals = laneTotals[bar];
+        if (totals !== undefined) {
+          let best = 0;
+          for (let lane = 0; lane < totals.length; lane++) {
+            if (totals[lane]! > best) {
+              best = totals[lane]!;
+              barLanes[bar] = RIBBON_LANE_ORDER[lane] ?? null;
+            }
+          }
+        }
+      }
+      let busiest = 1;
+      for (let bar = 0; bar < rail.bars; bar++) {
+        if (barCounts[bar]! > busiest) busiest = barCounts[bar]!;
+      }
+      for (let bar = 0; bar < rail.bars; bar++) {
+        const count = barCounts[bar]!;
+        const filled = count === 0 ? 0 : count / busiest;
+        const height = RIBBON_FLOOR_H + filled * (RIBBON_HEIGHT - RIBBON_FLOOR_H);
+        const lane = barLanes[bar] ?? null;
+        ribbonColour.copy(lane === null ? tokens.muted : tokens[RIBBON_TOKENS[lane] ?? "muted"]);
+        if (count === 0) ribbonColour.multiplyScalar(RIBBON_EMPTY_DIM);
+        pushInstance(ribbon, rail.x0 + bar * rail.pitch, 0, rail.z, rail.pitch * RIBBON_BAR, height, 1, ribbonColour);
+      }
+      if (model.ribbonCursor >= 0) {
+        const bar = ribbonGroup(model.ribbonCursor, model.ribbon.length, rail.bars);
+        ribbonColour.copy(tokens.ring);
+        pushInstance(ribbon, rail.x0 + bar * rail.pitch, 0, rail.z, rail.pitch * PLAYHEAD_W, PLAYHEAD_H, 1, ribbonColour);
+      }
+    }
+    // The wall: one inert tile per run the model drew, newest first. Colour
+    // says which run the deck is on (ring) and which are live (cyan); the DOM
+    // list is where a run is chosen — a tile is never a hit area.
+    tiles.count = 0;
+    if (model.tiles.length > 0) {
+      ensureInstances(tiles, tileGeometry, model.tiles.length);
+      for (const tile of model.tiles) {
+        tileColour.copy(tile.current ? tokens.ring : tile.live ? tokens.info : tokens.muted);
+        if (!tile.current) tileColour.multiplyScalar(0.9);
+        pushInstance(tiles, tile.x, 0, tile.z, 1, tile.current ? TILE_CURRENT_SCALE : 1, 1, tileColour);
+      }
+    }
+    finishInstances(ribbon);
+    finishInstances(tiles);
+
+    stats.instances = pads.count + markers.count + stations.count + beacons.count + ribbon.count + tiles.count;
     stats.stations = drawnStations;
     stats.stationMarks = stations.count;
     stats.markers = markers.count;
+    stats.ribbon = ribbon.count;
+    stats.tiles = tiles.count;
     stats.beacons = beacons.count;
     stats.stationSegments = focusedSegments;
     stats.tweens = cues.size;
@@ -780,6 +919,8 @@ export function createDeckRenderer(canvas: HTMLCanvasElement, tier: QualityTier,
       markers.count * 24 +
       stations.count * 24 +
       beacons.count * 24 +
+      ribbon.count * 24 +
+      tiles.count * 24 +
       edges.written +
       outlines.written +
       ringGeometry.getAttribute("position").count;
@@ -876,6 +1017,8 @@ export function createDeckRenderer(canvas: HTMLCanvasElement, tier: QualityTier,
       markers.count * 24 +
       stations.count * 24 +
       beacons.count * 24 +
+      ribbon.count * 24 +
+      tiles.count * 24 +
       edges.written +
       outlines.written +
       ringGeometry.getAttribute("position").count;
@@ -1083,13 +1226,26 @@ export function createDeckRenderer(canvas: HTMLCanvasElement, tier: QualityTier,
     dispose(): void {
       if (disposed) return;
       disposed = true;
-      scene.remove(grid, pads.mesh, markers.mesh, stations.mesh, beacons.mesh, edges.mesh, outlines.mesh, ring);
+      scene.remove(
+        grid,
+        pads.mesh,
+        markers.mesh,
+        stations.mesh,
+        beacons.mesh,
+        ribbon.mesh,
+        tiles.mesh,
+        edges.mesh,
+        outlines.mesh,
+        ring,
+      );
       grid.geometry.dispose();
       gridMaterial.dispose();
       padGeometry.dispose();
       markerGeometry.dispose();
       stationGeometry.dispose();
       beaconGeometry.dispose();
+      ribbonGeometry.dispose();
+      tileGeometry.dispose();
       ringGeometry.dispose();
       ringMaterial.dispose();
       surfaceMaterial.dispose();
@@ -1098,6 +1254,8 @@ export function createDeckRenderer(canvas: HTMLCanvasElement, tier: QualityTier,
       markers.mesh.dispose();
       stations.mesh.dispose();
       beacons.mesh.dispose();
+      ribbon.mesh.dispose();
+      tiles.mesh.dispose();
       edges.mesh.geometry.dispose();
       outlines.mesh.geometry.dispose();
       cues.clear();

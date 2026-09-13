@@ -65,6 +65,8 @@ function model(slices: SliceSummary[], overrides: Partial<DeckInput> = {}): Deck
     dismissed: new Set<string>(),
     maxStations: 8,
     maxBeacons: 32,
+    history: null,
+    runs: [],
     ...overrides,
   });
 }

@@ -138,6 +138,8 @@ describe("computeSample", () => {
       stationMarks: 7,
       markers: 3,
       beacons: 0,
+      ribbon: 0,
+      tiles: 0,
       tweens: 0,
       animatedEntities: 0,
       sceneWrites: 1,

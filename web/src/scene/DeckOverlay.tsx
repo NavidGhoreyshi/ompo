@@ -22,14 +22,19 @@
  * the dock is open, when they become the bands of the column it leaves free.
  */
 
-import type { AgentRow, RunEvent, SliceSummary } from "../api.ts";
+import { useState } from "react";
+import type { AgentRow, RunEvent, RunSummary, SliceSummary } from "../api.ts";
 import StatusBadge from "../components/StatusBadge.tsx";
 import LiveFeed from "../components/LiveFeed.tsx";
-import { liveSliceEvent } from "../lib/events.ts";
+import { formatEventTime, liveSliceEvent } from "../lib/events.ts";
+import { formatDurationMs, formatSpan } from "../lib/format.ts";
 import { heroAction } from "../lib/selection.ts";
+import type { TimelineAttempt } from "../lib/timeline.ts";
 import type { AlertSeverity, DeckAlert } from "./alerts.ts";
 import type { EdgeMarker } from "./camera.ts";
-import type { DeckModel, RailNode } from "./types.ts";
+import type { RibbonBucket } from "./history.ts";
+import type { DeckModel, RailNode, ReplayState } from "./types.ts";
+import HistoryWall from "./HistoryWall.tsx";
 
 /**
  * Severity as a glyph, next to the plain word. The stack never depends on
@@ -59,6 +64,49 @@ function mirrorLabel(node: RailNode): string {
   return parts.join(" · ");
 }
 
+/** One bucket's one-line description, for its title, its aria-label and hover. */
+function bucketLabel(bucket: RibbonBucket): string {
+  const span = `${formatEventTime(bucket.startAt)}–${formatEventTime(bucket.endAt)}`;
+  if (bucket.count === 0) return `${span} · no events`;
+  const lanes = (Object.entries(bucket.laneCounts) as [string, number][])
+    .filter(([, count]) => count > 0)
+    .map(([lane, count]) => `${lane} ${count}`)
+    .join(", ");
+  const touched = bucket.slices.length > 0 ? ` · touched ${bucket.slices.join(", ")}` : "";
+  return `${span} · ${bucket.count} event${bucket.count === 1 ? "" : "s"} · ${lanes} · ${bucket.active} active${touched}`;
+}
+
+/** `1m 12s` / `42s` / `—`: an attempt's observed wall clock, never an estimate. */
+function attemptLabel(attempt: TimelineAttempt): string {
+  const index = attempt.attempt === null ? "?" : String(attempt.attempt);
+  // An attempt whose only observed event is its own claim has no span yet: the
+  // repo's rule for "not known" is `—`, never a 0 that reads like a duration.
+  const duration =
+    attempt.durationMs === null || attempt.durationMs === 0 ? "—" : formatDurationMs(attempt.durationMs);
+  return `#${index} ${duration}${attempt.open ? " open" : ""}`;
+}
+
+/** The ribbon's bucket size, read off the buckets themselves ("30s", "5m"). */
+function bucketSizeLabel(buckets: RibbonBucket[]): string {
+  const bucket = buckets[1] ?? buckets[0];
+  return bucket === undefined ? "—" : formatSpan(bucket.endMs - bucket.startMs);
+}
+
+/**
+ * A bar's height as a percentage of the strip, relative to the busiest bucket
+ * of *this window* — the same rule the scene's ribbon uses (`renderer.ts`), so
+ * the DOM strip and the 3D bars read as one shape. An empty bucket keeps a
+ * visible floor: a gap is information, not nothing.
+ */
+function bucketHeight(bucket: RibbonBucket, buckets: readonly RibbonBucket[]): number {
+  if (bucket.count === 0) return 6;
+  let busiest = 1;
+  for (const candidate of buckets) {
+    if (candidate.count > busiest) busiest = candidate.count;
+  }
+  return Math.max(10, Math.round((bucket.count / busiest) * 100));
+}
+
 export default function DeckOverlay({
   model,
   hoverId,
@@ -77,6 +125,20 @@ export default function DeckOverlay({
   onDismiss,
   alertsCollapsed,
   onAlertsCollapsedChange,
+  attempts,
+  timelineTruncated,
+  playing,
+  wallOpen,
+  runs,
+  replay,
+  onScrub,
+  onStep,
+  onBucket,
+  onLive,
+  onPlayToggle,
+  onToggleWall,
+  onOpenRun,
+  onVerifyReplay,
 }: {
   model: DeckModel;
   /** Pad under the pointer, if any — previewed without changing selection. */
@@ -121,6 +183,29 @@ export default function DeckOverlay({
   onDismiss: (alert: DeckAlert) => void;
   alertsCollapsed: boolean;
   onAlertsCollapsedChange: (collapsed: boolean) => void;
+  /** The selected slice's observed attempts (`d07`), oldest first. */
+  attempts: TimelineAttempt[];
+  /** The window is the newest page of a longer log (`d07`) — said, not hidden. */
+  timelineTruncated: boolean;
+  playing: boolean;
+  /** The wall's DOM list (the scene's tiles are inert geometry). */
+  wallOpen: boolean;
+  /** `api.runs()` as the shell polls it, oldest first. */
+  runs: RunSummary[];
+  /** The last `/replay` outcome, or `null` until the operator asks for one. */
+  replay: ReplayState | null;
+  /** Slider position: bucket index, or `buckets.length` for live. */
+  onScrub: (position: number) => void;
+  /** Step one bucket (`-1` back, `+1` forward). */
+  onStep: (direction: 1 | -1) => void;
+  /** A ribbon bucket clicked: jump there, select what it touched, inspect it. */
+  onBucket: (bucket: RibbonBucket) => void;
+  /** Return to the live projection. */
+  onLive: () => void;
+  onPlayToggle: () => void;
+  onToggleWall: () => void;
+  onOpenRun: (runId: string) => void;
+  onVerifyReplay: () => void;
 }) {
   const nodeById = new Map(model.nodes.map((node) => [node.id, node]));
   const selected = model.nodes.find((node) => node.selected) ?? null;
@@ -152,18 +237,157 @@ export default function DeckOverlay({
   const rows = model.alerts.filter((alert) => alert.sliceId !== null);
   const highest = model.alerts[0] ?? null;
 
+  // ---- the temporal layer (`d07`) ----
+  //
+  // The ribbon and the wall are *views* of the model here: this component adds
+  // the words and the hit areas, and nothing about time is derived again. The
+  // slider's rightmost position is live by construction (`max = buckets`), so
+  // "return to live" is also a place on the axis, not only a button.
+  const [hoverBucket, setHoverBucket] = useState<number | null>(null);
+  const buckets = model.ribbon;
+  const cursorBucket = model.ribbonCursor;
+  // The scrubber walks the *recorded* moments (plus live at the end), while the
+  // strip below draws every bucket: every scrub position is a state that
+  // exists, and the strip shows where that state sits in the run's shape.
+  const recordedPositions = model.ribbonRecorded.length;
+  const cursorPosition = cursorBucket < 0 ? -1 : model.ribbonRecorded.indexOf(cursorBucket);
+  const sliderValue = model.historySeq === null || cursorPosition < 0 ? recordedPositions : cursorPosition;
+  const hoveredBucket = hoverBucket === null ? null : (buckets[hoverBucket] ?? null);
+  const firstBucket = buckets[0] ?? null;
+  const lastBucket = buckets[buckets.length - 1] ?? null;
+  const spanLabel =
+    firstBucket !== null && lastBucket !== null
+      ? `${formatEventTime(firstBucket.startAt)}–${formatEventTime(lastBucket.endAt)} · ${buckets.length} × ${bucketSizeLabel(buckets)}${timelineTruncated ? " · window is the newest page" : ""}`
+      : "no timed events yet";
+
+  const timeBar = (
+    <div className="omp-deck-time" data-history={model.historySeq === null ? "live" : "past"}>
+      <div className="omp-deck-time-row">
+        <button
+          type="button"
+          className="omp-deck-time-live"
+          data-live={model.historySeq === null ? "true" : "false"}
+          aria-pressed={model.historySeq === null}
+          title="The live projection is the default; this returns to it (L)"
+          onClick={onLive}
+        >
+          {model.historySeq === null ? "LIVE" : "RETURN TO LIVE"}
+        </button>
+        <span className="omp-deck-time-state">
+          {model.historySeq === null
+            ? "showing the run as it is now"
+            : `recorded state at seq ${model.historySeq}${model.historyAt === null ? "" : ` · ${formatEventTime(model.historyAt)}`} · ${model.historyActive} active`}
+        </span>
+        <span className="omp-deck-time-hover" aria-live="off">
+          {hoveredBucket === null ? spanLabel : bucketLabel(hoveredBucket)}
+        </span>
+        <span className="omp-deck-time-controls">
+          <button type="button" className="omp-deck-time-step" aria-label="Previous bucket (,)" title="Previous bucket (,)" onClick={() => onStep(-1)}>
+            ‹
+          </button>
+          <button
+            type="button"
+            className="omp-deck-time-step"
+            aria-pressed={playing}
+            aria-label={playing ? "Pause playback (P)" : "Play the recorded run (P)"}
+            title={playing ? "Pause playback (P)" : "Play the recorded run (P)"}
+            onClick={onPlayToggle}
+          >
+            {playing ? "❚❚" : "▶"}
+          </button>
+          <button type="button" className="omp-deck-time-step" aria-label="Next bucket (.)" title="Next bucket (.)" onClick={() => onStep(1)}>
+            ›
+          </button>
+        </span>
+        <button type="button" className="omp-deck-time-wall" aria-expanded={wallOpen} onClick={onToggleWall}>
+          runs ({runs.length})
+        </button>
+        <button type="button" className="omp-deck-time-replay" onClick={onVerifyReplay} title="Ask the server to replay the log against the run cursor (read-only)">
+          verify replay
+        </button>
+        {replay !== null && (
+          <span className="omp-deck-time-replay-result" data-replay={replay.status}>
+            {replay.status === "loading"
+              ? "replay…"
+              : replay.status === "error"
+                ? `replay failed: ${replay.error ?? "unknown error"}`
+                : replay.mismatches.length === 0
+                  ? `replay agrees · ${replay.events} events`
+                  : `${replay.mismatches.length} mismatch${replay.mismatches.length === 1 ? "" : "es"}`}
+            {replay.status === "ready" && replay.mismatches.length > 0 && (
+              <details>
+                <summary>mismatches</summary>
+                <ul>
+                  {replay.mismatches.map((line) => (
+                    <li key={line}>{line}</li>
+                  ))}
+                </ul>
+              </details>
+            )}
+          </span>
+        )}
+      </div>
+      <input
+        className="omp-deck-time-slider"
+        type="range"
+        min={0}
+        max={Math.max(0, recordedPositions)}
+        step={1}
+        value={sliderValue}
+        aria-label="Recorded moment — the rightmost position is live"
+        aria-valuetext={
+          model.historySeq === null
+            ? "live"
+            : `seq ${model.historySeq}${model.historyAt === null ? "" : `, ${formatEventTime(model.historyAt)}`}`
+        }
+        onChange={(event) => onScrub(Number(event.currentTarget.value))}
+        disabled={recordedPositions === 0}
+      />
+      {buckets.length > 0 && (
+        <ol className="omp-deck-ribbon" aria-label="Event ribbon">
+          {buckets.map((bucket, index) => (
+            <li key={bucket.index}>
+              <button
+                type="button"
+                className="omp-deck-ribbon-bar"
+                data-lane={bucket.lane ?? "none"}
+                data-cursor={index === cursorBucket ? "true" : "false"}
+                data-live-end={index === buckets.length - 1 && model.historySeq === null ? "true" : "false"}
+                title={bucketLabel(bucket)}
+                aria-label={bucketLabel(bucket)}
+                tabIndex={-1}
+                onMouseEnter={() => setHoverBucket(index)}
+                onMouseLeave={() => setHoverBucket((current) => (current === index ? null : current))}
+                onClick={() => onBucket(bucket)}
+              >
+                <span
+                  className="omp-deck-ribbon-fill"
+                  style={{ height: `${bucketHeight(bucket, buckets)}%` }}
+                  aria-hidden="true"
+                />
+              </button>
+            </li>
+          ))}
+        </ol>
+      )}
+      {wallOpen && <HistoryWall runs={runs} activeRunId={model.runId} onOpenRun={onOpenRun} onClose={onToggleWall} />}
+    </div>
+  );
+
   if (model.nodes.length === 0) {
     return (
       <div className="omp-deck-overlay">
         <p className="omp-deck-empty" role="status">
           {model.loading ? `loading run ${model.runId ?? ""}…` : "no slices in this run"}
         </p>
+        {timeBar}
       </div>
     );
   }
 
   return (
     <div className="omp-deck-overlay">
+      {timeBar}
       {/* Off-screen workers (`d04`): a marker on the viewport edge the worker's
           direction leaves, so a station the camera cannot show is still
           reachable — click it and the deck goes there. The lane list below
@@ -200,7 +424,9 @@ export default function DeckOverlay({
           is `display: contents` until then, so neither panel moves. */}
       <div className="omp-deck-top">
         <p className="omp-deck-station" data-live={focused?.live === true ? "true" : "false"}>
-          <span className="omp-deck-station-tag">{focused?.live === true ? "focused" : "quiescent run"}</span>
+          <span className="omp-deck-station-tag">
+            {model.historySeq !== null ? "recorded" : focused?.live === true ? "focused" : "quiescent run"}
+          </span>
           {focused ? (
             <>
               <StatusBadge status={focused.status} />
@@ -209,8 +435,15 @@ export default function DeckOverlay({
                 gen {focused.generation} · attempt {focused.attempts}
                 {focused.stageLabel ? ` · ${focused.stageLabel}` : ""}
               </span>
+              {/* Two tenses, never mixed: at a cursor the count is the workers
+                  in flight *at that point*; live it is the station pool's own
+                  count (`no worker running` is a present-tense claim). */}
               <span className="omp-deck-station-meta">
-                {model.liveIds.length === 0 ? "no worker running" : `live: ${model.liveIds.length}`}
+                {model.historySeq !== null
+                  ? `${model.historyActive} active at this point`
+                  : model.liveIds.length === 0
+                    ? "no worker running"
+                    : `live: ${model.liveIds.length}`}
               </span>
             </>
           ) : (
@@ -298,6 +531,19 @@ export default function DeckOverlay({
                 gen {shown.generation} · attempt {shown.attempts}
                 {shown.effort ? ` · ${shown.effort}` : ""}
               </span>
+              {/* The selected slice's observed attempts (`d07`), from the
+                  dashboard's own segmentation: how many tries, how long each,
+                  which one is open. Read, never re-derived. */}
+              {attempts.length > 0 && (
+                <span className="omp-deck-line-attempts" title={attempts.map(attemptLabel).join(" · ")}>
+                  {attempts.slice(-4).map((attempt) => (
+                    <span key={`${attempt.attempt}:${attempt.startSeq}`} data-open={attempt.open ? "true" : "false"}>
+                      {attemptLabel(attempt)}
+                    </span>
+                  ))}
+                  {attempts.length > 4 && <span>+{attempts.length - 4}</span>}
+                </span>
+              )}
               {action && (
                 <span className="omp-deck-line-action" title={action}>
                   {action}
@@ -324,19 +570,37 @@ export default function DeckOverlay({
 
         {/* The live window: the dashboard's own component, driven but never
             forked. Freeze and expand are the deck's view state, so the keyboard
-            can own them (Space / E) without reaching into the window. */}
-        <div className="omp-deck-live">
-          <LiveFeed
-            runId={model.runId}
-            slice={focusSlice}
-            agent={focusAgent}
-            events={events}
-            frozen={frozen}
-            onFrozenChange={onFrozenChange}
-            expanded={expanded}
-            onExpandedChange={onExpandedChange}
-          />
-        </div>
+            can own them (Space / E) without reaching into the window.
+            At a historical cursor the window is *paused instead of retargeted*:
+            it shows the run as it is now, and mixing that with a recorded scene
+            would make the surface say two tenses at once — and every scrub step
+            would re-subject it (and re-fetch). The note names the way back, so
+            the live workflow is one key away rather than hidden. */}
+        {model.historySeq === null ? (
+          <div className="omp-deck-live">
+            <LiveFeed
+              runId={model.runId}
+              slice={focusSlice}
+              agent={focusAgent}
+              events={events}
+              frozen={frozen}
+              onFrozenChange={onFrozenChange}
+              expanded={expanded}
+              onExpandedChange={onExpandedChange}
+            />
+          </div>
+        ) : (
+          <div className="omp-deck-live omp-deck-live-past" role="status">
+            {/* No button here on purpose: the band above already carries
+                `RETURN TO LIVE`, and a second control for the same act is the
+                duplication this surface exists to avoid. The note says what is
+                missing and where the way back is. */}
+            <p className="omp-deck-live-note">
+              The live window is paused while the deck shows the recorded state at seq {model.historySeq} — press{" "}
+              <kbd>L</kbd> or <strong>RETURN TO LIVE</strong> above.
+            </p>
+          </div>
+        )}
 
         {/* Run-level alerts (`d05`) and the slice stack share one bottom-right
             column: the HUD owns the top, the lane strip the top-right, the live

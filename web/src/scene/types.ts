@@ -9,6 +9,7 @@
 
 import type { AgentRow, RunDetail, RunEvent, RunSummary, SliceDetail } from "../api.ts";
 import type { DeckAlert } from "./alerts.ts";
+import type { HistoryIndex, RibbonBucket } from "./history.ts";
 import type { QualityTier } from "./tier.ts";
 
 export type { QualityTier } from "./tier.ts";
@@ -181,6 +182,52 @@ export interface DeckStation {
 /** Alert kinds the scene can draw as of `d02`; `d05` extends this union. */
 export type AlertKind = "failed" | "blocked-env";
 
+/**
+ * One previous run on the history wall (`d07`). A tile is *inert*: the DOM
+ * list is where runs are chosen, and the tile row is the same information made
+ * spatial ("how many runs, which one am I on"). Nothing here is derived from a
+ * count — a tile is the run's identity plus `RunSummary.live` and whether it is
+ * the run the deck is showing.
+ */
+export interface HistoryTile {
+  runId: string;
+  live: boolean;
+  /** The run the whole surface is currently projecting. */
+  current: boolean;
+  /** World position on the wall row (from `rail.ts`, never from the data). */
+  x: number;
+  z: number;
+}
+
+/**
+ * The scene ribbon's geometry (`d07`), laid out once in the projection so the
+ * renderer, the playhead and the tests share one mapping. The DOM strip draws
+ * every bucket; the scene draws at most `bars` of them, merging neighbours past
+ * `RIBBON_MAX_BARS`, and never thinner than `RIBBON_MIN_PITCH` — the strip is
+ * as wide as the rail or wider, but its bars stay readable.
+ */
+export interface RibbonRail {
+  /** Bars drawn: `min(ribbon.length, RIBBON_MAX_BARS)`, `0` with no window. */
+  bars: number;
+  /** Centre-to-centre bar distance, in world units (`0` when no bars). */
+  pitch: number;
+  /** Centre X of bar 0 (bar `i` is at `x0 + i × pitch`), `0`-bar case aside. */
+  x0: number;
+  /** Centre Z of the strip, behind the rail's far edge. */
+  z: number;
+}
+
+/**
+ * The temporal layer's input (`d07`): the window's index and the cursor. The
+ * index is built once per event window (`buildHistoryIndex`), never per model
+ * build; `seq === null` means live — the DTOs are the truth and the log is
+ * only the ribbon.
+ */
+export interface DeckHistoryInput {
+  index: HistoryIndex;
+  seq: number | null;
+}
+
 /** One dependency edge, projected from the roadmap's `deps`. */
 export interface RailEdge {
   key: string;
@@ -259,6 +306,38 @@ export interface DeckModel {
   /** Extent of `nodes`, for the default framing and the floor grid. */
   bounds: RailBounds;
   /**
+   * The run's event ribbon (`d07`): the whole event window as ≤
+   * `RIBBON_MAX_BUCKETS` time buckets, empty ones included. It is an *index*
+   * of the log, never a second state model — the pads' statuses stay the
+   * DTOs' (live) or the log's at the cursor (history).
+   */
+  ribbon: RibbonBucket[];
+  /** The bucket the history cursor sits in, `-1` while live. */
+  ribbonCursor: number;
+  /**
+   * The buckets a cursor can occupy (`HistoryIndex.recorded`): the ribbon's
+   * positions that carry a recorded event. The strip draws every bucket; the
+   * scrubber walks this list, so its positions are all real moments.
+   */
+  ribbonRecorded: number[];
+  /** The strip's geometry: where the drawn bars stand (`rail.ts` decides). */
+  ribbonRail: RibbonRail;
+  /**
+   * The temporal cursor. `null` = live: every pad, count and alert is the
+   * DTO's. A number = the seq whose log-derived state the pads show, and the
+   * stations, beacons and alerts are empty by rule (they describe the run as
+   * it is now; a past moment has none of them).
+   */
+  historySeq: number | null;
+  /** Timestamp of the newest event at or before the cursor (`null` while live). */
+  historyAt: string | null;
+  /** Workers in flight *at the cursor* — the concurrency answer (`0` while live). */
+  historyActive: number;
+  /** Previous runs as the wall row, newest first, capped at the tile budget. */
+  tiles: HistoryTile[];
+  /** Runs the tile row could not draw (`0` normally; the DOM list shows all). */
+  tilesOverflow: number;
+  /**
    * Content key of everything the renderer consumes. Derived from the
    * projection (never a counter), so identical inputs give an identical
    * digest and the scene can prove it did no work.
@@ -304,6 +383,19 @@ export interface DeckInput {
   maxStations: number;
   /** Beacons the tier can draw (`TIER_BUDGETS[tier].maxBeacons`), same rule. */
   maxBeacons: number;
+  /**
+   * The temporal layer (`d07`). `null` before a window loads or when it has no
+   * parseable times: the model then draws no ribbon and stays live. The index
+   * is the caller's memo — the model may call `snapshotAt` (pure) but never
+   * builds a second index.
+   */
+  history: DeckHistoryInput | null;
+  /**
+   * The run list the shell already polls (`api.runs()`), oldest first as the
+   * endpoint returns it. The model takes the newest `HISTORY_TILE_CAP` for the
+   * wall row and counts the rest — the DOM list shows every one of them.
+   */
+  runs: readonly RunSummary[];
 }
 
 /** Props the shell hands the deck. Fetching stays in `App.tsx`. */
@@ -315,6 +407,24 @@ export interface DeckProps {
   selected: string | null;
   sliceDetail: SliceDetail | Record<string, unknown> | null;
   live: boolean;
+  /**
+   * The run's event window for the temporal layer (`d07`), newest-bounded by
+   * the shell (`App.tsx`'s paging cap) and *distinct from* `events`: `events`
+   * is the bounded live window the feed and the inspector read, this is the
+   * window history is derived from. Superset of `events` in practice, and
+   * never larger than the shell's cap.
+   */
+  timeline: RunEvent[];
+  /**
+   * True when the run's log is longer than the window (the shell saw a full
+   * page past the cap). The temporal layer states its span either way; this
+   * only lets the bar say "newest N events" instead of implying the whole run.
+   */
+  timelineTruncated: boolean;
+  /** `api.runs()` as the shell polls it (oldest first) — the history wall. */
+  runs: RunSummary[];
+  /** Switch the whole surface to another run (App's existing `openRun`). */
+  onOpenRun: (runId: string) => void;
   /** The app's single selection system — the same state the board writes. */
   onSelect: (sliceId: string) => void;
   /**
@@ -323,8 +433,32 @@ export interface DeckProps {
    * run list. The deck itself never fetches.
    */
   onControlDone: () => void;
+  /**
+   * The last `/replay` result the operator asked for (`null` until then; reset
+   * on a run switch). The deck renders it as text and never reconstructs it:
+   * the comparison of the store's replay against the cursor is the server's
+   * own answer.
+   */
+  replay: ReplayState | null;
+  /** Ask the shell for a fresh `/replay` of the current run (explicit only). */
+  onVerifyReplay: () => void;
   /** Switch back to the dashboard surface (the `D` key and the HUD button). */
   onExit: () => void;
+}
+
+/**
+ * One `/replay` outcome, as the deck shows it: the counts the endpoint
+ * returned, plus the error path so a failed fetch is not silently "0
+ * mismatches". `status` is the only thing the deck decides.
+ */
+export interface ReplayState {
+  status: "loading" | "ready" | "error";
+  /** `RunReplay.events` — how many events the server checked. */
+  events: number;
+  /** Mismatch lines (`"<slice>: expected X got Y"`), empty when the log agrees. */
+  mismatches: string[];
+  /** The error message when the request failed. */
+  error: string | null;
 }
 
 /**
@@ -369,6 +503,14 @@ export interface RenderStats {
   stationMarks: number;
   /** Alert markers drawn (failed / blocked-env beacons) — `d02`, counted here. */
   markers: number;
+  /**
+   * Event-ribbon instances drawn (`d07`): one bar per non-empty-or-empty bucket
+   * (a bar for every bucket in the window) plus the history cursor playhead.
+   * `0` when the window has no parseable times.
+   */
+  ribbon: number;
+  /** Run-wall tiles drawn (`d07`), one per `model.tiles` entry. */
+  tiles: number;
   /**
    * Alert beacons drawn (`d05`) — `SEVERITY_RINGS[severity]` rings per alert in
    * `model.beaconAlerts`. Zero when no alert is active, which is the normal
@@ -425,6 +567,9 @@ export const DECK_KEYS: DeckKey[] = [
   { key: "0", codes: ["0"], effect: "Reset the camera to the preset's framing", slice: "d03" },
   { key: "1…8", codes: ["1", "2", "3", "4", "5", "6", "7", "8"], effect: "Open the dock on inspector tab N", slice: "d06" },
   { key: "M", codes: ["m"], effect: "Toggle reduced motion (transitions off, alerts unchanged)", slice: "d05" },
+  { key: ", / .", codes: [",", "."], effect: "History: step one bucket back / forward (`.` past the end returns live)", slice: "d07" },
+  { key: "L", codes: ["l"], effect: "History: return to live", slice: "d07" },
+  { key: "P", codes: ["p"], effect: "History: play / pause the recorded run (from live, replays from the start)", slice: "d07" },
 ];
 
 /** The debug hook the e2e suite and `d10` assert against. Not public API. */
@@ -489,6 +634,17 @@ export interface DeckDebugHook {
    */
   dockOpen: boolean;
   dockTab: string;
+  /**
+   * The temporal layer (`d07`): the history cursor (`null` while live), the
+   * bucket it sits in, the ribbon's size, the wall's tiles, and whether the
+   * playback timer is running. All view state — none of it reaches the store.
+   */
+  historySeq: number | null;
+  historyBucket: number;
+  historyActive: number;
+  ribbon: number;
+  tiles: number;
+  playing: boolean;
   /** Camera state last written to the renderer (view state, for the specs). */
   camera: DeckCamera;
   /** Filled marks of the focused station (`0` when nothing is framed). */

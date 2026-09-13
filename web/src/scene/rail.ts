@@ -156,3 +156,121 @@ export function gridPlan(bounds: RailBounds): { size: number; divisions: number 
   const divisions = Math.max(4, Math.ceil((span + GRID_CELL * 2) / cell));
   return { size: divisions * cell, divisions };
 }
+
+/**
+ * The temporal band (`d07`): a shallow ribbon strip and a row of run tiles,
+ * both along the rail's **near** edge (`maxZ` — the side the default camera is
+ * on). Geometry, not data: the ribbon's *buckets* come from `history.ts` and a
+ * tile's identity from the run list; this file only says where the strip and
+ * the row stand, and `withTemporalBand` grows the deck's box so the `rail`
+ * framing shows them.
+ *
+ * Where the band sits, measured rather than guessed (`d07`): the default camera
+ * sits at azimuth 45°, so a band hugging the rail's far edge projects into the
+ * rail's own screen silhouette — on the real 22-pad run the strip's bars landed
+ * within 3–7 px of the pads' tops and were covered. Pushed back to
+ * `RIBBON_GAP` (5 units), the bars clear that silhouette by 14–26 px on the
+ * same run, stay above the station-line panel, and keep clear of the
+ * bottom-left live window. The near side was measured too and rejected: there
+ * the strip runs into the bottom-right panels and the live window's corner.
+ *
+ * The ribbon's readability rule: **a sub-pixel bar is not a reading**. The
+ * strip is as wide as the rail when that is enough, and grows past the rail
+ * when a bucket would otherwise be thinner than `RIBBON_MIN_PITCH` — the world
+ * gets wider rather than the time axis becoming a smudge. Beyond
+ * `RIBBON_MAX_BARS` buckets, adjacent buckets are drawn as one bar (the scene
+ * shows the shape; the DOM strip keeps every bucket exact).
+ */
+export const RIBBON_DEPTH = 1.2;
+/** Tallest bar, in world units. Twice a pad's height on purpose: the strip is
+ *  read from the rail preset, ~70 world units away, where a 1-unit bar is a
+ *  ~10 px smudge (measured with a pixel probe on the real run in `d07`). */
+export const RIBBON_HEIGHT = 2.2;
+/** Bars the scene ribbon draws at most; the DOM strip draws every bucket. */
+export const RIBBON_MAX_BARS = 48;
+/** The thinnest a bar may get, in world units. */
+export const RIBBON_MIN_PITCH = 0.32;
+/** Gaps: rail edge → ribbon (`RIBBON_GAP`), ribbon → tile row (`WALL_GAP`).
+ *  The rail gap is the wide one: it is what lifts the strip clear of the
+ *  rail's own silhouette from the default camera (see the note above), and the
+ *  tile row then sits just beyond the bars. */
+const RIBBON_GAP = 5;
+const WALL_GAP = 2.2;
+/** Run tile footprint, in world units (upright tablets on the wall row). */
+export const TILE_W = 1;
+export const TILE_H = 0.62;
+export const TILE_D = 0.24;
+/** Depth the band adds behind the rail: gap + ribbon + gap + tile. */
+const TEMPORAL_DEPTH = RIBBON_GAP + RIBBON_DEPTH + WALL_GAP + TILE_D;
+
+/**
+ * The rail's box grown to include the temporal band. Everything the deck draws
+ * (rail, ribbon, wall) is inside the result, which is why the `rail` preset
+ * keeps framing the whole world instead of cropping the time axis. `stripWidth`
+ * is the ribbon's own width (`ribbonPitch × bars`): the box widens along X only
+ * when the time axis needs more room than the roadmap does.
+ */
+export function withTemporalBand(bounds: RailBounds, stripWidth = 0): RailBounds {
+  const width = Math.max(bounds.width, stripWidth, PAD_W);
+  const minX = bounds.centerX - width / 2;
+  const minZ = bounds.minZ - TEMPORAL_DEPTH;
+  const depth = bounds.depth + TEMPORAL_DEPTH;
+  return {
+    minX,
+    maxX: minX + width,
+    minZ,
+    maxZ: bounds.maxZ,
+    width,
+    depth,
+    centerX: bounds.centerX,
+    centerZ: bounds.centerZ - TEMPORAL_DEPTH / 2,
+  };
+}
+
+/**
+ * Bar-to-bar distance for `count` bars over the *rail's* width, never below
+ * `RIBBON_MIN_PITCH`. Callers compute it from the rail's box (before
+ * `withTemporalBand`), so the strip's width and the deck's box cannot chase
+ * each other.
+ */
+export function ribbonPitch(bounds: RailBounds, count: number): number {
+  const bars = Math.max(1, count);
+  return Math.max(Math.max(bounds.width, PAD_W) / bars, RIBBON_MIN_PITCH);
+}
+
+/** Centre X of bar `index` of `count`, the strip centred on the rail. */
+export function ribbonX(bounds: RailBounds, index: number, count: number): number {
+  const pitch = ribbonPitch(bounds, count);
+  const width = pitch * Math.max(1, count);
+  return bounds.centerX - width / 2 + pitch * (index + 0.5);
+}
+
+/** Z of the ribbon strip's centre, from the *deck* box (`withTemporalBand`):
+ *  the strip is the innermost element of the band, nearest the rail. */
+export function ribbonZ(bounds: RailBounds): number {
+  return bounds.minZ + TILE_D + WALL_GAP + RIBBON_DEPTH / 2;
+}
+
+/**
+ * The bar a bucket is drawn as: with more buckets than bars, adjacent buckets
+ * merge into one (`bars` is `min(count, RIBBON_MAX_BARS)` by construction). One
+ * rule, so the playhead and the bars cannot disagree about where a bucket is.
+ */
+export function ribbonGroup(bucketIndex: number, bucketCount: number, bars: number): number {
+  if (bars <= 0) return 0;
+  if (bucketCount <= bars) return Math.min(bucketIndex, bars - 1);
+  return Math.min(bars - 1, Math.floor((bucketIndex * bars) / bucketCount));
+}
+
+/** World positions of the run tiles, newest first, centred on the wall row. */
+export function tilePositions(bounds: RailBounds, count: number): RailPosition[] {
+  if (count <= 0) return [];
+  const z = bounds.minZ + TILE_D / 2;
+  const pitch = Math.min(TILE_W * 2.4, Math.max(TILE_W * 1.25, bounds.width / (count * 1.5)));
+  const first = bounds.centerX - ((count - 1) * pitch) / 2;
+  const positions: RailPosition[] = [];
+  for (let index = 0; index < count; index++) {
+    positions.push({ x: first + index * pitch, y: 0, z });
+  }
+  return positions;
+}

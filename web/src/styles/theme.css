@@ -3786,6 +3786,9 @@ button[data-slot="select-trigger"] {
    * that has to make room for the dock reads this one value: the stage, the
    * overlay panels that would otherwise sit under it, and the marker space. */
   --omp-deck-dock-w: 0px;
+  /* Height of the temporal band (`d07`) — the state chips, the scrubber and
+   * the ribbon strip. The station line and the lane strip start below it. */
+  --omp-deck-time-h: 76px;
   min-width: 0;
   overflow: hidden;
   background: #0a0e14;
@@ -4137,7 +4140,7 @@ button[data-slot="select-trigger"] {
 .omp-deck-station {
   position: absolute;
   left: 10px;
-  top: calc(10px + var(--omp-deck-hud-h) + 8px);
+  top: calc(10px + var(--omp-deck-hud-h) + 8px + var(--omp-deck-time-h));
   display: flex;
   align-items: center;
   gap: 8px;
@@ -4183,7 +4186,7 @@ button[data-slot="select-trigger"] {
  * and the keyboard/click path onto any of them. */
 .omp-deck-lanes {
   position: absolute;
-  top: calc(10px + var(--omp-deck-hud-h) + 8px);
+  top: calc(10px + var(--omp-deck-hud-h) + 8px + var(--omp-deck-time-h));
   right: 10px;
   width: min(430px, 46%);
   max-height: 45%;
@@ -4398,6 +4401,23 @@ button[data-slot="select-trigger"] {
 
 .omp-deck-live .omp-livefeed-head {
   flex-wrap: wrap;
+}
+
+/* History pauses the live window (`d07`): the note says why and names the way
+ * back, so "watch the run" is one press away instead of a panel silently
+ * showing the present beside a recorded scene. */
+.omp-deck-live-note {
+  margin: 0;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 6px 8px;
+  border: 1px dashed color-mix(in srgb, var(--omp-signal) 55%, var(--omp-border));
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--omp-panel) 92%, transparent);
+  color: var(--omp-secondary);
+  font-family: var(--omp-mono);
+  font-size: 11.5px;
 }
 
 /* Freeze: a state, not an alarm — but it must be impossible to miss while the
@@ -4680,7 +4700,7 @@ button[data-slot="select-trigger"] {
 .omp-deck[data-dock="open"] .omp-deck-top {
   position: absolute;
   left: 10px;
-  top: calc(10px + var(--omp-deck-hud-h) + 8px);
+  top: calc(10px + var(--omp-deck-hud-h) + 8px + var(--omp-deck-time-h));
   width: calc(100% - var(--omp-deck-dock-w) - 20px);
   max-height: 46%;
   display: flex;
@@ -4791,17 +4811,430 @@ button[data-slot="select-trigger"] {
   margin: 0;
 }
 
-.omp-deck-flat .omp-deck-station {
+/* The flat path has no HUD, and its own 66 px offset for the notice; the
+ * temporal band keeps the station line and the lane strip below it (d09 builds
+ * the real flat layout on this contract). */
+.omp-deck-flat .omp-deck-time {
   top: 66px;
 }
 
+.omp-deck-flat .omp-deck-station {
+  top: calc(66px + var(--omp-deck-time-h));
+}
+
 .omp-deck-flat .omp-deck-lanes {
-  top: 66px;
+  top: calc(66px + var(--omp-deck-time-h));
 }
 
 .omp-deck-actions {
   display: flex;
   gap: 8px;
+}
+
+/* ---------- deck temporal layer (slice d07) ----------
+ * The time axis above the world: live/history state, the scrubber, the event
+ * ribbon (the DOM half of the strip the scene draws behind the rail) and the
+ * runs list. It is a band under the HUD because the bottom of the deck already
+ * carries the live window, the selected line and the alert column, and because
+ * the ribbon's physical home is the far edge of the rail — the top of the
+ * screen from the default camera. `--omp-deck-time-h` (on `.omp-deck`) is what
+ * keeps the station line and the lane strip below it.
+ *
+ * Colour here is never the only channel: lane is a word in every bucket's
+ * title and aria-label, the cursor is `data-cursor`, an empty bucket is "no
+ * events" in words. */
+.omp-deck-time {
+  position: absolute;
+  top: calc(10px + var(--omp-deck-hud-h) + 8px);
+  left: 10px;
+  right: 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 5px 8px 6px;
+  border: 1px solid var(--omp-border);
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--omp-panel) 90%, transparent);
+  color: var(--omp-secondary);
+  font-family: var(--omp-mono);
+  font-size: 11px;
+  pointer-events: auto;
+}
+
+/* A past cursor says so on the band itself: a dashed, signal-coloured frame —
+ * the one place in the deck where the accent means "not now". */
+.omp-deck-time[data-history="past"] {
+  border-style: dashed;
+  border-color: color-mix(in srgb, var(--omp-signal) 55%, var(--omp-border));
+}
+
+.omp-deck[data-dock="open"] .omp-deck-time {
+  right: calc(var(--omp-deck-dock-w) + 10px);
+}
+
+.omp-deck-time-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  flex-wrap: wrap;
+}
+
+.omp-deck-time-live {
+  flex: none;
+  font: inherit;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  color: var(--omp-cyan);
+  background: var(--omp-cyan-dim);
+  border: 1px solid color-mix(in srgb, var(--omp-cyan) 45%, var(--omp-border));
+  border-radius: 999px;
+  padding: 1px 8px;
+  cursor: pointer;
+}
+
+.omp-deck-time-live[data-live="false"] {
+  color: var(--omp-text);
+  background: var(--omp-panel-2);
+  border-color: var(--omp-border-strong);
+}
+
+.omp-deck-time-live:hover,
+.omp-deck-time-live:focus-visible {
+  color: var(--omp-text);
+  border-color: var(--omp-border-strong);
+}
+
+.omp-deck-time-state {
+  flex: none;
+  color: var(--omp-text);
+}
+
+.omp-deck-time-hover {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--omp-muted);
+}
+
+.omp-deck-time-controls {
+  flex: none;
+  display: flex;
+  gap: 2px;
+}
+
+.omp-deck-time-step {
+  font: inherit;
+  line-height: 1;
+  color: var(--omp-secondary);
+  background: transparent;
+  border: 1px solid var(--omp-border);
+  border-radius: 6px;
+  padding: 2px 7px;
+  cursor: pointer;
+}
+
+.omp-deck-time-step:hover,
+.omp-deck-time-step:focus-visible {
+  color: var(--omp-text);
+  background: var(--omp-panel-2);
+}
+
+.omp-deck-time-step[aria-pressed="true"] {
+  color: var(--omp-text);
+  border-color: var(--omp-signal);
+}
+
+.omp-deck-time-wall,
+.omp-deck-time-replay {
+  flex: none;
+  font: inherit;
+  color: var(--omp-secondary);
+  background: transparent;
+  border: 1px solid var(--omp-border);
+  border-radius: 6px;
+  padding: 2px 8px;
+  cursor: pointer;
+}
+
+.omp-deck-time-wall:hover,
+.omp-deck-time-wall:focus-visible,
+.omp-deck-time-replay:hover,
+.omp-deck-time-replay:focus-visible {
+  color: var(--omp-text);
+  background: var(--omp-panel-2);
+}
+
+.omp-deck-time-wall[aria-expanded="true"] {
+  color: var(--omp-text);
+  border-color: var(--omp-border-strong);
+}
+
+.omp-deck-time-replay-result {
+  flex: none;
+  color: var(--omp-muted);
+}
+
+.omp-deck-time-replay-result[data-replay="error"] {
+  color: var(--omp-red);
+}
+
+.omp-deck-time-replay-result details {
+  display: inline-block;
+  margin-left: 6px;
+}
+
+.omp-deck-time-replay-result ul {
+  margin: 2px 0 0;
+  padding-left: 14px;
+  max-height: 12vh;
+  overflow: auto;
+}
+
+/* The scrubber: one control over bucket positions, with live as the rightmost
+ * position. It is the band's keyboard path (arrows work natively and the
+ * deck's own key handler ignores events from inputs). */
+.omp-deck-time-slider {
+  width: 100%;
+  height: 12px;
+  margin: 0;
+  accent-color: var(--omp-signal);
+  cursor: pointer;
+}
+
+.omp-deck-time-slider:disabled {
+  opacity: 0.4;
+  cursor: default;
+}
+
+/* The ribbon: one bar per bucket, in window order. Bars are pointer targets
+ * (`tabIndex={-1}`): the slider and the `,`/`.`/`P`/`L` keys are the keyboard
+ * path, and the `select` + `inspect` capabilities a bucket click performs are
+ * reachable from the pad list and the dock's own keys. */
+.omp-deck-ribbon {
+  list-style: none;
+  display: flex;
+  align-items: flex-end;
+  gap: 1px;
+  margin: 0;
+  padding: 0;
+  height: 18px;
+}
+
+.omp-deck-ribbon li {
+  flex: 1 1 0;
+  min-width: 1px;
+  height: 100%;
+  display: flex;
+  align-items: flex-end;
+}
+
+.omp-deck-ribbon-bar {
+  flex: 1 1 auto;
+  height: 100%;
+  display: flex;
+  align-items: flex-end;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  cursor: pointer;
+}
+
+.omp-deck-ribbon-fill {
+  display: block;
+  width: 100%;
+  min-height: 1px;
+  border-radius: 2px 2px 0 0;
+  background: var(--omp-muted);
+  opacity: 0.65;
+}
+
+.omp-deck-ribbon-bar[data-lane="worker"] .omp-deck-ribbon-fill {
+  background: var(--omp-cyan);
+}
+
+.omp-deck-ribbon-bar[data-lane="verify"] .omp-deck-ribbon-fill {
+  background: var(--omp-amber);
+}
+
+.omp-deck-ribbon-bar[data-lane="review"] .omp-deck-ribbon-fill {
+  background: var(--omp-violet);
+}
+
+.omp-deck-ribbon-bar[data-lane="control"] .omp-deck-ribbon-fill,
+.omp-deck-ribbon-bar[data-lane="system"] .omp-deck-ribbon-fill {
+  background: var(--omp-muted);
+}
+
+.omp-deck-ribbon-bar:hover .omp-deck-ribbon-fill,
+.omp-deck-ribbon-bar:focus-visible .omp-deck-ribbon-fill {
+  opacity: 1;
+}
+
+/* The cursor: the bucket the history position is in. Shape (a full-height
+ * wash), not only colour. */
+.omp-deck-ribbon-bar[data-cursor="true"] {
+  background: color-mix(in srgb, var(--omp-signal) 26%, transparent);
+  border-radius: 2px;
+}
+
+/* While live the ribbon's last bucket is "now": a brighter right edge. */
+.omp-deck-ribbon-bar[data-live-end="true"] .omp-deck-ribbon-fill {
+  opacity: 0.95;
+}
+
+/* ---------- the runs list (d07), hung under the time band ---------- */
+.omp-deck-wall {
+  position: absolute;
+  top: calc(100% + 6px);
+  right: 0;
+  width: min(560px, 100%);
+  max-height: 52vh;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 8px 10px;
+  border: 1px solid var(--omp-border);
+  border-radius: 8px;
+  background: var(--omp-bg-2);
+  color: var(--omp-secondary);
+  overflow: auto;
+}
+
+.omp-deck-wall-head {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+}
+
+.omp-deck-wall-hint {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--omp-muted);
+  font-size: 10.5px;
+}
+
+.omp-deck-wall-close {
+  flex: none;
+  font: inherit;
+  color: var(--omp-muted);
+  background: transparent;
+  border: 1px solid var(--omp-border);
+  border-radius: 6px;
+  padding: 1px 6px;
+  cursor: pointer;
+}
+
+.omp-deck-wall-close:hover,
+.omp-deck-wall-close:focus-visible {
+  color: var(--omp-text);
+  background: var(--omp-panel-2);
+}
+
+.omp-deck-wall-empty {
+  margin: 0;
+  color: var(--omp-muted);
+}
+
+.omp-deck-wall-rows {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.omp-deck-wall-row {
+  width: 100%;
+  display: grid;
+  grid-template-columns: minmax(8ch, auto) auto minmax(0, 1fr) auto auto;
+  align-items: baseline;
+  gap: 8px;
+  font: inherit;
+  text-align: left;
+  color: var(--omp-secondary);
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  padding: 3px 6px;
+  cursor: pointer;
+}
+
+.omp-deck-wall-row:hover,
+.omp-deck-wall-row:focus-visible {
+  color: var(--omp-text);
+  background: var(--omp-panel-2);
+  border-color: var(--omp-border);
+}
+
+.omp-deck-wall-row[aria-current="true"] {
+  border-color: var(--omp-signal);
+  color: var(--omp-text);
+}
+
+.omp-deck-wall-id {
+  color: var(--omp-text);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.omp-deck-wall-counts,
+.omp-deck-wall-ago {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--omp-muted);
+}
+
+.omp-deck-wall-live {
+  color: var(--omp-cyan);
+  white-space: nowrap;
+}
+
+.omp-deck-wall-more {
+  align-self: flex-start;
+  font: inherit;
+  color: var(--omp-secondary);
+  background: transparent;
+  border: 1px solid var(--omp-border);
+  border-radius: 6px;
+  padding: 2px 8px;
+  cursor: pointer;
+}
+
+.omp-deck-wall-more:hover,
+.omp-deck-wall-more:focus-visible {
+  color: var(--omp-text);
+  background: var(--omp-panel-2);
+}
+
+/* The selected slice's attempts (`d07`): a compact chip per observed run of
+ * the slice, oldest first, the open one marked. Text, not a chart — the
+ * dashboard's Timeline owns the chart. */
+.omp-deck-line-attempts {
+  display: inline-flex;
+  gap: 4px;
+  align-items: baseline;
+  color: var(--omp-muted);
+}
+
+.omp-deck-line-attempts span {
+  border: 1px solid var(--omp-border);
+  border-radius: 999px;
+  padding: 0 6px;
+  font-size: 10.5px;
+}
+
+.omp-deck-line-attempts span[data-open="true"] {
+  border-style: dashed;
+  color: var(--omp-secondary);
 }
 
 .omp-surface-toggle {

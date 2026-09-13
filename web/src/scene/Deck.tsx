@@ -23,6 +23,7 @@ import { INSPECTOR_TABS, type InspectorTab } from "../components/Inspector.tsx";
 import { describeEvent } from "../lib/events.ts";
 import { appendDismissed, DISMISSED_KEY, dismissKey, parseDismissed, type DeckAlert } from "./alerts.ts";
 import { diffModels, type SceneDelta } from "./deltas.ts";
+import { attemptSegments, buildHistoryIndex, type RibbonBucket } from "./history.ts";
 import { buildDeckModel } from "./model.ts";
 import { DOCK_CLOSED, dockOnNewSelection, dockTabForKey, hideDock, showDockTab, type DockState } from "./dock.ts";
 import DeckInspector from "./DeckInspector.tsx";
@@ -55,6 +56,13 @@ const CAMERA_LERP_MS = 450;
 /** One arrow key press, in world units; one wheel notch, as a zoom factor. */
 const PAN_STEP = 1.2;
 const ZOOM_STEP = 1.12;
+/**
+ * Playback cadence (`d07`): one bucket per tick. The scene *jumps* between two
+ * recorded states — nothing interpolates a status — so the cadence only decides
+ * how fast the operator walks the log, and a whole window replays in
+ * ≤ `RIBBON_MAX_BUCKETS × this`.
+ */
+const PLAY_MS = 320;
 const TIER_CYCLE: ("auto" | QualityTier)[] = ["auto", "minimal", "standard", "high"];
 /**
  * The two camera presets this slice owns (`d04` adds `topology`): `command`
@@ -231,6 +239,12 @@ function deckHook(): DeckDebugHook {
       offScreen: [],
       dockOpen: false,
       dockTab: "Output",
+      historySeq: null,
+      historyBucket: -1,
+      historyActive: 0,
+      ribbon: 0,
+      tiles: 0,
+      playing: false,
       camera: { ...DEFAULT_CAMERA, target: { ...DEFAULT_CAMERA.target } },
       stationSegments: 0,
       liveRows: 0,
@@ -243,7 +257,24 @@ function deckHook(): DeckDebugHook {
   return page.__ompoDeck;
 }
 
-export default function Deck({ runId, detail, events, agents, selected, sliceDetail, live, onSelect, onControlDone, onExit }: DeckProps) {
+export default function Deck({
+  runId,
+  detail,
+  events,
+  timeline,
+  timelineTruncated,
+  runs,
+  agents,
+  selected,
+  sliceDetail,
+  live,
+  onSelect,
+  onOpenRun,
+  onControlDone,
+  replay,
+  onVerifyReplay,
+  onExit,
+}: DeckProps) {
   const [prefs, setPrefs] = useState<DeckPrefs>(readPrefs);
   const [dismissed, setDismissed] = useState<string[]>(readDismissed);
   const [hudOpen, setHudOpen] = useState(false);
@@ -258,6 +289,17 @@ export default function Deck({ runId, detail, events, agents, selected, sliceDet
   /** Alert stack collapsed (`d05`): view state, like the window's freeze. */
   const [alertsCollapsed, setAlertsCollapsed] = useState(false);
   /**
+   * The temporal cursor (`d07`): `null` = live, a seq = the log's state at
+   * that moment. Deck-local view state — the store, the run and the app's own
+   * selection are never touched by scrubbing; leaving history restores the
+   * live projection exactly.
+   */
+  const [historySeq, setHistorySeq] = useState<number | null>(null);
+  /** Playback runs only in history mode and stops at the window's last bucket. */
+  const [playing, setPlaying] = useState(false);
+  /** The history wall's DOM list (the tiles themselves are inert geometry). */
+  const [wallOpen, setWallOpen] = useState(false);
+  /**
    * The inspection dock (`d06`): 2D view state, like the pin and the freeze.
    * The scene is untouched by it — `buildDeckModel` never sees this — and the
    * only spatial effect is the stage resize when it opens (`data-dock`).
@@ -269,6 +311,11 @@ export default function Deck({ runId, detail, events, agents, selected, sliceDet
   const stageRef = useRef<HTMLDivElement | null>(null);
   const dockRef = useRef(dock);
   dockRef.current = dock;
+  /**
+   * A tab asked for together with a subject (`d07`'s bucket click): the
+   * selection effect consumes it instead of resetting the tab to `Output`.
+   */
+  const explicitTabRef = useRef<{ sliceId: string; tab: InspectorTab } | null>(null);
   const hudRef = useRef<HTMLDivElement | null>(null);
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const rendererRef = useRef<DeckRenderer | null>(null);
@@ -305,6 +352,31 @@ export default function Deck({ runId, detail, events, agents, selected, sliceDet
 
   const lastEvent = events.length > 0 ? events[events.length - 1]! : null;
 
+  /**
+   * The temporal index (`d07`): buckets, checkpoints and `snapshotAt` over the
+   * shell's event window. Built once per window identity — never per scrub
+   * tick and never per frame — so moving through history costs a bounded fold
+   * (`CHECKPOINT_EVERY` events) plus one model build, whatever the window's
+   * length. `timeline` changes identity only when an event arrives or the run
+   * switches; the shell hands its own array.
+   */
+  const historyIndex = useMemo(() => buildHistoryIndex(timeline), [timeline]);
+  /** The cursor the projection reads. `null` = live. */
+  const historyInput = useMemo(
+    () => (historySeq === null ? { index: historyIndex, seq: null } : { index: historyIndex, seq: historySeq }),
+    [historyIndex, historySeq],
+  );
+  /**
+   * The selected slice's observed attempts, from the dashboard's own
+   * segmentation (`lib/timeline.ts`, via `history.ts`) — the strip answers
+   * "how many tries has this taken, and how long was each", and a second
+   * segmenter would be exactly the drift the roadmap's M1 rule forbids.
+   */
+  const attempts = useMemo(
+    () => (selected === null ? [] : attemptSegments(timeline, selected)),
+    [timeline, selected],
+  );
+
   // The projection: application state in, an immutable model out. `events`,
   // `agents` and `prefs` are inputs the later slices consume; the rail is a
   // function of `detail` + `selected`, so their churn leaves the digest intact.
@@ -325,8 +397,25 @@ export default function Deck({ runId, detail, events, agents, selected, sliceDet
         dismissed: new Set(dismissed),
         maxStations: budget.maxStations,
         maxBeacons: budget.maxBeacons,
+        history: historyInput,
+        runs,
       }),
-    [runId, detail, events, agents, selected, sliceDetail, pinnedId, prefs, live, dismissed, budget.maxStations, budget.maxBeacons],
+    [
+      runId,
+      detail,
+      events,
+      agents,
+      selected,
+      sliceDetail,
+      pinnedId,
+      prefs,
+      live,
+      dismissed,
+      budget.maxStations,
+      budget.maxBeacons,
+      historyInput,
+      runs,
+    ],
   );
   const lastModelRef = useRef<DeckModel | null>(null);
   /**
@@ -353,6 +442,17 @@ export default function Deck({ runId, detail, events, agents, selected, sliceDet
           alertsOverflow: lastModelRef.current.alertsOverflow,
           focusId: lastModelRef.current.focusId,
           bounds: lastModelRef.current.bounds,
+          // The time axis stays with the world it belongs to: a run switch
+          // shows the previous run's ribbon and wall until the next one's
+          // timeline arrives, exactly like its pads.
+          ribbon: lastModelRef.current.ribbon,
+          ribbonRecorded: lastModelRef.current.ribbonRecorded,
+          ribbonCursor: lastModelRef.current.ribbonCursor,
+          historySeq: lastModelRef.current.historySeq,
+          historyAt: lastModelRef.current.historyAt,
+          historyActive: lastModelRef.current.historyActive,
+          tiles: lastModelRef.current.tiles,
+          tilesOverflow: lastModelRef.current.tilesOverflow,
           digest: lastModelRef.current.digest,
         }
       : projected;
@@ -499,6 +599,8 @@ export default function Deck({ runId, detail, events, agents, selected, sliceDet
       hook.stations = info.stations;
       hook.stationMarks = info.stationMarks;
       hook.markers = info.markers;
+      hook.ribbon = info.ribbon;
+      hook.tiles = info.tiles;
       hook.beacons = info.beacons;
       hook.alerts = next.alerts.length;
       hook.alertsOverflow = next.alertsOverflow;
@@ -706,8 +808,16 @@ export default function Deck({ runId, detail, events, agents, selected, sliceDet
     // and this one. Computed only when the digest moved — an identical digest
     // is by definition no scene-visible change — and handed to the renderer,
     // which applies the state first and the cues second.
+    //
+    // History (`d07`) never animates a change of the *reference frame*: while
+    // the cursor is anywhere other than live, and on the way into and out of
+    // it, the scene applies states instantly. A cue would otherwise make
+    // "go back three minutes" look like a burst of transitions that never
+    // happened — the one thing this layer must not imply.
     const previous = previousModelRef.current;
-    const deltas = previous !== null && previous.digest !== model.digest ? diffModels(previous, model) : [];
+    const projectedCues = previous !== null && previous.digest !== model.digest;
+    const deltas =
+      projectedCues && model.historySeq === null && previous?.historySeq === null ? diffModels(previous, model) : [];
     previousModelRef.current = model;
     applyToScene(renderer, model, deltas);
     refreshEdgeMarkers();
@@ -731,6 +841,10 @@ export default function Deck({ runId, detail, events, agents, selected, sliceDet
     // `rail` is the operator's explicit overview: nothing re-frames it.
     if (previous === null || preset !== "command") return;
     if (pinnedId !== null) return;
+    // A historical cursor is a different frame of reference: the operator is
+    // reading the log, and a camera flight per scrub tick would be motion they
+    // did not ask for (and a frame budget spent on nothing).
+    if (model.historySeq !== null) return;
     if (previous.focusId !== next.focusId) {
       frameSlice(next.focusId);
     } else if (next.focusId === null && previous.shape !== next.shape) {
@@ -762,20 +876,36 @@ export default function Deck({ runId, detail, events, agents, selected, sliceDet
   }, [frozenId, model.focusId]);
 
   // A different run is a different world: the pin, the freeze, the window's
-  // expansion and the dock are per-run view state, so they start clean. The
-  // dock closes outright — a panel still describing the previous run's slice
-  // would be worse than no panel (the roadmap's error rule for `d06`).
+  // expansion, the dock and the temporal cursor are per-run view state, so
+  // they start clean. The dock closes outright — a panel still describing the
+  // previous run's slice would be worse than no panel (the roadmap's error
+  // rule for `d06`) — and history returns to live: the new run's arrival is
+  // the one moment "now" is unambiguous.
   useEffect(() => {
     setPinnedId(null);
     setFrozenId(null);
     setExpanded(false);
     setDock(DOCK_CLOSED);
+    setHistorySeq(null);
+    setPlaying(false);
+    setWallOpen(false);
   }, [runId]);
 
   // The dock follows the selection: it stays where it is and shows the new
   // subject, whose tabs start on `Output` — the dashboard inspector's own rule
   // (`Inspector.tsx`), applied by the dock because the dock owns the tab.
+  //
+  // One exception, and only one: an intent that named *both* a subject and a
+  // tab (`d07`'s bucket click — "show me the events of that moment") must not
+  // have its tab undone by the reset it triggered. The ref holds that pairing
+  // for exactly one selection change.
   useEffect(() => {
+    const explicit = explicitTabRef.current;
+    if (explicit !== null && explicit.sliceId === selected) {
+      explicitTabRef.current = null;
+      setDock(showDockTab(dockRef.current, explicit.tab));
+      return;
+    }
     setDock(dockOnNewSelection);
   }, [selected]);
 
@@ -800,6 +930,18 @@ export default function Deck({ runId, detail, events, agents, selected, sliceDet
     hook.dockOpen = dock.open;
     hook.dockTab = dock.tab;
   }, [dock]);
+
+  // The temporal cursor is view state the specs read back: the seq it points
+  // at, the bucket it lands in, and whether playback is running.
+  useEffect(() => {
+    const hook = deckHook();
+    hook.historySeq = historySeq;
+    hook.historyBucket = historySeq === null ? -1 : (historyIndex.bucketAt(historySeq)?.index ?? -1);
+    hook.historyActive = model.historyActive;
+    hook.ribbon = model.ribbon.length;
+    hook.tiles = model.tiles.length;
+    hook.playing = playing;
+  }, [historySeq, historyIndex, model.historyActive, model.ribbon.length, model.tiles.length, playing]);
 
   // Tier changes are parameters: resolution scale, fps cap and the tier label,
   // applied to the live renderer and loop.
@@ -883,11 +1025,12 @@ export default function Deck({ runId, detail, events, agents, selected, sliceDet
   useEffect(() => {
     instrument.recordCommit();
     const live = containerRef.current?.querySelector(".omp-livefeed");
-    if (live) {
-      const hook = deckHook();
-      hook.liveRows = Number(live.getAttribute("data-rows") ?? 0);
-      hook.logLines = Number(live.getAttribute("data-lines") ?? 0);
-    }
+    const hook = deckHook();
+    // At a historical cursor the window is not mounted at all: "0 rows" is the
+    // truth, and a stale count from before the walk would be a lie the specs
+    // would read.
+    hook.liveRows = Number(live?.getAttribute("data-rows") ?? 0);
+    hook.logLines = Number(live?.getAttribute("data-lines") ?? 0);
   });
 
   /** Raycast through the cached canvas rect: pad id under a client point. */
@@ -1011,6 +1154,153 @@ export default function Deck({ runId, detail, events, agents, selected, sliceDet
     [dismissed],
   );
 
+  // ------------------------------------------------------------------
+  // The temporal layer (`d07`). Four intents, all of them about one value:
+  // the cursor. Nothing here can reach the run, the store, the app's
+  // selection or a persisted artifact — history is a projection, and the only
+  // thing it projects *onto* is the deck's own view state.
+  //
+  // The cursor is always an event seq, so a given seq produces the same scene
+  // however it was reached (slice strip, slider, `,`/`.`/`P`, a second visit).
+  // ------------------------------------------------------------------
+
+  /** Move the cursor to a recorded seq. */
+  const goHistory = useCallback((seq: number): void => {
+    setHistorySeq(seq);
+  }, []);
+
+  /**
+   * Return to live: the cursor goes away and the projection is the DTOs'
+   * again. Playback stops with it — a timer that kept advancing would drag the
+   * operator back out of the state they just asked for.
+   */
+  const goLive = useCallback((): void => {
+    setPlaying(false);
+    setHistorySeq(null);
+  }, []);
+
+  /**
+   * One recorded bucket back (`-1`) or forward (`+1`). The walk skips empty
+   * buckets: a quiet stretch is part of the ribbon's shape but not a moment
+   * the log can describe, and the cursor must always name a real seq. From
+   * live, back enters at the newest recorded moment; forward past the last one
+   * is how `.` returns to live.
+   */
+  const stepHistory = useCallback(
+    (direction: 1 | -1): void => {
+      const buckets = historyIndex.buckets;
+      const recorded = historyIndex.recorded;
+      if (recorded.length === 0) return;
+      const current = historySeq === null ? -1 : (historyIndex.bucketAt(historySeq)?.index ?? -1);
+      const position = current < 0 ? -1 : recorded.indexOf(current);
+      if (position < 0) {
+        if (direction < 0) setHistorySeq(buckets[recorded[recorded.length - 1]!]!.lastSeq);
+        return;
+      }
+      const target = position + direction;
+      if (target >= recorded.length) {
+        goLive();
+        return;
+      }
+      if (target < 0) return;
+      setHistorySeq(buckets[recorded[target]!]!.lastSeq);
+    },
+    [goLive, historyIndex, historySeq],
+  );
+
+  /**
+   * Play / pause. From live this starts at the window's first recorded moment —
+   * "watch the run" — and playback then advances one recorded bucket per tick,
+   * stopping at the last one: the scene jumps between recorded states, and it
+   * never wraps into a future that did not happen.
+   */
+  const togglePlay = useCallback((): void => {
+    if (playing) {
+      setPlaying(false);
+      return;
+    }
+    const first = historyIndex.recorded[0];
+    if (first === undefined) return;
+    if (historySeq === null) setHistorySeq(historyIndex.buckets[first]!.lastSeq);
+    setPlaying(true);
+  }, [historyIndex, historySeq, playing]);
+
+  /**
+   * The scrubber's positions are *recorded moments* (plus live at the end), so
+   * every position is a state that exists. The strip below draws the whole
+   * ribbon — gaps included — and highlights the same cursor.
+   */
+  const scrubTo = useCallback(
+    (position: number): void => {
+      const buckets = historyIndex.buckets;
+      const recorded = historyIndex.recorded;
+      if (recorded.length === 0) return;
+      if (position >= recorded.length) {
+        goLive();
+        return;
+      }
+      const bucket = buckets[recorded[Math.max(0, position)]!];
+      if (bucket !== undefined) goHistory(bucket.lastSeq);
+    },
+    [goHistory, goLive, historyIndex],
+  );
+
+  /**
+   * A bucket clicked: the roadmap's "jump from an interesting moment straight
+   * to the slice and its events". The cursor moves to the bucket, the newest
+   * slice it touched becomes the app's selection (one selection system — the
+   * dock, the ring and the shell's slice fetch all follow it), and the dock
+   * opens on Events. A bucket whose events were all run-level moves the cursor
+   * and nothing else; an empty bucket shows the newest recorded state at or
+   * before it — "what was happening in that quiet stretch".
+   */
+  const openBucket = useCallback(
+    (bucket: RibbonBucket): void => {
+      if (bucket.count === 0) {
+        const recorded = historyIndex.recorded;
+        let target: RibbonBucket | undefined;
+        for (const index of recorded) {
+          if (index > bucket.index) break;
+          target = historyIndex.buckets[index];
+        }
+        const fallback = target ?? (recorded[0] === undefined ? undefined : historyIndex.buckets[recorded[0]]);
+        if (fallback !== undefined) setHistorySeq(fallback.lastSeq);
+        return;
+      }
+      setHistorySeq(bucket.lastSeq);
+      const sliceId = bucket.slices[0];
+      if (sliceId === undefined) return;
+      explicitTabRef.current = { sliceId, tab: "Events" };
+      onSelect(sliceId);
+      showDockTabIntent("Events");
+    },
+    [historyIndex, onSelect, showDockTabIntent],
+  );
+
+  /** The wall's DOM list; the tiles in the scene are inert geometry. */
+  const toggleWall = useCallback((): void => {
+    setWallOpen((open) => !open);
+  }, []);
+
+  // Playback (`d07`): a timer that advances the cursor one *recorded* bucket
+  // per tick and re-arms itself from the new cursor. Each tick lands on a
+  // state the log recorded — no interpolation, no intermediate status — and
+  // the chain ends at the last recorded bucket.
+  useEffect(() => {
+    if (!playing || historySeq === null) return;
+    const buckets = historyIndex.buckets;
+    const recorded = historyIndex.recorded;
+    const current = historyIndex.bucketAt(historySeq)?.index ?? -1;
+    const position = current < 0 ? -1 : recorded.indexOf(current);
+    const next = position + 1;
+    if (recorded.length === 0 || position < 0 || next >= recorded.length) {
+      setPlaying(false);
+      return;
+    }
+    const timer = window.setTimeout(() => setHistorySeq(buckets[recorded[next]!]!.lastSeq), PLAY_MS);
+    return () => window.clearTimeout(timer);
+  }, [playing, historySeq, historyIndex]);
+
   useEffect(() => {
     deckHook().dismissed = dismissed;
   }, [dismissed]);
@@ -1064,10 +1354,15 @@ export default function Deck({ runId, detail, events, agents, selected, sliceDet
         const target = model.nodes.find((node) => node.selected)?.id ?? model.focusId;
         if (target !== null) focusOn(target, true);
       } else if (event.key === "Escape") {
-        // One key, one meaning at a time: the dock is the topmost layer, so it
-        // closes first; with no dock open this is the `d03` pin release.
+        // One key, one meaning at a time, topmost layer first: the dock closes,
+        // then the wall's list, then history returns to live, and with nothing
+        // open this is the `d03` pin release.
         if (dockRef.current.open) {
           closeDockPanel();
+        } else if (wallOpen) {
+          setWallOpen(false);
+        } else if (historySeq !== null) {
+          goLive();
         } else {
           setPinnedId(null);
           setPreset("command");
@@ -1089,6 +1384,16 @@ export default function Deck({ runId, detail, events, agents, selected, sliceDet
         const next: DeckCameraPreset = preset === "command" ? "rail" : "command";
         setPreset(next);
         framePreset(next);
+      } else if (event.key === "," || event.key === ".") {
+        // History step (`d07`). These keys are not used by the camera, the
+        // window or the dock, so they are safe from anywhere on the surface.
+        stepHistory(event.key === "," ? -1 : 1);
+      } else if (key === "l") {
+        // Return to live: the one key that always exists, whatever the cursor
+        // is doing, so history can never trap the operator.
+        goLive();
+      } else if (key === "p") {
+        togglePlay();
       } else if (event.key === "0") {
         framePreset(preset);
       } else if (event.key === "[" || event.key === "]") {
@@ -1108,7 +1413,23 @@ export default function Deck({ runId, detail, events, agents, selected, sliceDet
       }
       event.preventDefault();
     },
-    [closeDockPanel, detail, dispatchCamera, focusOn, framePreset, frameSlice, onExit, prefs, preset, showDockTabIntent],
+    [
+      closeDockPanel,
+      detail,
+      dispatchCamera,
+      focusOn,
+      framePreset,
+      frameSlice,
+      goLive,
+      historySeq,
+      onExit,
+      prefs,
+      preset,
+      showDockTabIntent,
+      stepHistory,
+      togglePlay,
+      wallOpen,
+    ],
   );
 
   // Wheel zoom is a native listener: React's synthetic wheel events are
@@ -1161,6 +1482,20 @@ export default function Deck({ runId, detail, events, agents, selected, sliceDet
       onDismiss={dismissAlert}
       alertsCollapsed={alertsCollapsed}
       onAlertsCollapsedChange={setAlertsCollapsed}
+      attempts={attempts}
+      timelineTruncated={timelineTruncated}
+      playing={playing}
+      wallOpen={wallOpen}
+      runs={runs}
+      replay={replay}
+      onScrub={scrubTo}
+      onStep={stepHistory}
+      onBucket={openBucket}
+      onLive={goLive}
+      onPlayToggle={togglePlay}
+      onToggleWall={toggleWall}
+      onOpenRun={onOpenRun}
+      onVerifyReplay={onVerifyReplay}
     />
   );
 
@@ -1274,6 +1609,15 @@ export default function Deck({ runId, detail, events, agents, selected, sliceDet
           <span className="omp-deck-metric" data-motion={reducedMotion ? "reduced" : "full"}>
             motion: {reducedMotion ? "reduced" : "full"}
           </span>
+          <span
+            className="omp-deck-metric"
+            data-history={model.historySeq === null ? "live" : "past"}
+            data-history-seq={model.historySeq ?? ""}
+          >
+            {model.historySeq === null
+              ? "at now"
+              : `at seq ${model.historySeq}${playing ? " · playing" : ""}${model.historyActive > 0 ? ` · ${model.historyActive} active` : ""}`}
+          </span>
           <span className="omp-deck-metric" data-alert-count={model.alerts.length} data-beacon-count={model.beaconAlerts.length}>
             alerts: {model.alerts.length}
             {model.alertsOverflow > 0 ? ` · ${model.alertsOverflow} over the beacon cap` : ""}
@@ -1371,6 +1715,19 @@ export default function Deck({ runId, detail, events, agents, selected, sliceDet
                   {readout !== null && readout.interactionSamples > 0
                     ? ` · open p50 ${readout.interactionOpen.toFixed(0)} ms · close p50 ${readout.interactionClose.toFixed(0)} ms · tab p50 ${readout.interactionTab.toFixed(0)} ms (${readout.interactionSamples})`
                     : " · no interactions this window"}
+                </dd>
+              </div>
+              <div>
+                <dt>history</dt>
+                <dd
+                  data-history={model.historySeq === null ? "live" : "past"}
+                  data-history-seq={model.historySeq ?? ""}
+                  data-history-buckets={model.ribbon.length}
+                >
+                  {model.historySeq === null ? "live" : `at seq ${model.historySeq}`} · {model.ribbon.length} buckets ·{" "}
+                  {model.tiles.length} run{model.tiles.length === 1 ? "" : "s"}
+                  {model.tilesOverflow > 0 ? ` (+${model.tilesOverflow} not drawn)` : ""}
+                  {timelineTruncated ? " · window is the newest page" : ""}
                 </dd>
               </div>
               <div>

@@ -1356,3 +1356,208 @@ worker's diff while the other workers stay visible at their own positions — an
 once. The advantage is bounded: the dock is not a better inspector (it is the same one), it is an
 inspector that never makes the operator leave the map, and for a single-slice run on a small window
 the dashboard's drawer remains the cheaper surface.
+
+## d07 — temporal layer: event ribbon, replay-aware history, and the history wall
+
+The slice's question is the one the directive set for it: *when the deck answers "where is the work
+now", can it also answer "what was the state of the system at that point" — spatially, without
+becoming a 3D log viewer, without inventing a state, and without touching the run?* The answer is
+**yes**, and the boundary this slice holds is that time is a *projection*: one pure fold over the
+recorded log (`scene/history.ts`), so a cursor is a sequence and the same sequence always produces
+the same scene. Live stays the default; history is one key deep and one key back (`L`, or the
+`RETURN TO LIVE` chip, or `Esc`); and every step of a walk is measured to issue no request, change
+no selection, move no camera and write nothing durable.
+
+The roadmap's `d07` text was amended where this directive supersedes it: the written slice said "no
+time-travel that changes what the deck shows". The construction stays exactly the roadmap's
+("visualise the log; never re-implement `rebuildStatusesFromEvents` in the browser") — but the
+amendment is what makes the fold *reachable*: the deck can project the recorded state at a cursor,
+and it does so with the store's own status rule, asserted equal in a unit test rather than claimed.
+
+### Reproduction
+
+```bash
+bun test tests/deck-history.test.ts tests/deck-model.test.ts    # the pure claims + the numbers below
+bunx playwright test tests/e2e/deck-history.e2e.ts --workers=1  # the product claims, own fixture
+```
+
+`captures/deck-validation/d07-history.json` holds every e2e number; `captures/deck-d07-*.png` the
+screens (the live band, the rail preset, a historical cursor with the dock open, the wall) — and
+`captures/deck-d07-real-rail.png` / `-real-history.png` the roadmap's manual step: the real
+`.omp/roadmap/runs/20260909-kph0as` run on the real surface, live and at seq 59 of its log.
+
+### Bundle
+
+| Artifact | d06 | d07 | Δ |
+|---|---|---|---|
+| `assets/Deck-*.js` (the deck + `three`) | 589.48 kB / 152.20 kB gzip | 611.77 kB / 159.53 kB gzip | +22.3 kB / +7.3 kB gzip |
+| `assets/index-*.js` (the dashboard shell) | 456.02 kB / 137.62 kB gzip | 457.26 kB / 138.01 kB gzip | +1.2 kB (the shell's paged timeline fetch and the replay state) |
+| `assets/index-*.css` | 93.06 kB / 16.30 kB gzip | 99.75 kB / 17.19 kB gzip | +6.7 kB (the temporal band, the ribbon, the runs list) |
+
+The deck's growth is the temporal module (one fold + ribbon, plus the wall's DOM list), two new
+instanced meshes and the markup for the band. On the GPU side the slice adds **two draw calls** and
+at most `RIBBON_MAX_BARS + 1 + HISTORY_TILE_CAP` instances, all pooled at creation: the fixture
+measures 10 calls and 72 objects on the `minimal` tier (budget 24 / 48 / 96).
+
+### 1. The fold is the store's, and it is asserted equal (not similar)
+
+`scene/history.ts` folds the log with `nextStatus`, mirroring `rebuildStatusesFromEvents`
+(`src/store.ts:631`) case for case. `tests/deck-history.test.ts` builds a log that exercises every
+status-bearing event type (claim, handoff, finish, verify pass/fail, retry, terminal fail, block,
+skip, kill, abort-demotion, the two no-ops) and asserts the fold at ∞ equals the store's own
+function, slice by slice. History is not a second state model; it is the store's rule, stopped at a
+sequence.
+
+| Claim (unit) | Result |
+|---|---|
+| fold-at-∞ ≡ `rebuildStatusesFromEvents` | equal for every slice with a status-bearing event |
+| `snapshotAt(N)` independent of visit order | equal for a shuffled walk vs a fresh index |
+| checkpoints cannot change a snapshot | `checkpointEvery: 1` ≡ `checkpointEvery: 100000` over 86 cursors |
+| `attemptSegments` ≡ `buildTimeline` | equal arrays for the same log (a real equality, not a smoke test) |
+| unparseable timestamps | excluded from buckets, still folded by seq |
+
+### 2. The ribbon is bounded and clock-readable
+
+| Claim | Result |
+|---|---|
+| 100 000 synthetic events → buckets | **84** (≤ 120), one O(events) pass |
+| bucket size | off a clock ladder (1s … 1d), e.g. a 1h span → 30s |
+| empty stretches | kept as buckets with `count 0` and `lastSeq -1` — the gap is information |
+| concurrency per bucket | workers in flight at the bucket's *end*, from the same fold |
+| cursor positions | only *recorded* buckets: a seq no event has is not a state the log can describe |
+
+### 3. What a walk costs, measured (the directive's item 7)
+
+`tests/deck-history.test.ts` prints `deck-history-scrub`. On this box:
+
+| Measure | 100 000-event window | 1 000-event window |
+|---|---|---|
+| index build (once per event window) | 145–427 ms (busy-box range) | — |
+| `snapshotAt` mean | **0.04–0.09 ms** | 0.07–0.14 ms |
+| same code, checkpoints disabled | 7.2–37 ms | — |
+
+So scrubbing a 100k window costs what scrubbing a 1k window costs: a snapshot folds at most
+`CHECKPOINT_EVERY` (256) events from the nearest checkpoint, and every cursor lands inside one
+frame's budget by two orders of magnitude. **The roadmap's `d07` acceptance criterion 1
+("model build ≤ 16 ms at 100 000 events") is not met** and is recorded as an open finding rather
+than massaged: the index build is O(events) with `Date.parse` + lane classification per event
+(145–427 ms at 100k). The operating point is not 100k: the shell caps the temporal window at one
+`EVENTS_MAX_LIMIT` page (2000 events), where the same build is a few milliseconds, and a real run
+measured 96 events for 22 slices. If a later workflow hands the deck 100k events, the fix is a
+server-side `tail` parameter (one page of the *newest* events), not a bigger client.
+
+### 4. Product claims on the real surface (`tests/e2e/deck-history.e2e.ts`)
+
+| Question | Result |
+|---|---|
+| live is the default | `historySeq === null`, `data-history="live"`, live statuses in the pad mirror |
+| the same seq gives the same scene, by any route | 6 moments walked with `,`, then jumped to with the scrubber: identical digests and statuses; back to live: the original digest |
+| a walk issues no request | **0** requests outside the live baseline; **13** scene writes (the world *was* reprojected) |
+| a walk changes nothing durable | store statuses identical, selection identical, camera identical, no non-GET request, no POST anywhere in the slice |
+| a bucket click | moves the cursor, selects the newest slice the bucket touched, opens the dock on **Events** |
+| playback | visits **all 14** recorded moments in order (126–257 samples across runs), never a synthesized one, never past the last; `tweens` = 0 on the way in and out |
+| the wall | 2 runs → 2 tiles + 2 rows, `aria-current` follows the switch, `mounted` unchanged (no reload), 0 writes |
+| idle after all of it | a 1.5 s window: **0 frames, 0 commits, 0 mutations** — the temporal layer costs nothing when nothing moves |
+| attempts strip | the selected slice's two recorded tries, the open one marked |
+
+History never animates a change of reference frame: entering, scrubbing and returning all pass
+`[]` to the renderer, so a jump into the past cannot look like a burst of transitions that never
+happened (the directive's item 4: state at N, never an interpolated N+½).
+
+**The manual step** (roadmap `d07`, "on the real run, verify the ribbon's shape against `ompo log`")
+was run on `.omp/roadmap/runs/20260909-kph0as` (22 slices, 96 events) through the real server, in a
+real browser: 22 pads, **27 bars**, 1 run tile, 7 draw calls, 57 objects; the DOM strip's heights
+(`100%, 86%, 71%, 57%…`) follow the recorded bursts, and `ompo log`'s distribution matches them
+(worker claims clustered, a long settled tail). Stepping back 12 recorded moments puts the pads at
+seq 59 — `7 done · 1 running` where the live run reads `all done` — with the camera untouched
+(distance 71.8 before and after) and the station line reading `RECORDED · running · w4a · 1 active
+at this point`. The two captures in `captures/` are that run.
+
+### 5. Ownership, restated for the new layer
+
+| Category | Owner | In this slice |
+|---|---|---|
+| Domain state | ompo (`App.tsx` + the store) | the shell's bounded timeline window (≤ one page), nothing else |
+| Spatial state | the deck | the ribbon, the wall row, the historical pad projection — all derived from `DeckModel` |
+| Temporal state | the deck shell | the cursor (`historySeq`), playback, the wall's openness: view state, so none of it enters the store and none of it survives a run switch |
+| Inspection state | the dock | unchanged; a bucket click *opens the dock*, it never re-implements it |
+
+### 6. New visuals, reviewed against the `d03` premise (the directive's item 13)
+
+| Element | The question it answers | Verdict |
+|---|---|---|
+| the ribbon (3D bars + DOM strip) | where was activity concentrated, when did concurrency rise | kept: height = events per bucket, colour = busiest lane, `active` in the label |
+| — its 3D placement | does the strip read, or hide behind the world | **measured and moved twice** (below) |
+| the playhead | what point am I looking at | kept: one extra instance in the ribbon's mesh — no new draw call |
+| the run wall (tiles + list) | where does this run sit among the others | kept: identity only; the list is the operable half |
+| the attempts strip | how many tries has this slice taken | kept: text chips on the selected line, from `buildTimeline` |
+| the time band | what state am I in, and how do I get back | kept: `LIVE` / `RETURN TO LIVE`, the span, the bucket size |
+
+**The band's placement is a measurement, not a taste call.** The first cut sat 0.8 units behind
+the rail's far edge; on the real run the pads' own screen silhouette covered the bars (their bases
+landed 3–7 px from the pads' tops), and a vision check could not find them at all. A near-side
+variant was measured next and rejected: it runs into the bottom-left live window and the
+bottom-right panels. The shipped placement is **5 units behind the rail** (rail gap 5, wall gap
+2.2), where the same measurement gives 14–26 px of clearance, and the bars are **2.2 world units
+tall** — a red-pixel probe of the real run's rail preset found the strip as a 608 px-wide band,
+16 px median bar height (37 px at the busiest bucket), clear of the station line and the pads.
+The DOM strip remains the exact half: every bucket, labelled, clickable; the scene draws the shape.
+
+Deliberately **not** built, with the reason: per-bucket 3D hover highlight (a second highlight
+system for a question the strip's own text answers); stations at a historical cursor (a station's
+shaft is a *current* pipeline stage with no recorded counterpart — the pads' own statuses carry
+"who was running" and the count carries "how many"); historical alerts (a second alert policy, and
+a past moment has no live conditions); a historical inspector (the dock is the inspector, and it
+inspects the record, not a second copy of it); any control in the band (`d08`'s territory).
+
+The live window is **paused, not re-subjected** at a historical cursor, with a note that names the
+key back. Retargeting it per scrub tick would make the surface say two tenses at once and re-fetch a
+log for each step; leaving it mounted on the *live* focus would have been the other option, and it
+was rejected because the freeze/expand state is keyed to the same focus the scene edits.
+
+### 7. What the deck does worse, and open findings
+
+1. **The 100k index build is 145–427 ms** (§3): the roadmap's 16 ms budget is missed at the
+   pathological input, not at the operating one. Recorded, not hidden.
+2. **A truncated window is a tail, and says so.** The shell pages forward to the end of a log up to
+   one server page; a longer log yields its *newest* 2000 events and the band states "window is the
+   newest page". The states of slices whose last transition predates the window fall back to their
+   current DTO status (documented in `model.ts`); a `tail` parameter on `/events` is the cheap fix
+   if a real run ever exceeds a page (none measured so far).
+3. **`run_resumed` demotions are invisible to the log.** The store demotes `running`/`verifying` to
+   `pending` in the cursor (`resumeRun`) without an event, so the historical fold reports what the
+   log recorded — exactly like the store's own replay check. Stated in `history.ts`; a fix belongs
+   to the store (an event), not to the client.
+4. **History pauses the live window** (§6). The trade is deliberate and one key wide; if an operator
+   ever needs both tenses at once, the answer is two panes, not a re-subjected window.
+5. **Playback is a fixed 320 ms per recorded moment.** It answers "watch the shape of the run", not
+   "replay at wall-clock speed": a 3-hour run with 40 recorded moments replays in ~13 s. Speed
+   control is not built (no user has asked); the direct-manipulation paths are the scrubber and the
+   step keys.
+6. **The full suite's parallel run flakes one d05 assertion under load** — not this slice's code:
+   `deck-transitions.e2e.ts` samples `animatedEntities`/`tweens` while cues decay, and with four
+   browsers on four vCPUs it read a cue as still live (`expected 0, received 1`). It passes
+   standalone (42 s, twice) and the file's own advice stands: run the deck specs with `--workers=1`.
+   Recorded here rather than papered over, because the fix belongs to that spec's timing, not to
+   the temporal layer.
+7. **M10 (five timed tasks) remains owed** — unchanged by this slice, and still the debt the
+   directives section names. This slice measured the temporal layer's own costs (§3) and the idle
+   sample (§4); it did **not** measure an operator completing a task, in either mode.
+
+### 8. Verdict
+
+**PASS — recommendation, not a decision.** The slice's own question is answered from the real
+surface: a historical state is reproducible from its sequence, a walk is inert (0 requests, 0
+durable writes, 0 camera moves), live is the default and one key away, and playback can only land
+on states the log recorded. The boundary the directive drew — 3D selects and orients, 2D inspects —
+holds in the new layer by construction: the ribbon and the wall are scene geometry and DOM text,
+while every question of detail still opens the existing dock.
+
+### 9. What a polished 2D dashboard would lose
+
+A 2D timeline can absolutely show when things happened — the dashboard's own Timeline chart does,
+and better than a ribbon of 120 bars. What it cannot do is answer *where the system was* at that
+moment: the pads, the dependencies between them, and which workers were in flight are the same
+spatial objects the operator learned in the live view, and moving the cursor moves *them*, not a
+table's rows. The deck's advantage is bounded and specific: it is the only surface where "what was
+the state at 14:22" is answered by looking at the same map the operator watches at 14:23.

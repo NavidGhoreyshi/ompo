@@ -17,6 +17,7 @@ import * as THREE from "three";
 import type { AgentRow, RunDetail, RunEvent, SliceSummary } from "../web/src/api.ts";
 import { layoutDag, readyDagIds, DAG_PAD } from "../web/src/lib/dag.ts";
 import { preferredSliceId } from "../web/src/lib/selection.ts";
+import { buildHistoryIndex } from "../web/src/scene/history.ts";
 import { buildDeckModel } from "../web/src/scene/model.ts";
 import { MIRROR_LIMIT, mirrorRows } from "../web/src/scene/DeckOverlay.tsx";
 import {
@@ -29,6 +30,11 @@ import {
   railBounds,
   railFraming,
   railPositions,
+  RIBBON_MAX_BARS,
+  RIBBON_MIN_PITCH,
+  ribbonGroup,
+  ribbonPitch,
+  withTemporalBand,
 } from "../web/src/scene/rail.ts";
 import {
   CAMERA_FOV,
@@ -110,6 +116,8 @@ function input(overrides: Partial<DeckInput> = {}): DeckInput {
     dismissed: new Set<string>(),
     maxStations: 8,
     maxBeacons: 32,
+    history: null,
+    runs: [],
     ...overrides,
   };
 }
@@ -409,6 +417,67 @@ describe("buildDeckModel: focus, live workers and the station stage (d03)", () =
   });
 });
 
+/**
+ * The historical cursor (`d07`): the pads show the log's state at a seq, and
+ * the projection keeps every rule the live path keeps — same positions, same
+ * structure, and a status for a slice the log has not reached yet.
+ */
+describe("buildDeckModel: the temporal cursor (d07)", () => {
+  const LOG: RunEvent[] = [
+    event(0, "c", { type: "slice_claimed", attempt: 2 }),
+    event(1, "c", { type: "worker_finished", attempt: 2 }),
+    event(2, "f", { type: "slice_failed_terminal", attempt: 1, reason: "boom" }),
+  ];
+
+  const historical = (seq: number | null) => {
+    const index = buildHistoryIndex(LOG);
+    return buildDeckModel(input({ detail: detail(BASE), history: { index, seq } }));
+  };
+
+  test("statuses are the log's at the cursor, not the DTO's", () => {
+    const model = historical(0);
+    const status = (id: string): string => model.nodes.find((n) => n.id === id)!.status;
+    expect(status("c")).toBe("running"); // claimed at 0
+    expect(status("f")).toBe("pending"); // its failure is at seq 2 and has not happened yet
+    expect(historical(1).nodes.find((n) => n.id === "c")!.status).toBe("verifying");
+    expect(historical(2).nodes.find((n) => n.id === "f")!.status).toBe("failed");
+    // A slice the window's log never mentions keeps its DTO state: with a
+    // complete window that *is* its state for the whole span (a skipped slice
+    // has no events), and nothing here invents a different one.
+    expect(status("a")).toBe("done");
+    expect(status("g")).toBe("blocked-env");
+  });
+
+  test("the world does not move, and the historical rules are the live ones", () => {
+    const live = buildDeckModel(input({ detail: detail(BASE) }));
+    const history = historical(1);
+    const positions = (model: typeof live) => model.nodes.map((n) => `${n.id}@${n.x},${n.z}`).join("|");
+    expect(positions(history)).toBe(positions(live));
+    expect(history.nodes.map((n) => n.id)).toEqual(live.nodes.map((n) => n.id));
+    // No stations, beacons or alerts at a past cursor: they describe the run as
+    // it is now and a past moment has none of them. The pads' own statuses
+    // carry the concurrency (the `live` flag is deliberately off: nothing was
+    // in flight *now*).
+    expect(history.stations).toEqual([]);
+    expect(history.liveIds).toEqual([]);
+    expect(history.alerts).toEqual([]);
+    expect(history.beaconAlerts).toEqual([]);
+    expect(history.nodes.every((n) => !n.live)).toBe(true);
+    // Counts are of what the pads show *at the cursor*: `f` has not failed yet
+    // (its failure is the next event), so the live `failed: 1` is not what the
+    // deck reports here.
+    expect(history.counts).toEqual({ done: 2, active: 1, failed: 0, skipped: 0, blockedEnv: 1, pending: 3 });
+    expect(history.historyActive).toBe(1);
+    // The cursor is part of the digest: scrubbing repaints, everything else is
+    // the same code path. (The ribbon is too, so `null` is compared against the
+    // same index rather than against a model built without a timeline.)
+    expect(history.digest).not.toBe(live.digest);
+    expect(historical(1).digest).toBe(history.digest);
+    expect(historical(null).digest).not.toBe(history.digest);
+    expect(historical(null).nodes.find((n) => n.id === "f")!.status).toBe("failed");
+  });
+});
+
 describe("buildDeckModel: stations (d04)", () => {
   /** Four live workers, plus a done slice, with lanes as the server numbers them. */
   const live = (): { slices: SliceSummary[]; agents: AgentRow[] } => ({
@@ -557,6 +626,40 @@ describe("rail geometry", () => {
     const empty = gridPlan(railBounds([]));
     expect(empty.divisions).toBeGreaterThanOrEqual(4);
     expect(Number.isFinite(empty.size)).toBe(true);
+  });
+
+  test("the scene ribbon stays readable: a minimum bar pitch and a box that grows to hold it", () => {
+    const narrow = railBounds([
+      { x: 0, y: 0, z: 0 },
+      { x: 3.5, y: 0, z: 0 },
+    ]);
+    // 79 buckets on a 7-unit rail would be sub-pixel bars: the strip takes the
+    // floor pitch instead, and the deck's box widens along X to contain it.
+    const pitch = ribbonPitch(narrow, 79);
+    expect(pitch).toBe(RIBBON_MIN_PITCH);
+    const band = withTemporalBand(narrow, pitch * RIBBON_MAX_BARS);
+    expect(band.width).toBeGreaterThan(narrow.width);
+    expect(band.centerX).toBe(narrow.centerX);
+    expect(band.depth).toBeGreaterThan(narrow.depth);
+    // A wide rail keeps its own width: the strip fits inside it.
+    const wide = railBounds([
+      { x: 0, y: 0, z: 0 },
+      { x: 40, y: 0, z: 0 },
+    ]);
+    expect(withTemporalBand(wide, ribbonPitch(wide, 20) * 20).width).toBe(wide.width);
+    // The merge mapping is total, monotone and inside the bar range: every
+    // bucket has a bar, neighbours share one, and the playhead uses the same
+    // rule as the bars.
+    let previous = -1;
+    for (let bucket = 0; bucket < 120; bucket++) {
+      const bar = ribbonGroup(bucket, 120, RIBBON_MAX_BARS);
+      expect(bar).toBeGreaterThanOrEqual(previous);
+      expect(bar).toBeGreaterThanOrEqual(0);
+      expect(bar).toBeLessThan(RIBBON_MAX_BARS);
+      previous = bar;
+    }
+    expect(ribbonGroup(0, 12, 48)).toBe(0);
+    expect(ribbonGroup(11, 12, 48)).toBe(11); // fewer buckets than bars: one bar each
   });
 
   test("the DOM mirror lists every pad, and states the ones it does not", () => {

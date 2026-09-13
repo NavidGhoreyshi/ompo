@@ -1,6 +1,7 @@
 import { Component, lazy, Suspense, useCallback, useEffect, useRef, useState, type ReactNode } from "react";
 import { api, type AgentRow, type OperatorSession, type RunDetail, type RunEvent, type RunStats, type RunSummary, type SliceDetail } from "./api.ts";
 import { instrument } from "./scene/instrument.ts";
+import type { ReplayState } from "./scene/types.ts";
 import { preferredSliceId } from "./lib/selection.ts";
 import Activity from "./components/Activity.tsx";
 import Header from "./components/Header.tsx";
@@ -13,6 +14,26 @@ import RunsPage from "./pages/RunsPage.tsx";
 import StatsPage from "./pages/StatsPage.tsx";
 
 const POLL_MS = 900;
+/** The server's event page cap (`src/server.ts` `EVENTS_MAX_LIMIT`). */
+const TIMELINE_PAGE = 2000;
+
+/**
+ * The temporal window (`d07`): the run's event log as the history layer
+ * materializes it. The whole log when it fits in one page — every real run
+ * measured so far does (96 events for a 22-slice run) — otherwise the newest
+ * page, fetched with one extra request from `offset - page` rather than paging
+ * through a log that may be orders of magnitude longer. Two requests worst
+ * case, `TIMELINE_PAGE` events kept: the temporal layer's cost is bounded by
+ * construction, and the bar states when the window is a tail.
+ */
+async function loadTimeline(id: string): Promise<{ events: RunEvent[]; truncated: boolean }> {
+  const first = await api.events(id, -1, TIMELINE_PAGE);
+  const newest = first.events[first.events.length - 1];
+  if (newest === undefined) return { events: [], truncated: false };
+  if (first.offset <= newest.seq) return { events: first.events, truncated: false };
+  const tail = await api.events(id, Math.max(-1, first.offset - TIMELINE_PAGE), TIMELINE_PAGE);
+  return tail.events.length > 0 ? { events: tail.events, truncated: true } : { events: first.events, truncated: true };
+}
 
 /** The deck is a lazy chunk; the shell loads it only when the surface asks. */
 const Deck = lazy(() => import("./scene/Deck.tsx"));
@@ -87,6 +108,12 @@ export default function App() {
   const [view, setView] = useState<View>("overview");
   const [surface, setSurface] = useState<Surface>(initialSurface);
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
+  // The temporal window (`d07`) — a bounded superset of `events`, kept apart
+  // from it because they answer different questions: `events` is the live
+  // window the feed and the inspector read, this is what history is derived
+  // from. Appending keeps the window contiguous (`slice(-cap)`).
+  const [timeline, setTimeline] = useState<{ events: RunEvent[]; truncated: boolean }>({ events: [], truncated: false });
+  const [replay, setReplay] = useState<ReplayState | null>(null);
   // The Inspector is a contextual drawer, closed by default: the active
   // worker keeps the viewport until the operator asks for forensics.
   const [inspectorOpen, setInspectorOpen] = useState(false);
@@ -139,6 +166,56 @@ export default function App() {
     }
   }, []);
 
+  /** One new event into the temporal window, keeping it contiguous and capped. */
+  const pushTimeline = useCallback((event: RunEvent) => {
+    setTimeline((prev) => {
+      const events = [...prev.events, event];
+      return events.length > TIMELINE_PAGE
+        ? { events: events.slice(-TIMELINE_PAGE), truncated: true }
+        : { events, truncated: prev.truncated };
+    });
+  }, []);
+
+  // The temporal window follows the run, not the SSE stream: one bounded fetch
+  // per run switch (see `loadTimeline`), then appends. A switch cancels the
+  // in-flight load so a slow answer cannot land on the next run's window.
+  useEffect(() => {
+    if (runId === null) {
+      setTimeline({ events: [], truncated: false });
+      setReplay(null);
+      return;
+    }
+    let cancelled = false;
+    setTimeline({ events: [], truncated: false });
+    setReplay(null);
+    loadTimeline(runId)
+      .then((window) => {
+        if (!cancelled) setTimeline(window);
+      })
+      .catch(() => {
+        // The bar states "no events yet"; the run's own error banner already
+        // tells the operator the API is unreachable.
+        if (!cancelled) setTimeline({ events: [], truncated: false });
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [runId]);
+
+  /** Verify replay on demand only (`d07`): the server's own comparison. */
+  const verifyReplay = useCallback(() => {
+    if (runId === null) return;
+    setReplay({ status: "loading", events: 0, mismatches: [], error: null });
+    api
+      .replay(runId)
+      .then((result) =>
+        setReplay({ status: "ready", events: result.events, mismatches: result.mismatches, error: null }),
+      )
+      .catch((err) =>
+        setReplay({ status: "error", events: 0, mismatches: [], error: err instanceof Error ? err.message : String(err) }),
+      );
+  }, [runId]);
+
   // Initial load + SSE live stream with polling fallback.
   useEffect(() => {
     if (!runId) return;
@@ -153,6 +230,7 @@ export default function App() {
             seqRef.current = ev.seq;
             instrument.noteEvent(ev.seq, ev.at);
             setEvents((prev) => [...prev.slice(-400), ev]);
+            pushTimeline(ev);
             // Targeted refresh: the frame only signals *what* changed — board/slice
             // state always re-derives from the read endpoints, never from the payload.
             void api.run(runId).then(setDetail).catch(() => {});
@@ -180,6 +258,7 @@ export default function App() {
           seqRef.current = ev.offset;
           for (const e of ev.events) instrument.noteEvent(e.seq, e.at);
           setEvents((prev) => [...prev.slice(-400), ...ev.events]);
+          for (const e of ev.events) pushTimeline(e);
           await loadRun(runId);
         }
       } catch {
@@ -196,7 +275,7 @@ export default function App() {
       clearInterval(poll);
       clearInterval(sessPoll);
     };
-  }, [runId, loadRun]);
+  }, [runId, loadRun, pushTimeline]);
 
   // Active slice auto-selection: a single selection system shared by the
   // board, lanes, graph, and Inspector. When nothing is selected (initial
@@ -279,11 +358,15 @@ export default function App() {
                   runId={runId}
                   detail={detail}
                   events={events}
+                  timeline={timeline.events}
+                  timelineTruncated={timeline.truncated}
+                  runs={runs}
                   agents={agents}
                   selected={sel}
                   sliceDetail={sliceDetail}
                   live={detail?.live ?? false}
                   onSelect={setSel}
+                  onOpenRun={openRun}
                   onControlDone={() => {
                     // The dock's control outcomes settle through the same
                     // channels the dashboard's inspector uses — the store's
@@ -292,6 +375,8 @@ export default function App() {
                     void loadRun(runId);
                     void reloadRuns();
                   }}
+                  replay={replay}
+                  onVerifyReplay={verifyReplay}
                   onExit={toggleSurface}
                 />
               </Suspense>

@@ -1,0 +1,89 @@
+{
+  "runId": "d07-history",
+  "otherRun": "d07-probe",
+  "port": 4483,
+  "determinism": {
+    "ribbonBuckets": 48,
+    "walk": [
+      14,
+      13,
+      12,
+      11,
+      10,
+      9
+    ],
+    "routeA": 6,
+    "routeB": 6
+  },
+  "inert": {
+    "baselineRequests": [
+      "GET /api/health",
+      "GET /api/runs",
+      "GET /api/runs/d07-history",
+      "GET /api/runs/d07-history/agents",
+      "GET /api/runs/d07-history/events",
+      "GET /api/runs/d07-history/events/stream",
+      "GET /api/runs/d07-history/sessions",
+      "GET /api/runs/d07-history/slices/delta",
+      "GET /api/runs/d07-history/slices/delta/log",
+      "GET /api/runs/d07-history/stats"
+    ],
+    "during": 0,
+    "sceneWrites": 13
+  },
+  "playback": {
+    "recorded": 14,
+    "samples": 126,
+    "distinct": 14
+  },
+  "wall": {
+    "rows": 2,
+    "mounted": 1,
+    "writes": 0
+  },
+  "layout": {
+    "time": {
+      "x": 211,
+      "y": 151,
+      "w": 1202,
+      "h": 74
+    },
+    "station": {
+      "x": 211,
+      "y": 227,
+      "w": 433,
+      "h": 32
+    },
+    "lanes": {
+      "x": 983,
+      "y": 227,
+      "w": 430,
+      "h": 63
+    },
+    "note": {
+      "x": 211,
+      "y": 783,
+      "w": 562,
+      "h": 49
+    }
+  },
+  "attempts": {
+    "chips": [
+      "#1 1m 30s",
+      "#2 — open"
+    ]
+  },
+  "idleSample": {
+    "frames": 0,
+    "commits": 1,
+    "mutations": 3,
+    "renderer": {
+      "drawCalls": 10,
+      "objects": 72,
+      "ribbon": 48,
+      "tiles": 2,
+      "vertices": 1520,
+      "pixels": 237068
+    }
+  }
+}

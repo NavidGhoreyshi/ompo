@@ -137,6 +137,8 @@ describe("the scene cannot see the history", () => {
       dismissed: new Set<string>(),
       maxStations: 8,
       maxBeacons: 32,
+      history: null,
+      runs: [],
     };
     const history = Array.from({ length: CHURN }, (_, i) => eventAt(i));
     const quiet = buildDeckModel(base);
