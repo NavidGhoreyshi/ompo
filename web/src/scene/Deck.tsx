@@ -28,6 +28,7 @@ import { buildDeckModel } from "./model.ts";
 import { DOCK_CLOSED, dockOnNewSelection, dockTabForKey, hideDock, showDockTab, type DockState } from "./dock.ts";
 import DeckInspector from "./DeckInspector.tsx";
 import DeckOverlay from "./DeckOverlay.tsx";
+import { deckAvailability, deckMode, nextDeckMode, type DeckAvailability } from "./fallback.ts";
 import { focusTarget, nextLiveId } from "./focus.ts";
 import { applyCameraIntent, edgeAnchor, focusIntent, lerpCamera, offScreenIds, type CameraIntent, type EdgeMarker } from "./camera.ts";
 import { stationCountLabel } from "./lanes.ts";
@@ -36,7 +37,6 @@ import { createDeckRenderer, probeRendererString, type DeckRenderer } from "./re
 import { instrument } from "./instrument.ts";
 import { classifyRenderer, TIER_BUDGETS, type QualityTier } from "./tier.ts";
 import {
-  DECK_KEYS,
   DECK_PREFS_KEY,
   DEFAULT_CAMERA,
   DEFAULT_DECK_PREFS,
@@ -63,7 +63,6 @@ const ZOOM_STEP = 1.12;
  * ≤ `RIBBON_MAX_BUCKETS × this`.
  */
 const PLAY_MS = 320;
-const TIER_CYCLE: ("auto" | QualityTier)[] = ["auto", "minimal", "standard", "high"];
 /**
  * The two camera presets this slice owns (`d04` adds `topology`): `command`
  * frames the focus target, `rail` fits the whole roadmap. Auto-framing only
@@ -205,6 +204,9 @@ function deckHook(): DeckDebugHook {
     page.__ompoDeck = {
       tier: "standard",
       tierSource: "auto",
+      availability: "3d",
+      flatReason: null,
+      contextLost: 0,
       mounted: 0,
       disposed: 0,
       frames: 0,
@@ -244,6 +246,7 @@ function deckHook(): DeckDebugHook {
       historyActive: 0,
       ribbon: 0,
       tiles: 0,
+      ribbonBuckets: 0,
       playing: false,
       camera: { ...DEFAULT_CAMERA, target: { ...DEFAULT_CAMERA.target } },
       stationSegments: 0,
@@ -336,6 +339,9 @@ export default function Deck({
   // A WebGL2 context can still fail to come up (driver crash, context limit);
   // that is the same product state as no WebGL2 at all, not a crashed surface.
   const [contextFailed, setContextFailed] = useState(false);
+  // A context the driver takes away mid-session (`webglcontextlost`) is a third
+  // such state: keep the model, switch projection, offer the fresh-context retry.
+  const [contextLost, setContextLost] = useState(false);
 
   // One probe per mount: the string is what `classifyRenderer` was measured on.
   const rendererString = useMemo(() => probeRendererString(), []);
@@ -345,7 +351,28 @@ export default function Deck({
     () => typeof window.matchMedia === "function" && window.matchMedia("(prefers-reduced-motion: reduce)").matches,
     [],
   );
-  const reducedMotion = prefs.reducedMotion || systemReducedMotion;
+  // `M` owns an explicit choice (`on` / `reduced`); `system` follows the OS at
+  // mount. The explicit choice is what lets `M` turn motion back on where the
+  // OS asks for reduced motion.
+  const reducedMotion = prefs.motion === "system" ? systemReducedMotion : prefs.motion === "reduced";
+  // Which projection may render (`d09`). The decision is made before any
+  // renderer exists, so a no-WebGL2 device never creates a canvas it cannot
+  // use; a lost or uncreatable context degrades to the same flat surface.
+  const availability: DeckAvailability = deckAvailability({
+    webgl2: rendererString !== null,
+    tier,
+    forced: contextLost || contextFailed ? "flat" : prefs.forced,
+    reducedMotion,
+  });
+  const flatReason = availability !== "flat"
+    ? null
+    : rendererString === null
+      ? "no-webgl2"
+      : contextLost
+        ? "context-lost"
+        : contextFailed
+          ? "create-failed"
+          : "forced";
   // Every tier knob is applied to the live renderer except MSAA, which is fixed
   // when the GL context is created. Only that bit may rebuild the context.
   const contextKey = `${budget.antialias ? "aa" : "plain"}-${reducedMotion ? "still" : "motion"}`;
@@ -588,22 +615,18 @@ export default function Deck({
     (renderer: DeckRenderer, next: DeckModel, deltas: readonly SceneDelta[]): void => {
       if (!renderer.applyModel(next, deltas)) return;
       const hook = deckHook();
-      hook.nodes = next.nodes.length;
-      hook.edges = next.edges.length;
-      hook.digest = next.digest;
-      hook.selected = next.nodes.find((node) => node.selected)?.id ?? null;
-      hook.focused = next.focusId;
-      hook.liveCount = next.liveIds.length;
       const info = renderer.info();
       hook.instances = info.instances;
       hook.stations = info.stations;
       hook.stationMarks = info.stationMarks;
       hook.markers = info.markers;
+      hook.beacons = info.beacons;
+      // Drawn instances, from the one snapshot the other counters came from:
+      // the instance identity (`d01`) reads them, and a second writer with the
+      // *model's* bucket count made that identity depend on which effect ran
+      // last. The window's own size is `ribbonBuckets` (`d09`).
       hook.ribbon = info.ribbon;
       hook.tiles = info.tiles;
-      hook.beacons = info.beacons;
-      hook.alerts = next.alerts.length;
-      hook.alertsOverflow = next.alertsOverflow;
       hook.tweens = info.tweens;
       hook.animatedEntities = info.animatedEntities;
       hook.deltas = deltas.map((delta) => {
@@ -613,7 +636,6 @@ export default function Deck({
         if (delta.kind === "alert") return { kind: delta.kind, id: delta.id, to: delta.alert.kind };
         return { kind: delta.kind, id: delta.id, to: delta.alertKind };
       });
-      hook.stationOverflow = next.stationOverflow;
       hook.stationSegments = info.stationSegments;
       hook.positions = next.nodes.map((node) => ({ id: node.id, x: node.x, z: node.z }));
       // The model reached the scene; the frame that draws it is the scene stage.
@@ -642,7 +664,9 @@ export default function Deck({
       observer.disconnect();
       section.style.removeProperty("--omp-deck-hud-h");
     };
-  }, [ready, rendererString, contextFailed]);
+    // `availability`: the HUD only exists in 3D, so returning from flat must
+    // re-measure it (and flat clears the property it owned).
+  }, [availability, ready, rendererString, contextFailed]);
 
   // Size first: a zero-size container gets no renderer at all (a 0-width
   // projection matrix is not a recoverable state, it is a bug). The subject is
@@ -689,14 +713,17 @@ export default function Deck({
       if (timer !== null) window.clearTimeout(timer);
       observer.disconnect();
     };
-  }, [refreshEdgeMarkers]);
+    // `availability` re-runs this when the deck returns from flat mode: the
+    // stage is a different element then, and it must be measured before the
+    // renderer effect builds a context for it.
+  }, [availability, refreshEdgeMarkers]);
 
   // Renderer + loop lifecycle: one WebGL context per mount. Creating contexts
   // is the expensive, fragile part on a software rasterizer (measured: a second
   // context can fail to come up at all), and a tier only changes parameters —
   // so only a change of `contextKey` (MSAA, reduced motion) rebuilds it.
   useEffect(() => {
-    if (!ready || rendererString === null) return;
+    if (!ready || availability !== "3d") return;
     const canvas = canvasRef.current;
     const size = sizeRef.current;
     if (!canvas || size.width <= 0 || size.height <= 0) return;
@@ -710,6 +737,19 @@ export default function Deck({
       return;
     }
     setContextFailed(false);
+    /**
+     * The driver took the context away. The canvas a lost context lived on can
+     * never hand out another one, so the deck keeps its model and state, shows
+     * the flat projection, and the notice's retry mounts a fresh canvas
+     * (`d09`). `preventDefault` is what makes a synthetic event — the e2e's —
+     * behave like a real one here.
+     */
+    const onContextLost = (event: Event): void => {
+      event.preventDefault();
+      deckHook().contextLost++;
+      setContextLost(true);
+    };
+    canvas.addEventListener("webglcontextlost", onContextLost);
     const hook = deckHook();
     const onFrame = (): void => {
       const active = rendererRef.current;
@@ -784,6 +824,7 @@ export default function Deck({
     loop.request();
 
     return () => {
+      canvas.removeEventListener("webglcontextlost", onContextLost);
       loop.stop();
       instrument.stop();
       renderer.dispose();
@@ -795,7 +836,9 @@ export default function Deck({
     };
     // `tier` and `prefs.tier` are read for the initial values only; later changes
     // go through the parameter effect below, which never rebuilds the context.
-  }, [ready, rendererString, contextKey]);
+    // `availability` is in here so switching to flat (a lost context, `T`)
+    // disposes the renderer, and returning to 3D builds one on the fresh canvas.
+  }, [availability, ready, rendererString, contextKey]);
 
   // Model changes: rewrite the rail's buffers (in place; the renderer diffs on
   // the digest) and ask for one frame. An unchanged digest — an event, a log
@@ -862,6 +905,30 @@ export default function Deck({
   useEffect(() => {
     deckHook().motion = reducedMotion ? "reduced" : "full";
   }, [reducedMotion]);
+
+  // The projection that is up, and why — the `d09` specs read it from here.
+  useEffect(() => {
+    const hook = deckHook();
+    hook.availability = availability;
+    hook.flatReason = flatReason;
+  }, [availability, flatReason]);
+
+  // Model-level facts the specs read on *either* surface (`d09`): selection,
+  // focus, counts and overflow are projection facts, not renderer output, so
+  // they are published here. The renderer counters stay in `applyToScene`,
+  // which only runs in 3D — in flat mode they keep their last value.
+  useEffect(() => {
+    const hook = deckHook();
+    hook.nodes = model.nodes.length;
+    hook.edges = model.edges.length;
+    hook.digest = model.digest;
+    hook.selected = model.nodes.find((node) => node.selected)?.id ?? null;
+    hook.focused = model.focusId;
+    hook.liveCount = model.liveIds.length;
+    hook.alerts = model.alerts.length;
+    hook.alertsOverflow = model.alertsOverflow;
+    hook.stationOverflow = model.stationOverflow;
+  }, [model]);
 
   useEffect(() => {
     deckHook().cameraPreset = preset;
@@ -938,10 +1005,12 @@ export default function Deck({
     hook.historySeq = historySeq;
     hook.historyBucket = historySeq === null ? -1 : (historyIndex.bucketAt(historySeq)?.index ?? -1);
     hook.historyActive = model.historyActive;
-    hook.ribbon = model.ribbon.length;
-    hook.tiles = model.tiles.length;
+    // The *window's* size, not the renderer's drawn bars (`hook.ribbon`):
+    // `d07`'s spec records how many buckets the window has, and the renderer's
+    // cap (`RIBBON_MAX_BARS`) is not that number.
+    hook.ribbonBuckets = model.ribbon.length;
     hook.playing = playing;
-  }, [historySeq, historyIndex, model.historyActive, model.ribbon.length, model.tiles.length, playing]);
+  }, [historySeq, historyIndex, model.historyActive, model.ribbon.length, playing]);
 
   // Tier changes are parameters: resolution scale, fps cap and the tier label,
   // applied to the live renderer and loop.
@@ -961,7 +1030,7 @@ export default function Deck({
   // HUD: React state at HUD cadence, never per frame. The forced layout read is
   // the deck's DOM/layout cost sample.
   useEffect(() => {
-    if (!ready || rendererString === null) return;
+    if (!ready || availability !== "3d") return;
     const tick = (): void => {
       const renderer = rendererRef.current;
       if (!renderer) return;
@@ -1015,7 +1084,7 @@ export default function Deck({
     tick();
     const timer = window.setInterval(tick, HUD_MS);
     return () => window.clearInterval(timer);
-  }, [ready, rendererString, hudOpen]);
+  }, [availability, ready, hudOpen]);
 
   // Every commit of the deck subtree, counted where React schedules it. The
   // HUD's 4 Hz tick is the only thing here that commits on a timer. The live
@@ -1282,6 +1351,27 @@ export default function Deck({
     setWallOpen((open) => !open);
   }, []);
 
+  /**
+   * Leave flat mode (`d09`). `retry3d` is the context-loss affordance: the
+   * canvas a lost context lived on can never hand out another one, but the
+   * flat branch does not render a canvas at all — returning to 3D mounts a
+   * fresh element, and the availability change re-runs the renderer effect on
+   * it. `clearForcedFlat` undoes an explicit `T` choice.
+   */
+  const retry3d = useCallback((): void => {
+    setContextLost(false);
+    setContextFailed(false);
+    const updated: DeckPrefs = { ...prefs, forced: "3d" };
+    setPrefs(updated);
+    writePrefs(updated);
+  }, [prefs]);
+
+  const clearForcedFlat = useCallback((): void => {
+    const updated: DeckPrefs = { ...prefs, forced: null };
+    setPrefs(updated);
+    writePrefs(updated);
+  }, [prefs]);
+
   // Playback (`d07`): a timer that advances the cursor one *recorded* bucket
   // per tick and re-arms itself from the new cursor. Each tick lands on a
   // state the log recorded — no interpolation, no intermediate status — and
@@ -1334,15 +1424,19 @@ export default function Deck({
         return;
       }
       if (key === "t") {
-        const current = TIER_CYCLE.indexOf(prefs.tier);
-        const next = TIER_CYCLE[(current + 1) % TIER_CYCLE.length]!;
-        const updated = { ...prefs, tier: next };
+        // The cycle includes `flat` (`d09`): an operator on a good GPU can pin
+        // the flat projection for a smaller window, and one more press returns
+        // to the automatic tier.
+        const next = nextDeckMode(deckMode(prefs));
+        const updated: DeckPrefs =
+          next === "flat" ? { ...prefs, forced: "flat" } : { ...prefs, forced: null, tier: next };
         setPrefs(updated);
         writePrefs(updated);
       } else if (key === "m") {
-        // Reduced motion (`d05`): every transition becomes 0 ms, so the scene
-        // applies state changes instantly and the alert stack is unchanged.
-        const updated = { ...prefs, reducedMotion: !prefs.reducedMotion };
+        // Reduced motion (`d05`, explicit choice since `d09`): the toggle
+        // flips the *effective* state, so it can also turn motion back on
+        // where the OS asks for reduced motion, and the choice persists.
+        const updated: DeckPrefs = { ...prefs, motion: reducedMotion ? "on" : "reduced" };
         setPrefs(updated);
         writePrefs(updated);
       } else if (key === "d") {
@@ -1424,6 +1518,7 @@ export default function Deck({
       historySeq,
       onExit,
       prefs,
+      reducedMotion,
       preset,
       showDockTabIntent,
       stepHistory,
@@ -1501,6 +1596,8 @@ export default function Deck({
       onControlDone={onControlDone}
       selectedId={selected}
       slices={detail?.slices ?? []}
+      flat={availability === "flat"}
+      helpOpen={hudOpen}
     />
   );
 
@@ -1529,11 +1626,11 @@ export default function Deck({
       </aside>
     ) : null;
 
-  if (rendererString === null || contextFailed) {
-    // No scene: the deck's information layer is DOM anyway (station line, live
-    // workers, the bounded window), so the operator keeps the part that answers
-    // questions and loses only the spatial overview (`d09` builds the full flat
-    // projection on this contract, including the pad list).
+  if (availability === "flat") {
+    // No scene (`d09`): the same overlay supplies the live window, the time
+    // axis, the alerts and the controls, `FlatDeck` supplies the board, the
+    // pad list and the worker lanes, and this notice says why — one sentence
+    // per reason, with the device detail and the way back.
     return (
       <section
         className="omp-deck omp-deck-flat"
@@ -1542,14 +1639,49 @@ export default function Deck({
         tabIndex={-1}
         onKeyDown={onKeyDown}
         data-tier="flat"
+        data-availability="flat"
+        data-flat-reason={flatReason ?? ""}
         data-motion={reducedMotion ? "reduced" : "full"}
         data-dock={dock.open ? "open" : "closed"}
       >
         <div className="omp-deck-notice" role="status">
-          <p>3D unavailable on this device — the spatial overview is off; the live deck below still works, and the dashboard has everything else.</p>
-          <button type="button" className="omp-deck-button" onClick={onExit}>
-            Back to dashboard
-          </button>
+          <p>
+            {flatReason === "no-webgl2"
+              ? "3D unavailable on this device (no WebGL2 context) — the deck is showing its flat projection: the same slices, workers, live window, alerts and controls, without the spatial rail."
+              : flatReason === "context-lost"
+                ? "The 3D context was lost — the deck switched to its flat projection and kept your place; retrying builds a fresh canvas."
+                : flatReason === "create-failed"
+                  ? "The 3D renderer could not start on this device — the deck is showing its flat projection instead of a blank canvas."
+                  : "Flat mode is on — the spatial rail is off; the deck's slices, workers, live window, alerts and controls are all here."}
+          </p>
+          {rendererString !== null && (
+            <code className="omp-deck-notice-device" title={rendererString}>
+              {rendererString}
+            </code>
+          )}
+          <div className="omp-deck-actions">
+            {(contextLost || contextFailed) && (
+              <button type="button" className="omp-deck-button" onClick={retry3d}>
+                Retry 3D
+              </button>
+            )}
+            {flatReason === "forced" && (
+              <button type="button" className="omp-deck-button" onClick={clearForcedFlat}>
+                Use 3D
+              </button>
+            )}
+            <button
+              type="button"
+              className="omp-deck-button"
+              aria-expanded={hudOpen}
+              onClick={() => setHudOpen((open) => !open)}
+            >
+              Keyboard help
+            </button>
+            <button type="button" className="omp-deck-button" onClick={onExit}>
+              Back to dashboard
+            </button>
+          </div>
         </div>
         {overlay}
         {dockPanel}
@@ -1566,6 +1698,7 @@ export default function Deck({
       onKeyDown={onKeyDown}
       data-hud={hudOpen ? "open" : "closed"}
       data-tier={tier}
+      data-availability="3d"
       data-motion={reducedMotion ? "reduced" : "full"}
       data-dock={dock.open ? "open" : "closed"}
     >
@@ -1574,12 +1707,15 @@ export default function Deck({
           the whole layout on screen and `Esc` gives back the same scene. */}
       <div className="omp-deck-stage" ref={stageCallback}>
         {/* Keyed by the context identity: a canvas whose context was lost can
-            never hand out another one, so a rebuild gets a fresh element. */}
+            never hand out another one, so a rebuild gets a fresh element.
+            Decorative (`d09`): every fact it draws is in the DOM layer, so it
+            is hidden from assistive technology and never takes focus. */}
         <canvas
           key={contextKey}
           className="omp-deck-canvas"
           ref={canvasRef}
-          aria-label="Workflow scene"
+          aria-hidden="true"
+          aria-label="Workflow scene — a spatial projection of the roadmap; the same state is in the deck's text panels"
           onPointerMove={onPointerMove}
           onPointerLeave={onPointerLeave}
           onPointerDown={onPointerDown}
@@ -1752,15 +1888,8 @@ export default function Deck({
                 <dd>{readout?.heapUsedBytes === null || readout?.heapUsedBytes === undefined ? readout?.heapReason || "—" : `${(readout.heapUsedBytes / 1048576).toFixed(1)} MB`}</dd>
               </div>
             </dl>
-            <ul className="omp-deck-keys">
-              {DECK_KEYS.map((entry) => (
-                <li key={entry.key} data-live={entry.slice === "d01" ? "true" : "false"}>
-                  <kbd>{entry.key}</kbd>
-                  <span>{entry.effect}</span>
-                  {entry.slice !== "d01" && <em>{entry.slice}</em>}
-                </li>
-              ))}
-            </ul>
+            {/* The keyboard help moved to the overlay (`d09`): `H` opens it
+                from either surface, including flat mode where no HUD exists. */}
           </div>
         )}
       </div>

@@ -32,8 +32,12 @@ import { heroAction } from "../lib/selection.ts";
 import type { TimelineAttempt } from "../lib/timeline.ts";
 import type { AlertSeverity, DeckAlert } from "./alerts.ts";
 import type { EdgeMarker } from "./camera.ts";
+import { flatRowLabel, flatRows, focusMirrorText } from "./fallback.ts";
+import FlatDeck from "./FlatDeck.tsx";
 import type { RibbonBucket } from "./history.ts";
-import type { DeckModel, RailNode, ReplayState } from "./types.ts";
+import { useRovingFocus } from "./roving.ts";
+import type { DeckModel, ReplayState } from "./types.ts";
+import { DECK_KEYS } from "./types.ts";
 import HistoryWall from "./HistoryWall.tsx";
 import DeckControlBar from "./ControlBar.tsx";
 
@@ -52,17 +56,8 @@ const SEVERITY_GLYPH: Record<AlertSeverity, string> = { high: "!!", medium: "!",
 export const MIRROR_LIMIT = 200;
 
 /** The mirror's rows and the count it does not list (never silent). */
-export function mirrorRows(nodes: RailNode[]): { listed: RailNode[]; hidden: number } {
+export function mirrorRows<T extends { id: string }>(nodes: readonly T[]): { listed: T[]; hidden: number } {
   return { listed: nodes.slice(0, MIRROR_LIMIT), hidden: Math.max(0, nodes.length - MIRROR_LIMIT) };
-}
-
-function mirrorLabel(node: RailNode): string {
-  const parts = [`${node.id} — ${node.title}`, `status ${node.status}`, `attempt ${node.attempts}`, `generation ${node.generation}`];
-  if (node.effort) parts.push(node.effort);
-  if (node.ghost) parts.push("unknown dependency");
-  if (node.inCycle) parts.push("dependency cycle");
-  if (node.alert) parts.push(node.alert);
-  return parts.join(" · ");
 }
 
 /** One bucket's one-line description, for its title, its aria-label and hover. */
@@ -145,6 +140,8 @@ export default function DeckOverlay({
   onControlDone,
   selectedId,
   slices,
+  flat = false,
+  helpOpen = false,
 }: {
   model: DeckModel;
   /** Pad under the pointer, if any — previewed without changing selection. */
@@ -222,12 +219,30 @@ export default function DeckOverlay({
   selectedId: string | null;
   /** The current run's slice DTOs — the list a control press must address. */
   slices: SliceSummary[];
+  /**
+   * True while the flat projection is up (`d09`): the canvas is absent, so the
+   * deck's station lane strip is replaced by the dashboard's own `WorkerLanes`
+   * inside `FlatDeck`, and the panels flow as a document instead of anchoring
+   * to a scene (`CSS` reads the same flag off the section).
+   */
+  flat?: boolean;
+  /** The keyboard help panel (`d09`), toggled by `H`/`?` on the deck. */
+  helpOpen?: boolean;
 }) {
   const nodeById = new Map(model.nodes.map((node) => [node.id, node]));
   const selected = model.nodes.find((node) => node.selected) ?? null;
   const hovered = hoverId === null ? null : (model.nodes.find((node) => node.id === hoverId) ?? null);
   const shown = hovered ?? selected;
-  const { listed: mirror, hidden } = mirrorRows(model.nodes);
+  // The mirror is the flat projection's row list (`d09`): every pad, in rail
+  // order, with the same fields the scene encodes — the mirror announces them
+  // and `FlatDeck` renders them. The cap stays: past it the remainder is
+  // stated, never silently dropped.
+  const padRows = flatRows(model);
+  const { listed: mirror, hidden } = mirrorRows(padRows);
+  const roving = useRovingFocus(
+    mirror.map((row) => row.id),
+    selected?.id ?? null,
+  );
   const agent = shown ? agents.find((row) => row.id === shown.id) : undefined;
   const action = shown
     ? heroAction({
@@ -401,6 +416,35 @@ export default function DeckOverlay({
     </div>
   );
 
+  // The focus mirror (`d09`): one polite node whose text is a function of the
+  // model. A log line that changes no status, stage or count produces the same
+  // string, so React never writes it and the operator is never interrupted.
+  const focusStatus = (
+    <p className="omp-sr-only" aria-live="polite" aria-atomic="true" data-focus-mirror="true">
+      {focusMirrorText(model)}
+    </p>
+  );
+
+  // The keyboard help (`d09`): every binding, generated from `DECK_KEYS`
+  // verbatim, so a key that exists in code and not in the panel (or the other
+  // way around) is impossible.
+  const helpPanel = helpOpen ? (
+    <section className="omp-deck-help" aria-label="Keyboard help">
+      <p className="omp-deck-help-head">
+        Keyboard — every deck binding. <kbd>H</kbd> or <kbd>?</kbd> toggles this panel.
+      </p>
+      <ul className="omp-deck-keys">
+        {DECK_KEYS.map((entry) => (
+          <li key={entry.key} data-live={entry.slice === "d01" ? "true" : "false"}>
+            <kbd>{entry.key}</kbd>
+            <span>{entry.effect}</span>
+            <em>{entry.slice}</em>
+          </li>
+        ))}
+      </ul>
+    </section>
+  ) : null;
+
   if (model.nodes.length === 0) {
     return (
       <div className="omp-deck-overlay">
@@ -408,6 +452,8 @@ export default function DeckOverlay({
           {model.loading ? `loading run ${model.runId ?? ""}…` : "no slices in this run"}
         </p>
         {timeBar}
+        {focusStatus}
+        {helpPanel}
       </div>
     );
   }
@@ -415,6 +461,7 @@ export default function DeckOverlay({
   return (
     <div className="omp-deck-overlay">
       {timeBar}
+      {focusStatus}
       {/* Off-screen workers (`d04`): a marker on the viewport edge the worker's
           direction leaves, so a station the camera cannot show is still
           reachable — click it and the deck goes there. The lane list below
@@ -478,7 +525,11 @@ export default function DeckOverlay({
           )}
         </p>
 
-        {model.stations.length > 0 && (
+        {/* The station lane strip is the 3D surface's worker list. In flat
+            mode the dashboard's own `WorkerLanes` (inside `FlatDeck`) lists
+            the same workers, so this one stays off instead of saying it
+            twice. */}
+        {!flat && model.stations.length > 0 && (
           <ul className="omp-deck-lanes" aria-label="Live workers">
             {model.stations.map((station) => {
               const node = nodeById.get(station.id);
@@ -537,6 +588,22 @@ export default function DeckOverlay({
           </ul>
         )}
       </div>
+
+      {/* The flat projection (`d09`) sits between the station line and the
+          bottom band: in flat mode it is the workspace (board, pad list,
+          worker lanes) and the CSS flows it as a document; in 3D mode it is
+          not rendered at all. */}
+      {flat && (
+        <FlatDeck
+          model={model}
+          slices={slices}
+          agents={agents}
+          events={events}
+          selected={selectedId}
+          live={live}
+          onSelect={onSelect}
+        />
+      )}
 
       {/* The bottom band: the live window bottom-left, and one right-hand
           column that stacks the alert column above the selected line and its
@@ -751,23 +818,31 @@ export default function DeckOverlay({
       {/* The accessibility backbone: every pad is a real button, in roadmap
           order. Visually hidden until focused so it never competes with the
           scene, present in the tab order from the first frame. */}
-      <ul className="omp-deck-mirror" aria-label="Roadmap pads">
-        {mirror.map((node) => (
-          <li key={node.id}>
+      <ul className="omp-deck-mirror" aria-label="Roadmap pads" onKeyDown={roving.onKeyDown}>
+        {mirror.map((row) => (
+          <li key={row.id}>
             <button
               type="button"
-              aria-current={node.selected ? "true" : undefined}
-              aria-label={mirrorLabel(node)}
-              onClick={() => onSelect(node.id)}
+              aria-current={row.selected ? "true" : undefined}
+              aria-label={flatRowLabel(row)}
+              ref={roving.register(row.id)}
+              tabIndex={roving.tabIndexFor(row.id)}
+              onFocus={() => roving.activate(row.id)}
+              onClick={() => onSelect(row.id)}
             >
-              <span className="omp-deck-mirror-id">{node.id}</span>
-              <span className="omp-deck-mirror-status">{node.status}</span>
-              <span className="omp-deck-mirror-title">{node.title}</span>
+              <span aria-hidden="true" className="omp-deck-mirror-glyph">
+                {row.glyph}
+              </span>
+              <span className="omp-deck-mirror-id">{row.id}</span>
+              <span className="omp-deck-mirror-status">{row.status}</span>
+              <span className="omp-deck-mirror-title">{row.title}</span>
             </button>
           </li>
         ))}
         {hidden > 0 && <li className="omp-deck-mirror-more">{hidden} more slices not listed</li>}
       </ul>
+
+      {helpPanel}
     </div>
   );
 }

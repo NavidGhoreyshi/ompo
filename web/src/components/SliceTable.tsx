@@ -1,6 +1,6 @@
 import type { AgentRow, RunEvent, SliceSummary } from "../api.ts";
 import { StatusSymbol } from "./icons.tsx";
-import { toneForStatus } from "./StatusBadge.tsx";
+import { toneForStatus } from "../lib/status.ts";
 import { formatDurationMs } from "../lib/format.ts";
 
 /** Last observed worker duration per slice (worker_finished durationMs). */

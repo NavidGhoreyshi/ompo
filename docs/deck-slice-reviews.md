@@ -1,4 +1,4 @@
-# Deck slice reviews (d00–d06)
+# Deck slice reviews (d00–d09)
 
 Performance observations per slice, in the terms the operator cares about: what a frame costs, what
 an event costs, what the DOM does while nobody is looking, and whether the surface is still usable
@@ -1715,3 +1715,117 @@ the spatial surface, sees exactly what the dashboard would send, and the outcome
 orchestrator's, not the client's optimism. Control remains a delegation: one pure module of
 semantics, one `POST`, one existing event correlation, and a deck that stores nothing but its own
 view state.
+
+## d09 — fallback, accessibility, and the no-WebGL path
+
+### Reproduction
+
+`bun run web:build`, then, with `--workers=1`: `tests/e2e/deck-a11y.e2e.ts` (6),
+`tests/e2e/deck.e2e.ts` (27), `tests/e2e/deck-history.e2e.ts` (7),
+`tests/e2e/deck-inspector.e2e.ts` (6), `tests/e2e/deck-transitions.e2e.ts` (1),
+`tests/e2e/deck-control.e2e.ts` (4), `tests/e2e/deck-workflow.e2e.ts` (2); `bun test` (817, 61
+files); `bun run test:e2e` (71 pass). Evidence: `captures/deck-validation/d09-a11y.json`,
+`captures/deck-d09-flat.png`, `captures/deck-d09-help.png`.
+
+### 1. The fallback is a projection, not a second surface
+
+`scene/fallback.ts` (pure, no DOM, no `three`) owns the two decisions this slice exists for.
+`deckAvailability` reads capability plus an explicit choice — no WebGL2 is flat, an explicit flat
+wins anywhere, `minimal` is a 3D tier (the gate machine's expected tier), and an explicit `3d`
+cannot conjure a context. Motion is carried in the input so callers pass one prefs slice, and a
+test asserts it never changes the answer: reduce stops tweens, it does not demote the device.
+
+`FlatDeck` consumes the **same** `DeckModel`: the board is the dashboard's `SliceTable` and the
+worker list is its `WorkerLanes` (the two components the roadmap names), and the "Rail, flattened"
+list is `flatRows(model)` — every pad exactly once in rail order, carrying the scene's whole
+information set (status + glyph, attempts/generation, stage label, alert kind, live/stalled,
+selected/focused, ghost/cycle flags). A divergence between the two surfaces would be a model bug
+caught by `flatRows`' coverage test, not a UI bug found by a user.
+
+Three ways in, one surface out: no WebGL2 at mount (probe returns `null`), a lost context
+(`webglcontextlost` on the canvas), or `T` cycling to `flat`. All three render the same section,
+the same overlay (time band, station line, alerts, control bar, live window, history), the same
+dock, and a reason-specific one-sentence notice with the device string and the way back
+(`Retry 3D` after a loss, `Use 3D` after a choice, `Back to dashboard` always).
+
+### 2. Accessibility, asserted structurally rather than promised
+
+- **The pad mirror is the `flatRows` list**: every pad a real button, with the full sentence in
+  `aria-label`, and **one tab stop** (`roving.ts`): ArrowUp/ArrowDown/Home/End move the stop and the
+  focus together, Enter/Space activate. A 200-pad roadmap no longer puts 200 stops between the
+  operator and the rest of the page.
+- **The focus mirror is one polite node** whose text is `focusMirrorText(model)` — focused slice,
+  status, stage, live/stalled, alert and worker counts. The e2e installs a `MutationObserver` and
+  asserts the count is **0** for a worker handoff plus transcript growth (an event and 2 new log
+  lines, neither of which changes any of those inputs) and **≥1** for a real status change. "Never
+  announced per log line" is therefore a property of the node, not of the test's timing.
+- **The help panel is generated from `DECK_KEYS`** in the overlay, so it exists on the flat surface
+  too (which has no HUD row); `H`/`?` toggles both panels, and the e2e counts the rows against the
+  table.
+- **The canvas is decorative**: `aria-hidden="true"`, a descriptive label for tooling, and no tab
+  stop — the keyboard path to every fact is the DOM layer.
+- **No status by colour alone** is checked by walking the DOM: board rows, pad rows, worker lanes,
+  the selected line, the station line and the mirror rows must each contain a status word or glyph
+  (both surfaces).
+- **Reduced motion** is honoured on mount from `prefers-reduced-motion` (emulated in the e2e) with
+  `renderer.tweens === 0` across a real status change, and `M` flips the *effective* state and
+  persists it (`motion: "system" | "on" | "reduced"`), so a reduced-motion OS no longer prevents
+  the operator from choosing motion. The `d01`–`d08` `reducedMotion: boolean` storage shape
+  migrates (`true` → `"reduced"`, everything else → `"system"`).
+
+### 3. Verification (`tests/e2e/deck-a11y.e2e.ts`, own harness, `captures/…/d09-a11y.json`)
+
+| Question | Result |
+|---|---|
+| no WebGL2 → usable flat deck | notice "3D unavailable…", 0 canvases; board 6 rows, pads 6, workers 2, live window wired (`data-lines` ≥ 1), alerts, time band, dock — no page error |
+| keyboard-only reaches every function | `Output…Log` (8 tabs) by `1`…`8`, close on `Esc`; freeze/resume on `Space`; worker cycling on `]`; expand on `E`; `,`→past, `L`→live; control press on a focused retry button produced `{"kind":"retry","sliceId":"delta"}` and a queued row; `H` help; `D` out and back to the deck with no pointer event |
+| roving mirror | first row tab stop `0`; ArrowDown moves focus and the stop to row 2 (`0`), row 1 becomes `-1` |
+| aria-live mirror | 0 writes for handoff + transcript growth; ≥1 for `running → verifying → done` |
+| reduced motion | `motion: "reduced"` on mount, 0 cues after a status change; `M` → `full`; `M` again → `reduced`, persisted |
+| context loss | synthetic `webglcontextlost` → flat, `contextLost: 1`, selection and freeze preserved, `Retry 3D` → fresh canvas, 3D, state intact |
+| `T` | 4 presses from auto → flat (forced), 5th → 3D again |
+| status by words/glyphs | 6 board + 6 pad + 2 lane + line + station + 6 mirror rows (flat), 2 lanes + line + station + 6 mirror (3D), all carrying words/glyphs |
+
+### 4. The gate exposed a hook bug (fixed here)
+
+`hook.ribbon`/`hook.tiles` had two writers: `applyToScene` published the renderer's *drawn* instance
+counts (from the same `info()` snapshot as `hook.instances`) and the history effect published the
+*window's* bucket count. While a window stayed under `RIBBON_MAX_BARS` the two agreed and the `d01`
+instance identity held by luck; past the cap, the value depended on which effect ran last, and the
+identity failed in one full-file run (3 specs: `instances` 73 against a sum of 110). `hook.ribbon`
+and `hook.tiles` are now the drawn counts, the window's size is `hook.ribbonBuckets`, and
+`deck-history`'s artifact records buckets and drawn bars separately. The model-level hook facts
+(selection, focus, live count, alerts, overflow, digest, node/edge counts) are now published by an
+effect that runs on both surfaces — in flat mode nothing goes through the renderer, so fields that
+only `applyToScene` wrote would have read `null` forever.
+
+### 5. Bundle
+
+| Artifact | d08 | d09 | Δ |
+|---|---|---|---|
+| `assets/Deck-*.js` | 619.99 kB / 161.68 kB gzip | 626.85 kB / 161.67 kB gzip | +6.9 kB / ±0 |
+| `assets/index-*.js` (shell) | 458.02 kB / 138.29 kB gzip | 458.38 kB / 137.02 kB gzip | +0.4 kB |
+| `assets/index-*.css` | 103.18 kB / 17.61 kB gzip | 106.80 kB / 18.13 kB gzip | +3.6 kB / +0.5 kB |
+
+No new mesh, no new draw call, no per-frame work: the flat path creates no canvas and no loop at
+all (the renderer effect is gated on `availability`), and the 3D path is byte-for-byte the same
+scene contract it was.
+
+### 6. Open findings, deliberate choices
+
+1. **The station lane strip is 3D-only.** Flat mode lists workers through `WorkerLanes` (the
+   dashboard's own rows) instead; the deck's focus model stays available through `[`/`]`, the
+   station line and the pad list. Rendering both would say the same thing twice.
+2. **The flat document is one scroll container**: panels flow top-to-bottom (time band, station
+   line, workspace, alerts, live window, selected line + control, help). The e2e asserts zero
+   panel-to-panel overlap and zero deck/footer overlap at 1440×900; the dock becomes the last block
+   rather than a column, because there is no stage to narrow.
+3. **No screen-reader narration of the 3D scene itself** (the roadmap's explicit non-scope): the
+   scene is decorative, and the focus mirror announces the deck's own pointer. A user who wants
+   every worker's line reads the mirror or the pad list.
+4. **`flatRows` is not capped; the aria-live mirror is** (`MIRROR_LIMIT`, remainder stated in
+   words). The visible pad list is the operator's rail replacement, so silently dropping pads there
+   would defeat the slice.
+5. **`H` toggles the HUD and the help panel together**; the help panel is the overlay copy so the
+   same binding works where no HUD exists.
+6. **M10 (five timed tasks) is still owed** — unchanged by this slice; `d03v` remains the real gate.

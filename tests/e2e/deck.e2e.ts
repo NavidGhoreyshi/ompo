@@ -195,9 +195,10 @@ test.describe("deck surface", () => {
     await expect(page.locator(".omp-deck-chip")).toContainText((await readHook(page)).tier);
   });
 
-  test("H opens the budget HUD: cost dimensions and the keymap", async ({ page }) => {
+  test("H opens the budget HUD and the keyboard help panel", async ({ page }) => {
     await gotoDeck(page);
     await expect(page.locator(".omp-deck-panel")).toHaveCount(0);
+    await expect(page.locator(".omp-deck-help")).toHaveCount(0);
     await page.locator(".omp-deck").press("h");
     const panel = page.locator(".omp-deck-panel");
     await expect(panel).toHaveCount(1);
@@ -207,7 +208,13 @@ test.describe("deck surface", () => {
     await expect(panel).toContainText("events");
     await expect(panel).toContainText("long tasks");
     await expect(panel).toContainText("heap");
-    await expect(panel.locator(".omp-deck-keys li")).toHaveCount(DECK_KEYS.length);
+    // `d09`: the keymap is its own panel (in the overlay, so flat mode has it
+    // too) and lists `DECK_KEYS` verbatim — one row per binding.
+    const help = page.locator(".omp-deck-help");
+    await expect(help).toHaveCount(1);
+    await expect(help.locator(".omp-deck-keys li")).toHaveCount(DECK_KEYS.length);
+    await page.locator(".omp-deck").press("h");
+    await expect(page.locator(".omp-deck-help")).toHaveCount(0);
   });
 
   test("ten surface switches leave exactly one canvas and dispose every renderer", async ({ page }) => {
@@ -361,7 +368,21 @@ test.describe("deck rail", () => {
     await page.waitForTimeout(600);
     const hook = await readHook(page);
     console.log(
-      `deck-rail ${JSON.stringify({ nodes: hook.nodes, edges: hook.edges, instances: hook.instances, drawCalls: hook.drawCalls, objects: hook.objects, triangles: hook.triangles, vertices: hook.vertices, pixels: hook.pixels })}`,
+      `deck-rail ${JSON.stringify({
+        nodes: hook.nodes,
+        edges: hook.edges,
+        instances: hook.instances,
+        markers: hook.markers,
+        stationMarks: hook.stationMarks,
+        beacons: hook.beacons,
+        ribbon: hook.ribbon,
+        tiles: hook.tiles,
+        drawCalls: hook.drawCalls,
+        objects: hook.objects,
+        triangles: hook.triangles,
+        vertices: hook.vertices,
+        pixels: hook.pixels,
+      })}`,
     );
     // tests/e2e/serve.ts: 9 slices, 5 `Depends:` edges, 3 alert markers.
     expect(hook.nodes).toBe(9);
@@ -912,9 +933,12 @@ test.describe("deck degraded operation", () => {
     await expect(page.locator("canvas")).toHaveCount(0);
 
     // Degradation removes decoration before information: the station line, the
-    // live workers and the bounded window are DOM, so they survive.
+    // live workers and the bounded window are DOM, so they survive. `d09`: the
+    // flat projection lists workers through the dashboard's own `WorkerLanes`
+    // (the 3D station strip is the scene's list and is not rendered without a
+    // scene).
     await expect(page.locator(".omp-deck-station")).toContainText("longtitle");
-    await expect(page.locator(".omp-deck-lane")).toHaveCount(3);
+    await expect(page.locator(".omp-deck-flatworkers .omp-lane")).toHaveCount(3);
     await expect(page.locator(".omp-deck-live .omp-livefeed")).toBeVisible();
     // The temporal layer is DOM as well (`d07`): the flat path keeps the time
     // axis, and moving through history still works with no canvas at all.

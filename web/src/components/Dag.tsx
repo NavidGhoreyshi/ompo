@@ -7,7 +7,7 @@ import {
   type DagEdge,
 } from "../lib/dag.ts";
 import { shapeForStatus, type StatusShape } from "./icons.tsx";
-import { toneForStatus } from "./StatusBadge.tsx";
+import { toneForStatus } from "../lib/status.ts";
 
 const TONE_STROKE: Record<string, string> = {
   cyan: "var(--omp-cyan)",

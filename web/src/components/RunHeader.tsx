@@ -3,7 +3,7 @@ import { formatElapsed, formatTokens } from "../lib/format.ts";
 import { liveSliceEvent } from "../lib/events.ts";
 import { heroAction, preferredSliceId } from "../lib/selection.ts";
 import { StatusSymbol } from "./icons.tsx";
-import { toneForStatus } from "./StatusBadge.tsx";
+import { toneForStatus } from "../lib/status.ts";
 
 /**
  * Run hero — the Overview's identity band, not telemetry.

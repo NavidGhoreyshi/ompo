@@ -1,6 +1,6 @@
 import type { AgentRow } from "../api.ts";
 import { LockSymbol, StatusSymbol } from "./icons.tsx";
-import { toneForStatus } from "./StatusBadge.tsx";
+import { toneForStatus } from "../lib/status.ts";
 
 /**
  * Worker lanes: one compact row per live agent, sorted by lane, so

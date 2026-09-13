@@ -133,6 +133,7 @@ interface HookView {
   historyActive: number;
   ribbon: number;
   tiles: number;
+  ribbonBuckets: number;
   playing: boolean;
   frames: number;
   sceneWrites: number;
@@ -287,7 +288,8 @@ test.describe("deck temporal layer", () => {
 
     const live = await readHook(page);
     expect(live.historySeq).toBeNull();
-    expect(live.ribbon).toBeGreaterThan(1);
+    expect(live.ribbonBuckets).toBeGreaterThan(1);
+    expect(live.ribbon).toBeGreaterThan(1); // drawn bars, capped at RIBBON_MAX_BARS
     expect(live.tiles).toBe(2);
     await expect(page.locator(".omp-deck-time")).toHaveAttribute("data-history", "live");
     const liveStatuses = await mirrorStatuses(page);
@@ -347,7 +349,8 @@ test.describe("deck temporal layer", () => {
     await expect(page.locator(".omp-deck-time")).toHaveAttribute("data-history", "live");
 
     report.determinism = {
-      ribbonBuckets: live.ribbon,
+      ribbonBuckets: live.ribbonBuckets,
+      ribbonDrawn: live.ribbon,
       walk: routeA.map((entry) => entry.seq),
       routeA: routeA.length,
       routeB: routeA.length,

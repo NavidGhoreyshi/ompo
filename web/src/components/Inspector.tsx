@@ -22,7 +22,7 @@ import OutputView from "./OutputView.tsx";
 import PromptView from "./PromptView.tsx";
 import ReviewView from "./ReviewView.tsx";
 import { StatusSymbol } from "./icons.tsx";
-import { toneForStatus } from "./StatusBadge.tsx";
+import { toneForStatus } from "../lib/status.ts";
 import { Separator } from "./ui/separator.tsx";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "./ui/tabs.tsx";
 import Usage from "./Usage.tsx";

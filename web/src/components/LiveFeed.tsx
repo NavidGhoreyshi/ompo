@@ -2,7 +2,7 @@ import { useEffect, useRef, useState, type CSSProperties } from "react";
 import type { AgentRow, RunEvent, SliceSummary } from "../api.ts";
 import { COMPACT_ROWS, followFromScroll, LANE_LABEL, rawLine, type StreamEntry } from "../lib/stream.ts";
 import { LIVE_TAIL, useLiveStream } from "../lib/useLiveStream.ts";
-import { toneForStatus } from "./StatusBadge.tsx";
+import { toneForStatus } from "../lib/status.ts";
 
 /** Ghost rows live just long enough to be seen leaving. */
 const EXIT_MS = 240;

@@ -1,58 +1,6 @@
 import { StatusSymbol } from "./icons.tsx";
 import { Badge } from "./ui/badge.tsx";
-
-/** Semantic status indicator: symbol + word, never color alone. */
-
-export type Tone = "cyan" | "green" | "amber" | "red" | "muted";
-
-export function toneForStatus(status: string): Tone {
-  switch (status) {
-    case "running":
-    case "verifying":
-    case "active":
-    case "live":
-      return "cyan";
-    case "done":
-    case "passed":
-      return "green";
-    case "failed":
-    case "aborted":
-      return "red";
-    case "blocked-env":
-    case "blocked":
-    case "warning":
-      return "amber";
-    default:
-      return "muted";
-  }
-}
-
-/** Text symbol per status family: status never relies on color alone. */
-export function symbolForStatus(status: string): string {
-  switch (status) {
-    case "done":
-    case "passed":
-      return "✓";
-    case "running":
-    case "verifying":
-    case "active":
-    case "live":
-      return "●";
-    case "failed":
-    case "aborted":
-      return "✕";
-    case "blocked-env":
-    case "blocked":
-    case "warning":
-      return "▲";
-    case "pending":
-      return "○";
-    case "skipped":
-      return "–";
-    default:
-      return "•";
-  }
-}
+import { toneForStatus } from "../lib/status.ts";
 
 const BADGE_BY_TONE = {
   cyan: "info",

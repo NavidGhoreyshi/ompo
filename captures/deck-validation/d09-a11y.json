@@ -1,0 +1,55 @@
+{
+  "runId": "d09-a11y",
+  "port": 4485,
+  "flat": {
+    "reason": "no-webgl2",
+    "counts": {
+      "slices": 6,
+      "workers": 2
+    },
+    "tabs": [
+      "Output",
+      "Diff",
+      "Verify",
+      "Review",
+      "Prompt",
+      "Events",
+      "Usage",
+      "Log"
+    ],
+    "statusBearing": {
+      "board": 6,
+      "pads": 6,
+      "lanes": 2,
+      "line": 1,
+      "station": 1,
+      "mirror": 6
+    },
+    "controlBody": "{\"kind\":\"retry\",\"sliceId\":\"delta\"}"
+  },
+  "mirror": {
+    "afterLogWrites": 0,
+    "afterStatusWrites": 2,
+    "text": "Focused gamma · done · 2 alerts · 1 live worker"
+  },
+  "motion": {
+    "onMount": "reduced",
+    "afterM": "full",
+    "stored": "reduced",
+    "cuesAfterChange": 0
+  },
+  "contextLoss": {
+    "contextLost": 1,
+    "retryMounted": 1
+  },
+  "forcedFlat": {
+    "entered": true,
+    "returned": true
+  },
+  "statusBearing3d": {
+    "lanes": 2,
+    "line": 1,
+    "station": 1,
+    "mirror": 6
+  }
+}

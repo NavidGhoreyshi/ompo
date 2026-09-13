@@ -273,7 +273,7 @@ describe("buildDeckModel: the world does not reflow", () => {
       input({ detail: detail([...BASE.slice(0, 5), slice("f", "failed", ["m", "b"], { reason: "a completely different failure" }), BASE[6]!]) }),
       // Selection and view preferences.
       input({ selected: "e" }),
-      input({ prefs: { tier: "high", reducedMotion: true } }),
+      input({ prefs: { tier: "high", motion: "reduced", forced: null } }),
       input({ live: false }),
     ];
 
@@ -289,7 +289,7 @@ describe("buildDeckModel: the world does not reflow", () => {
     const base = buildDeckModel(input());
     expect(buildDeckModel(input({ agents: [] })).digest).toBe(base.digest);
     expect(buildDeckModel(input({ events: Array.from({ length: 200 }, (_, i) => event(i, "c")) })).digest).toBe(base.digest);
-    expect(buildDeckModel(input({ prefs: { tier: "minimal", reducedMotion: true } })).digest).toBe(base.digest);
+    expect(buildDeckModel(input({ prefs: { tier: "minimal", motion: "reduced", forced: null } })).digest).toBe(base.digest);
     // Selection and status are scene-visible, so they must change it.
     expect(buildDeckModel(input({ selected: "e" })).digest).not.toBe(base.digest);
     expect(buildDeckModel(input({ detail: detail([...BASE.slice(0, 2), slice("c", "verifying", ["b"]), ...BASE.slice(3)]) })).digest).not.toBe(base.digest);

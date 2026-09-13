@@ -4134,7 +4134,7 @@ button[data-slot="select-trigger"] {
 
 .omp-deck-mirror button {
   display: grid;
-  grid-template-columns: 14ch 11ch minmax(0, 1fr);
+  grid-template-columns: 2ch 14ch 11ch minmax(0, 1fr);
   gap: 8px;
   text-align: left;
   font: inherit;
@@ -4162,6 +4162,10 @@ button[data-slot="select-trigger"] {
 
 .omp-deck-mirror-id {
   color: var(--omp-text);
+}
+
+.omp-deck-mirror-glyph {
+  color: var(--omp-muted);
 }
 
 .omp-deck-mirror-status {
@@ -4851,18 +4855,27 @@ button[data-slot="select-trigger"] {
   background: var(--omp-panel);
 }
 
-/* Flat mode (`d03` for the notice, `d09` for the full projection): no scene, so
- * the notice is a banner and the DOM layer keeps the answers. */
+/* Flat mode (`d09`): a document, not a scene. The notice states why; the same
+ * panels the 3D surface anchors to corners then flow top-to-bottom — time
+ * band, station line, the flat workspace (`FlatDeck`: board, pad list, worker
+ * lanes), alerts, live window, the selection's control bar — and the dock is
+ * the last block instead of a right-hand column. Nothing can overlap anything
+ * by construction: there is no canvas to anchor to. */
 .omp-deck-flat {
   display: flex;
   flex-direction: column;
+  gap: 8px;
+  padding: 10px;
+  overflow-y: auto;
+  overflow-x: hidden;
 }
 
 .omp-deck-flat .omp-deck-notice {
   flex: none;
-  margin: 10px;
+  margin: 0;
   padding: 8px 12px;
   flex-direction: row;
+  flex-wrap: wrap;
   justify-content: space-between;
   align-items: center;
   gap: 12px;
@@ -4872,21 +4885,236 @@ button[data-slot="select-trigger"] {
 
 .omp-deck-flat .omp-deck-notice p {
   margin: 0;
+  flex: 1 1 340px;
 }
 
-/* The flat path has no HUD, and its own 66 px offset for the notice; the
- * temporal band keeps the station line and the lane strip below it (d09 builds
- * the real flat layout on this contract). */
-.omp-deck-flat .omp-deck-time {
-  top: 66px;
+/* Why flat, with the device detail — a long renderer string stays one line. */
+.omp-deck-flat .omp-deck-notice-device {
+  min-width: 0;
+  max-width: 300px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--omp-muted);
+  font-size: 11px;
 }
 
-.omp-deck-flat .omp-deck-station {
-  top: calc(66px + var(--omp-deck-time-h));
+/* Panels that anchor to a corner in 3D become ordinary blocks in the flow. */
+.omp-deck-flat .omp-deck-time,
+.omp-deck-flat .omp-deck-station,
+.omp-deck-flat .omp-deck-live,
+.omp-deck-flat .omp-deck-alertcol,
+.omp-deck-flat .omp-deck-linewrap {
+  position: static;
+  width: auto;
+  max-width: none;
+  max-height: none;
 }
 
-.omp-deck-flat .omp-deck-lanes {
-  top: calc(66px + var(--omp-deck-time-h));
+.omp-deck-flat .omp-deck-alertcol {
+  order: 4;
+}
+
+.omp-deck-flat .omp-deck-live {
+  order: 3;
+  min-height: 220px;
+  max-height: 340px;
+}
+
+.omp-deck-flat .omp-deck-linewrap {
+  order: 5;
+  align-items: flex-start;
+}
+
+/* The right-hand column is a corner device; in the flow its two panels are
+ * ordinary items again. */
+.omp-deck-flat .omp-deck-right {
+  display: contents;
+}
+
+/* No camera means no off-screen set; a stale marker must not float over a
+ * document. */
+.omp-deck-flat .omp-deck-edges {
+  display: none;
+}
+
+/* The dock is a column in 3D (the stage narrows beside it); flat mode has no
+ * stage, so it is the last block of the document instead. */
+.omp-deck-flat .omp-deck-dock {
+  position: static;
+  width: auto;
+  max-height: none;
+  border: 1px solid var(--omp-border);
+  border-radius: var(--omp-radius);
+}
+
+/* ---------- the flat workspace (d09) ---------- */
+.omp-deck-flatgrid {
+  order: 2;
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(360px, 1fr));
+  gap: 10px;
+  align-items: start;
+  min-width: 0;
+}
+
+.omp-deck-flatboard,
+.omp-deck-flatpads,
+.omp-deck-flatworkers {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.omp-deck-flatnote {
+  margin: 0;
+  color: var(--omp-muted);
+  font-family: var(--omp-mono);
+  font-size: 11px;
+}
+
+/* The pads list: the rail's own information set as rows, one tab stop (the
+ * hooks in `roving.ts` own the roving), every row a full sentence in `title`. */
+.omp-deck-pads {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  display: grid;
+  gap: 2px;
+  max-height: 460px;
+  overflow-y: auto;
+}
+
+.omp-deck-padrow {
+  width: 100%;
+  display: grid;
+  grid-template-columns: 2ch 13ch minmax(0, 1fr) auto;
+  grid-template-areas:
+    "glyph id title status"
+    "glyph meta meta meta"
+    "glyph flags flags flags";
+  gap: 2px 8px;
+  align-items: baseline;
+  text-align: left;
+  font: inherit;
+  font-family: var(--omp-mono);
+  font-size: 11.5px;
+  color: var(--omp-secondary);
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  padding: 3px 7px;
+  cursor: pointer;
+}
+
+.omp-deck-padrow:hover,
+.omp-deck-padrow:focus-visible {
+  color: var(--omp-text);
+  background: var(--omp-panel-2);
+  border-color: var(--omp-border);
+}
+
+.omp-deck-padrow[data-selected="true"] {
+  color: var(--omp-text);
+  border-color: var(--omp-cyan);
+}
+
+.omp-deck-padglyph {
+  grid-area: glyph;
+  color: var(--omp-muted);
+}
+
+.omp-deck-padrow[data-live="true"] .omp-deck-padglyph {
+  color: var(--omp-cyan);
+}
+
+.omp-deck-padrow[data-alert="failed"] .omp-deck-padglyph {
+  color: var(--omp-red);
+}
+
+.omp-deck-padrow[data-alert="blocked-env"] .omp-deck-padglyph {
+  color: var(--omp-amber);
+}
+
+.omp-deck-padid {
+  grid-area: id;
+  color: var(--omp-text);
+}
+
+.omp-deck-padrow[data-focused="true"] .omp-deck-padid {
+  color: var(--omp-cyan);
+}
+
+.omp-deck-padtitle {
+  grid-area: title;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.omp-deck-padstatus {
+  grid-area: status;
+  color: var(--omp-muted);
+}
+
+.omp-deck-padmeta {
+  grid-area: meta;
+  color: var(--omp-muted);
+  font-size: 11px;
+}
+
+.omp-deck-padflags {
+  grid-area: flags;
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+  font-size: 11px;
+}
+
+.omp-deck-padlive {
+  color: var(--omp-cyan);
+}
+
+.omp-deck-padalert {
+  color: var(--omp-amber);
+}
+
+.omp-deck-padrow[data-alert="failed"] .omp-deck-padalert {
+  color: var(--omp-red);
+}
+
+/* The keyboard help (`d09`): a panel over the deck on the 3D surface, a block
+ * in the flat document. It lists `DECK_KEYS` verbatim with the existing
+ * `.omp-deck-keys` styles. */
+.omp-deck-help {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  transform: translate(-50%, -50%);
+  z-index: 6;
+  width: min(560px, calc(100% - 40px));
+  max-height: min(76%, 620px);
+  overflow-y: auto;
+  padding: 10px 12px;
+  border: 1px solid var(--omp-border-strong);
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--omp-panel) 96%, transparent);
+  pointer-events: auto;
+  font-family: var(--omp-mono);
+  font-size: 11.5px;
+}
+
+.omp-deck-help-head {
+  margin: 0 0 8px;
+  color: var(--omp-secondary);
+}
+
+.omp-deck-flat .omp-deck-help {
+  position: static;
+  transform: none;
+  width: auto;
+  max-height: none;
 }
 
 .omp-deck-actions {

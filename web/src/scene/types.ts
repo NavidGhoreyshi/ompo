@@ -14,24 +14,42 @@ import type { QualityTier } from "./tier.ts";
 
 export type { QualityTier } from "./tier.ts";
 
+/**
+ * The operator's motion choice (`d09`). `"system"` follows
+ * `prefers-reduced-motion`; `"reduced"` and `"on"` are explicit and survive a
+ * reload — `M` must be able to turn motion *back on* on a machine whose OS
+ * asks for reduced motion, which a boolean "override" cannot express.
+ */
+export type DeckMotion = "system" | "on" | "reduced";
+
 /** Client-side deck preferences. View state only — never domain state. */
 export interface DeckPrefs {
   /** `"auto"` classifies from the WebGL renderer string; a tier pins it. */
   tier: "auto" | QualityTier;
-  /** Deck-level override; the OS preference is honoured regardless. */
-  reducedMotion: boolean;
+  /** Deck-level motion choice; the OS preference is the default (`"system"`). */
+  motion: DeckMotion;
+  /**
+   * Explicit availability choice (`T` cycles flat, `d09`): `"flat"` renders
+   * the flat projection even where WebGL works; `"3d"` is the retry after a
+   * lost context. `null` lets capability decide.
+   */
+  forced: "3d" | "flat" | null;
 }
 
 export const DECK_PREFS_KEY = "ompo.deck.prefs";
 
-export const DEFAULT_DECK_PREFS: DeckPrefs = { tier: "auto", reducedMotion: false };
+export const DEFAULT_DECK_PREFS: DeckPrefs = { tier: "auto", motion: "system", forced: null };
 
 const TIERS: QualityTier[] = ["minimal", "standard", "high"];
+const MOTIONS: DeckMotion[] = ["system", "on", "reduced"];
 
 /**
  * Parsed at the storage boundary: unreadable or malformed preferences degrade
  * to the defaults rather than throwing (private mode, cleared storage, a
- * hand-edited value).
+ * hand-edited value). The `d01`–`d08` shape stored `reducedMotion: boolean`;
+ * `true` migrates to `motion: "reduced"`, everything else to `"system"` — an
+ * absent/`false` legacy flag never claimed an explicit motion choice, so the
+ * OS preference keeps applying to it.
  */
 export function parseDeckPrefs(raw: string | null): DeckPrefs {
   if (!raw) return DEFAULT_DECK_PREFS;
@@ -43,11 +61,19 @@ export function parseDeckPrefs(raw: string | null): DeckPrefs {
   }
   if (typeof value !== "object" || value === null) return DEFAULT_DECK_PREFS;
   const tierValue = "tier" in value ? value.tier : undefined;
-  const motionValue = "reducedMotion" in value ? value.reducedMotion : undefined;
+  const motionValue = "motion" in value ? value.motion : undefined;
+  const legacyMotion = "reducedMotion" in value ? value.reducedMotion : undefined;
+  const forcedValue = "forced" in value ? value.forced : undefined;
   const tier = tierValue === "auto" || (typeof tierValue === "string" && TIERS.includes(tierValue as QualityTier))
     ? (tierValue as DeckPrefs["tier"])
     : DEFAULT_DECK_PREFS.tier;
-  return { tier, reducedMotion: motionValue === true };
+  const motion = typeof motionValue === "string" && MOTIONS.includes(motionValue as DeckMotion)
+    ? (motionValue as DeckMotion)
+    : legacyMotion === true
+      ? "reduced"
+      : DEFAULT_DECK_PREFS.motion;
+  const forced = forcedValue === "flat" || forcedValue === "3d" ? forcedValue : DEFAULT_DECK_PREFS.forced;
+  return { tier, motion, forced };
 }
 
 /** Orbital camera state (roadmap §D.4). Excluded from the scene model. */
@@ -553,7 +579,7 @@ export interface DeckKey {
 }
 
 export const DECK_KEYS: DeckKey[] = [
-  { key: "T", codes: ["t"], effect: "Cycle quality tier (auto → minimal → standard → high)", slice: "d01" },
+  { key: "T", codes: ["t"], effect: "Cycle quality tier (auto → minimal → standard → high → flat)", slice: "d01" },
   { key: "H / ?", codes: ["h", "?"], effect: "Keymap and budget HUD", slice: "d01" },
   { key: "D", codes: ["d"], effect: "Switch to the dashboard surface", slice: "d01" },
   { key: "F", codes: ["f"], effect: "Frame the selection (pin it)", slice: "d03" },
@@ -576,6 +602,12 @@ export const DECK_KEYS: DeckKey[] = [
 export interface DeckDebugHook {
   tier: QualityTier;
   tierSource: "auto" | "pinned";
+  /** Which projection is on screen (`d09`): the WebGL scene, or the flat deck. */
+  availability: "3d" | "flat";
+  /** Why the flat projection is up; `null` while the scene renders (`d09`). */
+  flatReason: "no-webgl2" | "context-lost" | "create-failed" | "forced" | null;
+  /** `webglcontextlost` events the deck handled this page's life (`d09`). */
+  contextLost: number;
   /** Mounts and unmounts across the page's lifetime, so leaks are visible. */
   mounted: number;
   disposed: number;
@@ -636,14 +668,19 @@ export interface DeckDebugHook {
   dockTab: string;
   /**
    * The temporal layer (`d07`): the history cursor (`null` while live), the
-   * bucket it sits in, the ribbon's size, the wall's tiles, and whether the
-   * playback timer is running. All view state — none of it reaches the store.
+   * bucket it sits in, the ribbon bars and wall tiles **drawn** (the renderer's
+   * own counters, from the same snapshot as `instances`), and whether the
+   * playback timer is running. The window's bucket count — which the drawn
+   * bars are capped against (`RIBBON_MAX_BARS`) — is `ribbonBuckets`. All view
+   * state; none of it reaches the store.
    */
   historySeq: number | null;
   historyBucket: number;
   historyActive: number;
   ribbon: number;
   tiles: number;
+  /** Buckets in the event window (≤ `RIBBON_MAX_BUCKETS`); drawn bars may be fewer. */
+  ribbonBuckets: number;
   playing: boolean;
   /** Camera state last written to the renderer (view state, for the specs). */
   camera: DeckCamera;

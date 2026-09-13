@@ -3,7 +3,7 @@
  *
  * Rule: status is symbol + word, never color or shape alone — every glyph
  * below renders `aria-hidden` next to a visible word (or sr-only text).
- * Shapes mirror the `symbolForStatus` families in StatusBadge.tsx so the
+ * Shapes mirror the `symbolForStatus` families in `lib/status.ts` so the
  * board, lanes, hero, trace, badges, and planner badges read as one system.
  * Colors come from the parent (`currentColor` + existing `data-tone` /
  * `data-lane` / `data-state` CSS) — this file owns shape only.
