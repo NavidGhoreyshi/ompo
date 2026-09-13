@@ -3862,6 +3862,22 @@ button[data-slot="select-trigger"] {
   color: var(--omp-amber);
 }
 
+/* The auto-downgrade chip (`d10`): a one-line explanation beside the tier,
+   dismissible, never modal. */
+.omp-deck-downgrade {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  white-space: nowrap;
+}
+
+.omp-deck-downgrade .omp-deck-downgrade-x {
+  margin-left: 0;
+  padding: 1px 6px;
+  font-size: 12px;
+  line-height: 1;
+}
+
 .omp-deck-metric {
   color: var(--omp-secondary);
   white-space: nowrap;

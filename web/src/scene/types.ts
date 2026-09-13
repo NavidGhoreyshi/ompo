@@ -600,8 +600,21 @@ export const DECK_KEYS: DeckKey[] = [
 
 /** The debug hook the e2e suite and `d10` assert against. Not public API. */
 export interface DeckDebugHook {
+  /** The **effective** tier: auto-classified, auto-demoted or pinned (`d10`). */
   tier: QualityTier;
+  /**
+   * `"auto"` while the tier is the deck's own decision (classification or an
+   * automatic demotion); `"pinned"` only when the operator's `T` chose it.
+   */
   tierSource: "auto" | "pinned";
+  /** The automatic demotion in effect, or `null` (`d10`). */
+  autoTier: QualityTier | null;
+  /** True once an explicit operator choice has taken the tier back (`d10`). */
+  autoStopped: boolean;
+  /** Automatic demotions this page's life; at most `AUTO_DOWNGRADE_LIMIT`. */
+  downgrades: number;
+  /** Median frame cost of the window that triggered the last demotion, ms. */
+  downgradeMedianMs: number;
   /** Which projection is on screen (`d09`): the WebGL scene, or the flat deck. */
   availability: "3d" | "flat";
   /** Why the flat projection is up; `null` while the scene renders (`d09`). */
@@ -618,6 +631,14 @@ export interface DeckDebugHook {
   triangles: number;
   vertices: number;
   pixels: number;
+  /**
+   * `renderer.info.memory` — live GPU resources in the current context
+   * (`d10`'s disposal audit: 20 mount/unmount cycles must return these to the
+   * first mount's values, and a renderer that leaks shows up as growth).
+   */
+  geometries: number;
+  textures: number;
+  programs: number;
   /** Model counters, written when a model is applied. */
   nodes: number;
   edges: number;

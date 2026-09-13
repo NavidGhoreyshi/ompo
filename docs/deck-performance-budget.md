@@ -3,7 +3,8 @@
 What a deck frame is allowed to spend, measured on the machine that runs it. This document and
 `web/src/scene/tier.ts` are two views of one table: `tests/deck-perf.test.ts` parses the tier
 table below and fails if a number here and a number there drift apart. Slice `d00` of
-`docs/desktop-3d-roadmap.md` owns both; `d10` enforces the budget with a harness.
+`docs/desktop-3d-roadmap.md` owns both; `d10` enforces the budget with `scripts/deck-perf.ts`
+(§5) and a runtime controller that demotes a tier the machine cannot sustain.
 
 - Raw artifacts: `captures/deck-probe-headless.json`, `captures/deck-probe-headless-2.json`,
   `captures/deck-probe-headed.json` (two independent headless runs + one headed run, taken
@@ -141,11 +142,18 @@ that covers a pixel, i.e. the sum over the scene of the area each pass rasterize
 
 ### 4.2 Tier table (frozen; parsed by `tests/deck-perf.test.ts`)
 
-| tier | resolutionScale | maxFps | antialias | maxDrawCalls | maxStations | maxBeacons | ambient |
-|---|---|---|---|---|---|---|---|
-| minimal | 0.5 | 30 | false | 24 | 8 | 32 | false |
-| standard | 1 | 60 | false | 48 | 16 | 64 | false |
-| high | 1 | 60 | true | 96 | 32 | 128 | true |
+| tier | resolutionScale | maxFps | antialias | maxDrawCalls | maxStations | maxBeacons | ambient | frameBudgetMs | frameP95Ms |
+|---|---|---|---|---|---|---|---|---|---|
+| minimal | 0.5 | 30 | false | 24 | 8 | 32 | false | 33 | 45 |
+| standard | 1 | 60 | false | 48 | 16 | 64 | false | 16 | 25 |
+| high | 1 | 60 | true | 96 | 32 | 128 | true | 12 | 20 |
+
+The two frame columns are the **enforced** budgets: one rendered frame's median cost (`frameBudgetMs`) and
+its p95 (`frameP95Ms`), in the deck's own instrument (the time spent inside `render()`), which is the
+number the HUD shows, the tier controller reads and `scripts/deck-perf.ts` gates (§5). They are the
+`d00`/M2 gate numbers extended to every tier by the same 1.5× rule: `minimal` p50 ≤ 33 ms / p95 ≤ 45 ms
+is measured, `standard` and `high` scale from it (60 fps ⇒ 16 ms, and one tier of headroom more ⇒ 12 ms).
+A tier's `maxFps` is a *cap* on scheduling; the frame budget is what a frame may spend inside that slot.
 
 What the caps cost on this machine, at the model above:
 
@@ -180,8 +188,8 @@ for the `high` tier (`STATION_POOL`).
 4. **Tier selection is not a guess:** `classifyRenderer` returns `minimal` for any software string,
    `standard` for hardware (and for an unknown/empty string), and **never** `high` — `high` is only
    ever an explicit operator choice (`T` in `d01`, persisted). A machine that classifies `standard`
-   but performs like this one is `d10`'s runtime controller's problem: it demotes on measured
-   frame cost, and this document is why that controller exists (CP-6).
+   but performs like this one is the runtime controller's problem (`d10`, §5.3): it demotes on
+   measured frame cost, and this document is why that controller exists (CP-6).
 5. **No WebGL2 is a legitimate outcome, not an error.** The probe exits 0 with `"webgl2": false`;
    the deck must take the `d09` flat path there rather than attempting a scene.
 6. **Re-measure when:** the target machine, GPU driver, WSLg/WSL kernel or Chromium major version
@@ -196,6 +204,74 @@ for the `high` tier (`STATION_POOL`).
 Compositing and display of the final frame, texture upload, shader compilation, DOM/React cost of
 the overlay, SSE/poll latency and event-to-screen latency. Those are measured separately by the
 gate (`d03v`, M4/M5/M13) and enforced by `d10`; this document is only the renderer's allowance.
+
+## 5. Enforcement (`d10`)
+
+### 5.1 The harness
+
+`bun scripts/deck-perf.ts` (add `--json` for machine output, `--tier minimal|standard|high` to pin a
+tier, `--frames N` to change the window, `--headed` for a real window) builds a fixture run through
+the store API, serves it from the embedded bundle, loads `?surface=deck` in Playwright chromium and
+drives the four activities the budget names — status churn (claim → finish → fail → retry on a
+rolling slice), transcript growth, worker focus switching and camera moves — for `--frames`
+rendered frames per tier. It then samples the deck's own instrument (`frameMs`, the time spent
+inside `render()`) and the `renderer.info` counters, waits for the scene to settle, and requires
+**zero frames** over a 2 s idle window.
+
+Failure thresholds (exit 1, one line per failed check): `frameMs.p50 ≤ frameBudgetMs`,
+`frameMs.p95 ≤ frameP95Ms`, `drawCalls ≤ maxDrawCalls`, no full-screen layers, `stations ≤
+maxStations`, beacons within the tier's ring pool, `renderer.info.memory` counters constant across
+the window, zero idle frames, and at most one request to the event stream (R9: the deck must not
+open a second stream). A window that cannot reach `--frames` fails; so does a window in which the
+deck demoted itself mid-measurement — its two halves would describe two tiers.
+
+### 5.2 Measured (2026-09-13, this machine; `--frames 300`)
+
+| tier | requested | frames | p50 ms | p95 ms | worst ms | draw calls | objects | fps / cap | idle frames |
+|---|---|---|---|---|---|---|---|---|---|
+| minimal | auto | 308 | 0.5 | 1.7 | 4.7 | 10 | 62 | 25.5 / 30 | 0 |
+| standard | pinned | 326 | 0.7 | 1.7 | 7.4 | 10 | 64 | 32.6 / 60 | 0 |
+| high | pinned | 319 | 0.7 | 2.6 | 13.1 | 10 | 64 | 19.2 / 60 | 0 |
+
+Every tier exits 0: the pinned frame budgets are met with more than an order of magnitude of
+headroom, because the deck issues almost no fill — ten draw calls, `fullScreenLayers: 0`,
+`shadedPixels` 24 356 against a 158 238-pixel backing store — and SwiftShader's rasterisation is
+asynchronous, so it does not appear in `render()`'s duration at all. `geometries`, `textures` and
+`programs` were constant across every window (10 / 0 / 4), the event stream was opened exactly once,
+and the settled window rendered nothing in all three runs.
+
+**The deviation is the interval, not the work.** At `high` (MSAA on a software rasterizer) the
+deck's own interval median is 19.2 fps against the tier's 60 fps cap, and at `minimal` 25.5 against
+30: the rasteriser, not the scene, is the limit. The pinned budgets gate frame *work* (the M2
+definition), so the controller does not fire on this machine, and the harness reports the interval
+alongside the budget rather than hiding it. A future slice that wants a raster-bound demotion rule
+must add a *cap-relative* interval threshold (an interval test against `1000/maxFps` cannot use
+these budgets — the cap alone would look over budget at `standard` and `high`); that is a new
+signal, not a retune of this table.
+
+### 5.3 Auto-downgrade
+
+`createTierController` in `web/src/scene/tier.ts` is the feedback loop. The deck feeds it every
+rendered frame's cost; a **full 60-frame window whose median exceeds the tier's `frameBudgetMs`**
+demotes one step (`high → standard → minimal`), at most twice per arming, never upward and never
+below `minimal`. The demotion is applied on a frame with no cue and no camera flight in flight —
+the resize never lands inside an animation — and the HUD then shows one dismissible chip
+("downgraded to minimal — 41 ms/frame"); `window.__ompoDeck` records `autoTier`, `downgrades` and
+`downgradeMedianMs`, and the effective tier in the HUD is the demoted one.
+
+An explicit `T` press is the operator's word: it clears the automatic tier, stops the controller for
+the session, and the cycle continues from the tier that is on screen (landing back on `auto` re-arms
+the guard). A tier pinned from storage is where the deck *starts* — the controller may still demote
+it, the chip is the explanation, and `T` takes it back. On this machine the controller has never
+fired during the harness or the e2e runs, for the reason §5.2 records.
+
+### 5.4 Disposal audit
+
+`tests/e2e/deck.e2e.ts` switches surfaces 20 times and asserts that every renderer is disposed
+(`mounted - disposed ≤ 1`), that one canvas remains, and that the mounted renderer's
+`renderer.info.memory` counters (`geometries`, `textures`, `programs`) come back to the first
+mount's values. `renderer.dispose()` releases every geometry, material and instance buffer the
+renderer created, then calls `forceContextLoss()`; no other module owns GPU state.
 
 [INFERENCE] Extrapolation beyond the measured range (e.g. 2× or 4× the slice count) is a
 prediction from the cost model, not a measurement — the model is linear in pixels and objects and

@@ -35,7 +35,7 @@ import { stationCountLabel } from "./lanes.ts";
 import { createFrameLoop, type FrameLoop } from "./loop.ts";
 import { createDeckRenderer, probeRendererString, type DeckRenderer } from "./renderer.ts";
 import { instrument } from "./instrument.ts";
-import { classifyRenderer, TIER_BUDGETS, type QualityTier } from "./tier.ts";
+import { classifyRenderer, createTierController, TIER_BUDGETS, type QualityTier, type TierController, type TierDowngrade } from "./tier.ts";
 import {
   DECK_PREFS_KEY,
   DEFAULT_CAMERA,
@@ -204,6 +204,10 @@ function deckHook(): DeckDebugHook {
     page.__ompoDeck = {
       tier: "standard",
       tierSource: "auto",
+      autoTier: null,
+      autoStopped: false,
+      downgrades: 0,
+      downgradeMedianMs: 0,
       availability: "3d",
       flatReason: null,
       contextLost: 0,
@@ -215,6 +219,9 @@ function deckHook(): DeckDebugHook {
       triangles: 0,
       vertices: 0,
       pixels: 0,
+      geometries: 0,
+      textures: 0,
+      programs: 0,
       nodes: 0,
       edges: 0,
       instances: 0,
@@ -345,8 +352,53 @@ export default function Deck({
 
   // One probe per mount: the string is what `classifyRenderer` was measured on.
   const rendererString = useMemo(() => probeRendererString(), []);
-  const tier: QualityTier = prefs.tier === "auto" ? (rendererString === null ? "standard" : classifyRenderer(rendererString)) : prefs.tier;
+  /**
+   * The automatic tier's feedback loop (`d10`). `autoTier` is the demotion the
+   * controller issued, `autoStopped` is the operator's explicit choice that
+   * ends it, and the notice is the one-shot HUD chip. All three are session
+   * state; the tier the operator owns is `prefs.tier`.
+   */
+  const [autoTier, setAutoTier] = useState<QualityTier | null>(null);
+  const [autoStopped, setAutoStopped] = useState(false);
+  const [downgradeNotice, setDowngradeNotice] = useState<TierDowngrade | null>(null);
+  const [noticeDismissed, setNoticeDismissed] = useState(false);
+  /** The tier before any automatic demotion: classification or the pin. */
+  const baseTier: QualityTier =
+    prefs.tier === "auto" ? (rendererString === null ? "standard" : classifyRenderer(rendererString)) : prefs.tier;
+  /** The tier on screen: an automatic demotion outranks its source. */
+  const tier: QualityTier = autoTier ?? baseTier;
   const budget = TIER_BUDGETS[tier];
+  const tierSource: "auto" | "pinned" = autoTier !== null || prefs.tier === "auto" ? "auto" : "pinned";
+  /**
+   * One controller per arming, created from the source tier. It is *not*
+   * re-created when it demotes (that would reset its two-step allowance and
+   * re-arm it at its own output); an explicit `T` replaces or stops it.
+   */
+  const controllerRef = useRef<TierController | null>(null);
+  const downgradeCountRef = useRef(0);
+  const pendingDowngradeRef = useRef<TierDowngrade | null>(null);
+  useEffect(() => {
+    controllerRef.current = autoStopped ? null : createTierController(baseTier);
+  }, [baseTier, autoStopped]);
+  /**
+   * Feed one frame's render cost to the controller (`d10`). A demotion is
+   * only *recorded* here: it is applied on a frame with no tween or cue in
+   * flight, so the operator never sees the tier change land inside an
+   * animation.
+   */
+  const observeFrameCost = useCallback((renderMs: number): void => {
+    const downgrade = controllerRef.current?.observe(renderMs) ?? null;
+    if (downgrade !== null) pendingDowngradeRef.current = downgrade;
+  }, []);
+  const applyPendingDowngrade = useCallback((): void => {
+    const downgrade = pendingDowngradeRef.current;
+    if (downgrade === null) return;
+    pendingDowngradeRef.current = null;
+    downgradeCountRef.current++;
+    setAutoTier(downgrade.to);
+    setDowngradeNotice(downgrade);
+    deckHook().downgradeMedianMs = downgrade.medianMs;
+  }, []);
   const systemReducedMotion = useMemo(
     () => typeof window.matchMedia === "function" && window.matchMedia("(prefers-reduced-motion: reduce)").matches,
     [],
@@ -769,13 +821,18 @@ export default function Deck({
       }
       const started = performance.now();
       const stats = active.render();
-      instrument.recordFrame(performance.now() - started);
+      const renderMs = performance.now() - started;
+      instrument.recordFrame(renderMs);
+      observeFrameCost(renderMs);
       hook.frames++;
       hook.drawCalls = stats.drawCalls;
       hook.objects = stats.objects;
       hook.triangles = stats.triangles;
       hook.vertices = stats.vertices;
       hook.pixels = stats.pixels;
+      hook.geometries = stats.geometries;
+      hook.textures = stats.textures;
+      hook.programs = stats.programs;
       hook.tweens = stats.tweens;
       hook.animatedEntities = stats.animatedEntities;
       hook.beacons = stats.beacons;
@@ -784,6 +841,11 @@ export default function Deck({
       if (sceneStagePendingRef.current) {
         sceneStagePendingRef.current = false;
         instrument.noteStage("scene");
+      }
+      // A demotion waits for a settled scene — no cue, no camera flight — so
+      // the tier change (a canvas resize) never lands inside an animation.
+      if (pendingDowngradeRef.current !== null && !active.animating() && tweenRef.current === null) {
+        applyPendingDowngrade();
       }
     };
     const loop = createFrameLoop({
@@ -816,8 +878,6 @@ export default function Deck({
     };
 
     hook.mounted++;
-    hook.tier = tier;
-    hook.tierSource = prefs.tier === "auto" ? "auto" : "pinned";
     instrument.setTier(tier);
     instrument.setSources({ renderer: () => renderer.info(), loop: () => loop.stats() });
     instrument.start();
@@ -830,6 +890,7 @@ export default function Deck({
       renderer.dispose();
       rendererRef.current = null;
       loopRef.current = null;
+      pendingDowngradeRef.current = null;
       hook.disposed++;
       hook.screenPosition = null;
       hook.offScreen = [];
@@ -839,6 +900,19 @@ export default function Deck({
     // `availability` is in here so switching to flat (a lost context, `T`)
     // disposes the renderer, and returning to 3D builds one on the fresh canvas.
   }, [availability, ready, rendererString, contextKey]);
+
+  // The tier, where it came from, and the automatic-demotion record (`d10`).
+  // One writer for all of it: the renderer lifecycle above and the parameter
+  // effect below publish neither — two writers on one hook field made the
+  // `d01` instance identity flake (`d09`), and this is the same trap.
+  useEffect(() => {
+    const hook = deckHook();
+    hook.tier = tier;
+    hook.tierSource = tierSource;
+    hook.autoTier = autoTier;
+    hook.autoStopped = autoStopped;
+    hook.downgrades = downgradeCountRef.current;
+  }, [tier, tierSource, autoTier, autoStopped]);
 
   // Model changes: rewrite the rail's buffers (in place; the renderer diffs on
   // the digest) and ask for one frame. An unchanged digest — an event, a log
@@ -1021,11 +1095,8 @@ export default function Deck({
     loopRef.current?.setMaxFps(budget.maxFps);
     loopRef.current?.request();
     instrument.setTier(tier);
-    const hook = deckHook();
-    hook.tier = tier;
-    hook.tierSource = prefs.tier === "auto" ? "auto" : "pinned";
     setReadout((current) => (current ? { ...current, pixels: renderer.info().pixels } : current));
-  }, [tier, prefs.tier, budget.maxFps]);
+  }, [tier, budget.maxFps]);
 
   // HUD: React state at HUD cadence, never per frame. The forced layout read is
   // the deck's DOM/layout cost sample.
@@ -1424,10 +1495,15 @@ export default function Deck({
         return;
       }
       if (key === "t") {
-        // The cycle includes `flat` (`d09`): an operator on a good GPU can pin
-        // the flat projection for a smaller window, and one more press returns
-        // to the automatic tier.
-        const next = nextDeckMode(deckMode(prefs));
+        // The cycle includes `flat` (`d09`) and starts from the tier actually
+        // on screen, so a tier the deck demoted itself to is where the operator
+        // picks up (`d10`). The press is an explicit choice: it takes the tier
+        // back from the controller for the session — landing on `auto` hands
+        // the choice back and re-arms the guard.
+        const next = nextDeckMode(autoTier ?? deckMode(prefs));
+        setAutoTier(null);
+        setAutoStopped(next !== "auto");
+        controllerRef.current?.stop();
         const updated: DeckPrefs =
           next === "flat" ? { ...prefs, forced: "flat" } : { ...prefs, forced: null, tier: next };
         setPrefs(updated);
@@ -1508,6 +1584,7 @@ export default function Deck({
       event.preventDefault();
     },
     [
+      autoTier,
       closeDockPanel,
       detail,
       dispatchCamera,
@@ -1725,12 +1802,28 @@ export default function Deck({
       {dockPanel}
       <div className="omp-deck-hud" ref={hudRef}>
         <div className="omp-deck-row">
-          <span className="omp-deck-chip" data-tier={tier}>
+          <span className="omp-deck-chip" data-tier={tier} data-tier-source={tierSource}>
             {tier}
-            {prefs.tier === "auto" ? " · auto" : " · pinned"}
+            {tierSource === "auto" ? " · auto" : " · pinned"}
           </span>
+          {downgradeNotice !== null && !noticeDismissed && (
+            <span className="omp-deck-warn omp-deck-downgrade" role="status" data-downgrade-to={downgradeNotice.to}>
+              downgraded to {downgradeNotice.to} — {Math.round(downgradeNotice.medianMs)} ms/frame
+              <button
+                type="button"
+                className="omp-deck-button omp-deck-downgrade-x"
+                aria-label="Dismiss the downgrade notice"
+                onClick={() => setNoticeDismissed(true)}
+              >
+                ×
+              </button>
+            </span>
+          )}
           {tier === "minimal" && <span className="omp-deck-warn">software renderer detected</span>}
           <span className="omp-deck-metric">{readout ? `${readout.fps.toFixed(0)} fps` : "— fps"}</span>
+          <span className="omp-deck-metric" data-fps-cap={budget.maxFps}>
+            {budget.maxFps} fps cap
+          </span>
           <span className="omp-deck-metric">{readout?.drawCalls ?? 0} calls</span>
           <span className="omp-deck-metric">{readout?.objects ?? 0} objects</span>
           <span className="omp-deck-metric" data-model="true">

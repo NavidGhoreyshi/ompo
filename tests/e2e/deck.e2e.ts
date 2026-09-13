@@ -18,6 +18,11 @@ import type { DeckSample } from "../../web/src/scene/instrument.ts";
 interface DeckHook {
   tier: "minimal" | "standard" | "high";
   tierSource: "auto" | "pinned";
+  /** The automatic demotion record (`d10`). */
+  autoTier: "minimal" | "standard" | "high" | null;
+  autoStopped: boolean;
+  downgrades: number;
+  downgradeMedianMs: number;
   mounted: number;
   disposed: number;
   frames: number;
@@ -26,6 +31,10 @@ interface DeckHook {
   triangles: number;
   vertices: number;
   pixels: number;
+  /** `renderer.info.memory` (`d10`'s disposal audit). */
+  geometries: number;
+  textures: number;
+  programs: number;
   /** Model counters (d02): pads, dependency edges, instanced objects. */
   nodes: number;
   edges: number;
@@ -217,24 +226,50 @@ test.describe("deck surface", () => {
     await expect(page.locator(".omp-deck-help")).toHaveCount(0);
   });
 
-  test("ten surface switches leave exactly one canvas and dispose every renderer", async ({ page }) => {
-    // Ten round trips through the lazy chunk: fast alone (≈10 s), and on the
-    // edge of the default 60 s when four browsers share this box.
-    test.setTimeout(120_000);
+  test("twenty surface switches leave exactly one canvas, dispose every renderer, and hold the GPU pools at baseline", async ({ page }) => {
+    // Twenty round trips through the lazy chunk. Alone this is ≈20 s; under
+    // `bun run test:e2e` four software-rendered browsers share the box, so the
+    // ceiling is raised. A renderer that is *not* disposed would exhaust
+    // Chromium's live-context budget within these cycles and the canvas
+    // assertion below would fail loudly; the counters catch the quiet leaks.
+    test.setTimeout(180_000);
     await gotoDeck(page);
-    for (let i = 0; i < 10; i++) {
+    // The first mount's settled pools are the baseline the rest must return to
+    // (`d10`'s disposal audit): one geometry per primitive kind plus the
+    // generated line buffers. A mount that fails to release them, or one that
+    // grows a pool per model change, drifts away from these numbers.
+    await expect.poll(async () => (await readHook(page)).geometries, { timeout: 10_000 }).toBeGreaterThan(0);
+    const baseline = await readHook(page);
+    expect(baseline.textures).toBe(0);
+    expect(baseline.programs).toBeGreaterThan(0);
+
+    for (let i = 0; i < 20; i++) {
       await page.getByRole("button", { name: "Switch to the dashboard surface" }).click();
       await expect(page.locator(".omp-deck-canvas")).toHaveCount(0);
       await expect(page.locator(".omp-livefeed-log")).toBeVisible();
+      const before = await readHook(page);
       await page.getByRole("button", { name: "Switch to the deck surface" }).click();
       await expect(page.locator(".omp-deck-canvas")).toHaveCount(1);
+      // Read the counters only after the *new* renderer has drawn a frame: the
+      // hook's values survive the unmount (`d09`), and a stale read would
+      // compare the old mount with itself.
+      await expect.poll(async () => (await readHook(page)).frames, { timeout: 10_000 }).toBeGreaterThan(before.frames);
+      const state = await readHook(page);
+      expect(state.geometries).toBe(baseline.geometries);
+      expect(state.textures).toBe(baseline.textures);
+      // `programs` is not compared for equality: three.js compiles a program
+      // on a material's first draw, so the count depends on which materials
+      // the frame happened to reach, not on what the context holds. A leaked
+      // *context* is caught by the canvas assertion above (Chromium stops
+      // handing out WebGL contexts long before 20 of them accumulate).
+      expect(state.programs).toBeGreaterThan(0);
     }
     await page.getByRole("button", { name: "Switch to the dashboard surface" }).click();
     await expect(page.locator(".omp-deck-canvas")).toHaveCount(0);
 
     const state = await readHook(page);
-    expect(state.mounted).toBeGreaterThanOrEqual(11);
-    expect(state.disposed).toBeGreaterThanOrEqual(10);
+    expect(state.mounted).toBeGreaterThanOrEqual(21);
+    expect(state.disposed).toBeGreaterThanOrEqual(20);
     expect(state.mounted - state.disposed).toBeLessThanOrEqual(1);
     expect(page.url()).not.toContain("surface=deck");
     await expect(page.locator(".omp-livefeed-log")).toBeVisible();
@@ -460,16 +495,26 @@ test.describe("deck rail", () => {
     await expect(row).toHaveAttribute("aria-current", "true");
   });
 
-  test("a status change moves no pad and rebuilds no geometry", async ({ page }) => {
+  test("a status change moves no pad and rebuilds no geometry", async ({ page }, testInfo) => {
+    // The window below spans the change's whole transport (POST → store → SSE
+    // → fetch → commit) plus the frames drawn while it is in flight, so its
+    // frame count is the box's, not the scene's — under `bun run test:e2e` four
+    // software-rendered browsers share four vCPUs (measured 3–4 frames alone
+    // with the 25 ms digest poll, 5+ under the parallel run). The alone bound
+    // is the change's real visual cost; the parallel one is a jank ceiling.
+    const alone = testInfo.config.workers === 1;
     await gotoDeck(page);
     await page.waitForTimeout(800);
     const before = await readHook(page);
     const beforeSample = await readSample(page);
 
-    // A real status change through the real control path.
+    // A real status change through the real control path. The poll interval is
+    // deliberately short: the window below counts *frames*, and a slow poll on
+    // a busy browser would count detection latency as if it were the change's
+    // cost (measured 7 frames under load against 2 with a 25 ms cadence).
     const posted = await page.request.post("/api/runs/e2emain/control", { data: { kind: "skip", sliceId: "p-two" } });
     expect(posted.ok()).toBe(true);
-    await expect.poll(async () => (await readHook(page)).digest, { timeout: 15_000 }).not.toBe(before.digest);
+    await expect.poll(async () => (await readHook(page)).digest, { timeout: 15_000, intervals: [25, 50, 100] }).not.toBe(before.digest);
     const after = await readHook(page);
     const afterSample = await readSample(page);
 
@@ -493,8 +538,11 @@ test.describe("deck rail", () => {
     expect(railInstances(after)).toBe(railInstances(before));
     expect(afterSample.renderer?.geometries).toBe(beforeSample.renderer?.geometries);
     expect(after.drawCalls).toBeLessThanOrEqual(10);
-    // The whole visual cost of one status change: a frame or two, inside budget.
-    expect(afterSample.frames).toBeLessThanOrEqual(4);
+    // The whole visual cost of one status change: a frame or two, inside
+    // budget. The parallel ceiling still fails a change that keeps the loop
+    // spinning (a runaway at 30 fps would put ~2× as many frames in the same
+    // window).
+    expect(afterSample.frames).toBeLessThanOrEqual(alone ? 4 : 12);
     expect(afterSample.frameMs.p95).toBeLessThanOrEqual(45);
     // The change is real, and the DOM says so.
     await expect(page.locator(".omp-deck-mirror button").filter({ hasText: "p-two" }).first()).toContainText("skipped");
@@ -1049,6 +1097,109 @@ test.describe("deck alerts", () => {
     // And the switch is a switch.
     await page.locator(".omp-deck").press("m");
     await expect.poll(async () => (await readHook(page)).motion).toBe("full");
+  });
+});
+
+/**
+ * Budget enforcement (slice `d10`): the deck demotes a tier it cannot sustain,
+ * tells the operator once, and gives the tier back on request.
+ *
+ * This machine's renderer cannot be made slow on demand through the app, so
+ * the spec makes the *draw calls* slow: an init script wraps the deck canvas's
+ * WebGL2 context and spends 6 ms inside every draw. Every frame the deck
+ * renders then costs far more than `standard`'s 16 ms budget — the same signal
+ * the controller reads on a machine whose driver is slow — and a full window
+ * (60 frames) of it must demote the tier exactly once. The wrap touches only
+ * the deck's canvas (`omp-deck-canvas`), never the throwaway probe context.
+ */
+test.describe("deck budget enforcement", () => {
+  test.use({ viewport: { width: 1280, height: 720 } });
+
+  test("an over-budget tier demotes once with one HUD chip, and the operator's pin afterwards holds", async ({ page }) => {
+    test.setTimeout(120_000);
+    await page.addInitScript(() => {
+      // A stored preference is where the deck starts; the guard may still
+      // demote it — the chip says why, and `T` takes it back.
+      window.localStorage.setItem("ompo.deck.prefs", JSON.stringify({ tier: "standard", motion: "on", forced: null }));
+      const original = HTMLCanvasElement.prototype.getContext;
+      HTMLCanvasElement.prototype.getContext = function (this: HTMLCanvasElement, ...args: unknown[]) {
+        const context = (original as (...a: unknown[]) => unknown).apply(this, args);
+        if (context === null || !this.classList.contains("omp-deck-canvas")) return context;
+        return new Proxy(context as object, {
+          get(target, prop) {
+            const value = Reflect.get(target, prop, target) as unknown;
+            if (typeof value !== "function") return value;
+            const call = value as (...a: unknown[]) => unknown;
+            if (prop === "drawArrays" || prop === "drawArraysInstanced" || prop === "drawElements" || prop === "drawElementsInstanced") {
+              return (...callArgs: unknown[]) => {
+                const until = performance.now() + 6;
+                while (performance.now() < until) {
+                  /* a slow driver: the frame's measured cost is what matters */
+                }
+                return call.apply(target, callArgs);
+              };
+            }
+            return call.bind(target);
+          },
+        });
+      } as typeof HTMLCanvasElement.prototype.getContext;
+    });
+
+    await page.goto("/?surface=deck");
+    await page.locator(".omp-deck-canvas").waitFor();
+    await expect(page.locator(".omp-deck-chip")).toContainText("standard");
+
+    // Real frames through the real key path: each pan asks for one frame, and
+    // the slow draws make each of those frames blow the tier's budget.
+    const deadline = Date.now() + 40_000;
+    while ((await readHook(page)).downgrades === 0 && Date.now() < deadline) {
+      await page.locator(".omp-deck").press("ArrowRight");
+      await page.waitForTimeout(15);
+      await page.locator(".omp-deck").press("ArrowLeft");
+      await page.waitForTimeout(15);
+    }
+
+    const state = await readHook(page);
+    expect(state.downgrades).toBe(1);
+    expect(state.tier).toBe("minimal");
+    expect(state.tierSource).toBe("auto");
+    expect(state.autoTier).toBe("minimal");
+    expect(state.downgradeMedianMs).toBeGreaterThan(TIER_BUDGETS.standard.frameBudgetMs);
+    // One chip, non-modal, with the reason in words.
+    const chip = page.locator(".omp-deck-downgrade");
+    await expect(chip).toHaveCount(1);
+    await expect(chip).toContainText("downgraded to minimal");
+    await expect(chip).toContainText("ms/frame");
+    // The HUD always shows the effective tier and the tier's fps cap.
+    await expect(page.locator(".omp-deck-chip")).toContainText("minimal");
+    await expect(page.locator("[data-fps-cap]")).toContainText(`${TIER_BUDGETS.minimal.maxFps} fps cap`);
+    console.log(`deck-downgrade ${JSON.stringify({ tier: state.tier, tierSource: state.tierSource, downgrades: state.downgrades, medianMs: state.downgradeMedianMs })}`);
+
+    // The operator's explicit choice: T steps up from the tier on screen and
+    // stops the controller for the session.
+    await page.locator(".omp-deck").press("t");
+    await expect(page.locator(".omp-deck-chip")).toContainText("standard");
+    const pinned = await readHook(page);
+    expect(pinned.tier).toBe("standard");
+    expect(pinned.tierSource).toBe("pinned");
+    expect(pinned.autoStopped).toBe(true);
+    expect(pinned.autoTier).toBeNull();
+
+    // Slow frames continue; the pin is not overridden and no second downgrade
+    // is recorded.
+    for (let i = 0; i < 70; i++) {
+      await page.locator(".omp-deck").press("ArrowRight");
+    }
+    const after = await readHook(page);
+    expect(after.tier).toBe("standard");
+    expect(after.downgrades).toBe(1);
+    await expect(chip).toHaveCount(1);
+
+    // Dismissed once, it does not come back within the session.
+    await chip.getByRole("button", { name: "Dismiss the downgrade notice" }).click();
+    await expect(chip).toHaveCount(0);
+    await page.locator(".omp-deck").press("ArrowLeft");
+    await expect(chip).toHaveCount(0);
   });
 });
 
