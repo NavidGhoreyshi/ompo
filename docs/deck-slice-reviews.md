@@ -2351,3 +2351,32 @@ Worse: the pan leash is still generous along a long rail's length axis
 (short-axis bound, not a box); a determined operator can still frame mostly
 floor. Recovery is one key, not zero — accepted: automation would violate
 §10 and the d03/d04 focus-follow expectations.
+
+## ux03 — overlay hierarchy (subtraction)
+
+Objective: primary scan = `LIVE N · ALERTS N · FOCUS id` (§9); everything
+else contextual / on-demand / diagnostics. Largest subtraction slice.
+
+Reproduce: `bunx tsc --noEmit`; `bun run web:build` + fixture check →
+row `quiescent live: 3 alerts: 2 focus: longtitle` (0 `omp-deck-group`),
+lanes collapsed (focus/primary + summary, rest `hidden`), alerts explicit
+state, `verify replay` inside `more`, help scrim dialog with Esc close.
+
+What landed: `Deck.tsx` HUD row collapsed to 4 metrics + 2 buttons (tier /
+frame / world / completion / warnings / last-change moved into the `HUD`
+diagnostics disclosure; `sameCompactReadout` untouched so the idle row still
+commits nothing); auto-collapse alerts past 2 (explicit expand wins
+within-run); `DeckOverlay.tsx` lanes default-collapsed (`hidden` rows stay
+mounted, `tabIndex=-1`, `+N more · show all` / `show less`), `verify replay`
+behind `more`, help wrapped in `.omp-deck-help-scrim`
+(`role=dialog aria-modal`, z-30, Esc closes first); `types.ts` Esc copy
+names help; theme.css scrim + layer order
+(`shell > HUD > time > labels > contextual > transient > modal`).
+
+Keys preserved: H/?, Esc chain (help → dock → wall → live → unpin), lanes
+expand, alerts expand, replay, all 17 `DECK_KEYS` still fire.
+
+Worse: the collapsed lane summary duplicates the focus id already in the
+HUD row and the station line — one redundant chip, accepted for the `+N`
+affordance. The diagnostics panel is longer than before (it absorbed the
+row); that is the point — cost on demand, not on scan.

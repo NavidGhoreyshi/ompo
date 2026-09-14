@@ -5219,15 +5219,22 @@ button[data-slot="select-trigger"] {
   color: var(--omp-red);
 }
 
-/* The keyboard help (`d09`): a panel over the deck on the 3D surface, a block
- * in the flat document. It lists `DECK_KEYS` verbatim with the existing
- * `.omp-deck-keys` styles. */
-.omp-deck-help {
+/* The keyboard help (`d09`, modal since `ux03`): a scrimmed panel over the
+ * deck on the 3D surface, a block in the flat document. It lists `DECK_KEYS`
+ * verbatim with the existing `.omp-deck-keys` styles. The scrim owns the
+ * topmost layer so help can never sit under the HUD panel again (the d13
+ * overlap class, fixed once by hierarchy instead of z-index bidding). */
+.omp-deck-help-scrim {
   position: absolute;
-  left: 50%;
-  top: 50%;
-  transform: translate(-50%, -50%);
-  z-index: 6;
+  inset: 0;
+  z-index: 30;
+  display: grid;
+  place-items: center;
+  background: rgb(0 0 0 / 45%);
+  pointer-events: auto;
+}
+
+.omp-deck-help {
   width: min(560px, calc(100% - 40px));
   max-height: min(76%, 620px);
   overflow-y: auto;

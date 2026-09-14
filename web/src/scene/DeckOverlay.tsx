@@ -298,6 +298,13 @@ export default function DeckOverlay({
   // slider's rightmost position is live by construction (`max = buckets`), so
   // "return to live" is also a place on the axis, not only a button.
   const [hoverBucket, setHoverBucket] = useState<number | null>(null);
+  /**
+   * Lane strip collapse (`ux03`): focus/primary + summary by default, every
+   * worker on expand. Collapsed rows stay mounted (display:none via CSS) so
+   * keyboard/AT reach them; the summary names the way in. Never hides
+   * focused/primary/alerted — the operator's handle stays visible.
+   */
+  const [lanesCollapsed, setLanesCollapsed] = useState(true);
   const buckets = model.ribbon;
   const cursorBucket = model.ribbonCursor;
   // The scrubber walks the *recorded* moments (plus live at the end), while the
@@ -356,10 +363,12 @@ export default function DeckOverlay({
         <button type="button" className="omp-deck-time-wall" aria-expanded={wallOpen} onClick={onToggleWall}>
           runs ({runs.length})
         </button>
-        <button type="button" className="omp-deck-time-replay" onClick={onVerifyReplay} title="Ask the server to replay the log against the run cursor (read-only)">
-          verify replay
-        </button>
-        {replay !== null && (
+        <details className="omp-deck-time-more">
+          <summary>more</summary>
+          <button type="button" className="omp-deck-time-replay" onClick={onVerifyReplay} title="Ask the server to replay the log against the run cursor (read-only)">
+            verify replay
+          </button>
+          {replay !== null && (
           <span className="omp-deck-time-replay-result" data-replay={replay.status}>
             {replay.status === "loading"
               ? "replay…"
@@ -379,11 +388,11 @@ export default function DeckOverlay({
               </details>
             )}
           </span>
-        )}
+          )}
+        </details>
       </div>
       <input
         className="omp-deck-time-slider"
-        type="range"
         min={0}
         max={Math.max(0, recordedPositions)}
         step={1}
@@ -441,20 +450,22 @@ export default function DeckOverlay({
   // verbatim, so a key that exists in code and not in the panel (or the other
   // way around) is impossible.
   const helpPanel = helpOpen ? (
-    <section className="omp-deck-help" aria-label="Keyboard help">
-      <p className="omp-deck-help-head">
-        Keyboard — every deck binding. <kbd>H</kbd> or <kbd>?</kbd> toggles this panel.
-      </p>
-      <ul className="omp-deck-keys">
-        {DECK_KEYS.map((entry) => (
-          <li key={entry.key} data-live={entry.slice === "d01" ? "true" : "false"}>
-            <kbd>{entry.key}</kbd>
-            <span>{entry.effect}</span>
-            <em>{entry.slice}</em>
-          </li>
-        ))}
-      </ul>
-    </section>
+    <div className="omp-deck-help-scrim">
+      <section className="omp-deck-help" aria-label="Keyboard help" role="dialog" aria-modal="true">
+        <p className="omp-deck-help-head">
+          Keyboard — every deck binding. <kbd>H</kbd> or <kbd>?</kbd> toggles this panel.
+        </p>
+        <ul className="omp-deck-keys">
+          {DECK_KEYS.map((entry) => (
+            <li key={entry.key} data-live={entry.slice === "d01" ? "true" : "false"}>
+              <kbd>{entry.key}</kbd>
+              <span>{entry.effect}</span>
+              <em>{entry.slice}</em>
+            </li>
+          ))}
+        </ul>
+      </section>
+    </div>
   ) : null;
 
   if (model.nodes.length === 0) {
@@ -608,10 +619,19 @@ export default function DeckOverlay({
             the same workers, so this one stays off instead of saying it
             twice. */}
         {!flat && model.stations.length > 0 && (
-          <ul className="omp-deck-lanes" aria-label="Live workers">
+          <ul className="omp-deck-lanes" aria-label="Live workers" data-collapsed={lanesCollapsed ? "true" : "false"}>
+            {lanesCollapsed && (
+              <li>
+                <button type="button" className="omp-deck-lane omp-deck-lane-summary" aria-expanded="false" onClick={() => setLanesCollapsed(false)}>
+                  <span className="omp-deck-lane-id">{model.focusId ?? model.liveIds[0] ?? "—"}</span>
+                  <span className="omp-deck-lane-tail">+{Math.max(0, model.liveIds.length - 1)} more · show all</span>
+                </button>
+              </li>
+            )}
             {model.stations.map((station) => {
               const node = nodeById.get(station.id);
               if (!node) return null;
+              const hidden = lanesCollapsed && !station.focused && !station.primary;
               const row = agents.find((agentRow) => agentRow.id === station.id);
               const laneAction = heroAction({
                 status: node.status,
@@ -621,7 +641,7 @@ export default function DeckOverlay({
                 deps: node.deps,
               });
               return (
-                <li key={station.id}>
+                <li key={station.id} hidden={hidden || undefined} aria-hidden={hidden || undefined}>
                   <button
                     type="button"
                     className="omp-deck-lane"
@@ -631,6 +651,7 @@ export default function DeckOverlay({
                     aria-current={station.focused ? "true" : undefined}
                     title={laneAction}
                     onClick={() => onFocus(station.id, false)}
+                    tabIndex={hidden ? -1 : undefined}
                   >
                     <span className="omp-deck-lane-dot" aria-hidden="true">
                       {station.focused ? "●" : "○"}
@@ -646,10 +667,6 @@ export default function DeckOverlay({
                       <span className="omp-deck-lane-action">{laneAction}</span>
                     </span>
                   </button>
-                  {/* The focused worker's own way into the dock (`d06`): the
-                      lane row is the "watch this" affordance, this is the
-                      "show me everything" one. Sibling, not nested — the row
-                      stays one button and one focus stop. */}
                   {station.focused && !dockOpen && (
                     <button
                       type="button"
@@ -663,6 +680,13 @@ export default function DeckOverlay({
                 </li>
               );
             })}
+            {!lanesCollapsed && model.stations.length > 1 && (
+              <li>
+                <button type="button" className="omp-deck-lane omp-deck-lane-summary" aria-expanded="true" onClick={() => setLanesCollapsed(true)}>
+                  <span className="omp-deck-lane-tail">show less</span>
+                </button>
+              </li>
+            )}
           </ul>
         )}
       </div>

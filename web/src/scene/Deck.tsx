@@ -330,7 +330,7 @@ export default function Deck({
   const [pinnedId, setPinnedId] = useState<string | null>(null);
   const [frozenId, setFrozenId] = useState<string | null>(null);
   const [expanded, setExpanded] = useState(false);
-  /** Alert stack collapsed (`d05`): view state, like the window's freeze. */
+  /** Alert stack collapsed (`d05`): view state, like the window's freeze. Auto-collapses past 2 rows (`ux03`, effect below the model). */
   const [alertsCollapsed, setAlertsCollapsed] = useState(false);
   /**
    * The temporal cursor (`d07`): `null` = live, a seq = the log's state at
@@ -600,6 +600,14 @@ export default function Deck({
   if (!projected.loading) lastModelRef.current = projected;
   const modelRef = useRef(model);
   modelRef.current = model;
+  // Auto-collapse the alert stack past 2 rows (`ux03`): the head keeps the
+  // count + highest severity, so the scan stays one line. Explicit expand
+  // still wins within a run — this only fires when the count grows past 2.
+  const alertCountRef = useRef(0);
+  useEffect(() => {
+    if (model.alerts.length > 2 && alertCountRef.current <= 2) setAlertsCollapsed(true);
+    alertCountRef.current = model.alerts.length;
+  }, [model.alerts.length]);
   // How many workers the tier's pool holds. `stations` also lists the workers
   // it cannot (so the lane list stays complete); the difference is the HUD's
   // overflow and what the scene folds into its stack marker.
@@ -1708,10 +1716,12 @@ export default function Deck({
         const target = model.nodes.find((node) => node.selected)?.id ?? model.focusId;
         if (target !== null) focusOn(target, true);
       } else if (event.key === "Escape") {
-        // One key, one meaning at a time, topmost layer first: the dock closes,
-        // then the wall's list, then history returns to live, and with nothing
-        // open this is the `d03` pin release.
-        if (dockRef.current.open) {
+        // One key, one meaning at a time, topmost layer first: help (modal),
+        // then the dock, then the wall's list, then history returns to live,
+        // and with nothing open this is the `d03` pin release.
+        if (hudOpen) {
+          setHudOpen(false);
+        } else if (dockRef.current.open) {
           closeDockPanel();
         } else if (wallOpen) {
           setWallOpen(false);
@@ -1779,7 +1789,7 @@ export default function Deck({
       frameSlice,
       goLive,
       historySeq,
-      onExit,
+      hudOpen,
       prefs,
       reducedMotion,
       preset,
@@ -2032,11 +2042,59 @@ export default function Deck({
             presentation only: every chip keeps its own class and data
             attributes, so nothing that reads the HUD has to know about it. */}
         <div className="omp-deck-row">
-          <span className="omp-deck-group" data-group="state">
-            <span className="omp-deck-chip" data-tier={tier} data-tier-source={tierSource}>
-              {tier}
-              {tierSource === "auto" ? " · auto" : " · pinned"}
-            </span>
+          {/* Primary scan (`ux03`): LIVE N · ALERTS N · FOCUS id. Three facts,
+              always visible. Everything else — tier, frame, world, completion,
+              warnings, last change — lives in the diagnostics disclosure below
+              (correction §9: diagnostics must not pollute the scan). */}
+          <span className="omp-deck-metric" data-live={live ? "true" : "false"}>
+            {live ? "live" : "quiescent"}
+          </span>
+          <span className="omp-deck-metric" data-live-count={model.liveIds.length} data-station-count={pooledStations}>
+            {stationCountLabel(model.liveIds.length, pooledStations)}
+          </span>
+          <span className="omp-deck-metric" data-alert-count={model.alerts.length} data-beacon-count={model.beaconAlerts.length}>
+            alerts: {model.alerts.length}
+            {model.alertsOverflow > 0 ? ` · ${model.alertsOverflow} over the beacon cap` : ""}
+          </span>
+          <span className="omp-deck-metric" data-focus={model.focusId ?? ""}>
+            focus: {model.focusId ?? "—"}
+            {pinnedId !== null ? ` · pinned` : ""}
+          </span>
+          <button type="button" className="omp-deck-button" aria-expanded={hudOpen} onClick={() => setHudOpen((open) => !open)}>
+            HUD
+          </button>
+          <button type="button" className="omp-deck-button" onClick={onExit}>
+            Dashboard
+          </button>
+        </div>
+        {hudOpen && (
+          <div className="omp-deck-panel">
+            <p className="omp-deck-subject">
+              <span className="omp-deck-chip" data-tier={tier} data-tier-source={tierSource}>
+                {tier}
+                {tierSource === "auto" ? " · auto" : " · pinned"}
+              </span>
+              {tier === "minimal" && <span className="omp-deck-warn">software renderer detected</span>}{" "}
+              <span className="omp-deck-metric" data-model="true">
+                {model.nodes.length} pads · {model.edges.length} edges
+              </span>{" "}
+              <span className="omp-deck-metric">run {runId ?? "none"}</span>{" "}
+              <span
+                className="omp-deck-metric"
+                data-history={model.historySeq === null ? "live" : "past"}
+                data-history-seq={model.historySeq ?? ""}
+              >
+                {model.historySeq === null
+                  ? "at now"
+                  : `at seq ${model.historySeq}${playing ? " · playing" : ""}${model.historyActive > 0 ? ` · ${model.historyActive} active` : ""}`}
+              </span>{" "}
+              <span className="omp-deck-metric" data-motion={reducedMotion ? "reduced" : "full"}>
+                motion: {reducedMotion ? "reduced" : "full"}
+              </span>{" "}
+              <span className="omp-deck-metric" data-ambient={ambientSummary(ambientState)}>
+                effects: {ambientSummary(ambientState)}
+              </span>
+            </p>
             {downgradeNotice !== null && !noticeDismissed && (
               <span className="omp-deck-warn omp-deck-downgrade" role="status" data-downgrade-to={downgradeNotice.to}>
                 downgraded to {downgradeNotice.to} — {Math.round(downgradeNotice.medianMs)} ms/frame
@@ -2050,90 +2108,17 @@ export default function Deck({
                 </button>
               </span>
             )}
-            {tier === "minimal" && <span className="omp-deck-warn">software renderer detected</span>}
-            <span className="omp-deck-metric" data-live={live ? "true" : "false"}>
-              {live ? "live" : "quiescent"}
-            </span>
-            <span className="omp-deck-metric" data-live-count={model.liveIds.length} data-station-count={pooledStations}>
-              {stationCountLabel(model.liveIds.length, pooledStations)} · showing {model.focusId ?? "—"}
-              {pinnedId !== null ? ` · pinned` : ""}
-            </span>
-            <span className="omp-deck-metric" data-alert-count={model.alerts.length} data-beacon-count={model.beaconAlerts.length}>
-              alerts: {model.alerts.length}
-              {model.alertsOverflow > 0 ? ` · ${model.alertsOverflow} over the beacon cap` : ""}
-            </span>
-            {/* The run's ending (`d13`): one line, derived from the counts the
-                pads already show plus the DTO's own wall clock, present tense
-                only (a historical cursor has its own honest reading). */}
-            {completionLine !== null && (
-              <span
-                className="omp-deck-complete"
-                role="status"
-                data-completion={model.completion.complete ? "complete" : "finished"}
-                data-completion-done={model.completion.done}
-                data-completion-total={model.completion.total}
-              >
-                {completionLine}
-              </span>
+            {completionLine !== null && <p className="omp-deck-subject">{completionLine}</p>}
+            {lastEvent && (
+              <p className="omp-deck-subject">
+                <span className="omp-deck-event" ref={(element) => markRendered(element, lastEvent.seq)}>
+                  <span className="omp-deck-event-tag">last change</span>
+                  {lastEvent.type}
+                  {lastEvent.sliceId ? ` · ${lastEvent.sliceId}` : ""}
+                  {describeEvent(lastEvent) && ` · ${describeEvent(lastEvent)}`} · seq {lastEvent.seq}
+                </span>
+              </p>
             )}
-            {model.warnings.length > 0 && (
-              <span className="omp-deck-warn" data-slot-warnings={model.warnings.length}>
-                {model.warnings.length} slot warning{model.warnings.length === 1 ? "" : "s"}
-              </span>
-            )}
-          </span>
-          <span className="omp-deck-group" data-group="frame">
-            <span className="omp-deck-metric">{readout ? `${readout.fps.toFixed(0)} fps` : "— fps"}</span>
-            <span className="omp-deck-metric" data-fps-cap={budget.maxFps}>
-              {budget.maxFps} fps cap
-            </span>
-            <span className="omp-deck-metric">{readout?.drawCalls ?? 0} calls</span>
-            <span className="omp-deck-metric">{readout?.objects ?? 0} objects</span>
-            <span className="omp-deck-metric">
-              {budget.resolutionScale}× · {readout?.pixels ?? 0} px
-            </span>
-          </span>
-          <span className="omp-deck-group" data-group="world">
-            <span className="omp-deck-metric" data-model="true">
-              {model.nodes.length} pads · {model.edges.length} edges
-            </span>
-            <span className="omp-deck-metric">run {runId ?? "none"}</span>
-            <span className="omp-deck-metric" data-motion={reducedMotion ? "reduced" : "full"}>
-              motion: {reducedMotion ? "reduced" : "full"}
-            </span>
-            <span
-              className="omp-deck-metric"
-              data-history={model.historySeq === null ? "live" : "past"}
-              data-history-seq={model.historySeq ?? ""}
-            >
-              {model.historySeq === null
-                ? "at now"
-                : `at seq ${model.historySeq}${playing ? " · playing" : ""}${model.historyActive > 0 ? ` · ${model.historyActive} active` : ""}`}
-            </span>
-            <span className="omp-deck-metric" data-ambient={ambientSummary(ambientState)}>
-              effects: {ambientSummary(ambientState)}
-            </span>
-          </span>
-          {/* What just changed: its own line, because it is the one chip whose
-              content moves at run cadence — and the answer to the operator's
-              third question. */}
-          {lastEvent && (
-            <span className="omp-deck-event" ref={(element) => markRendered(element, lastEvent.seq)}>
-              <span className="omp-deck-event-tag">last change</span>
-              {lastEvent.type}
-              {lastEvent.sliceId ? ` · ${lastEvent.sliceId}` : ""}
-              {describeEvent(lastEvent) && ` · ${describeEvent(lastEvent)}`} · seq {lastEvent.seq}
-            </span>
-          )}
-          <button type="button" className="omp-deck-button" aria-expanded={hudOpen} onClick={() => setHudOpen((open) => !open)}>
-            HUD
-          </button>
-          <button type="button" className="omp-deck-button" onClick={onExit}>
-            Dashboard
-          </button>
-        </div>
-        {hudOpen && (
-          <div className="omp-deck-panel">
             <p className="omp-deck-subject">
               budget: {budget.resolutionScale}× backing · {budget.maxFps} fps cap · ≤{budget.maxDrawCalls} calls · ≤{budget.maxStations}{" "}
               stations · ≤{budget.maxBeacons} beacons
