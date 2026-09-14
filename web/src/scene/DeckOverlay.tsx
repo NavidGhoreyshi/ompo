@@ -33,7 +33,8 @@ import type { TimelineAttempt } from "../lib/timeline.ts";
 import { SEVERITY_GLYPH, type AlertSeverity, type DeckAlert } from "./alerts.ts";
 import type { EdgeMarker } from "./camera.ts";
 import { flatRowLabel, flatRows, focusMirrorText } from "./fallback.ts";
-import { alertGlyphFor, labelStage, spatialLabelFor } from "./labels.ts";
+import { alertGlyphFor, spatialLabelFor } from "./labels.ts";
+import { alertSummary, laneSummary } from "./summary.ts";
 import FlatDeck from "./FlatDeck.tsx";
 import type { RibbonBucket } from "./history.ts";
 import { useRovingFocus } from "./roving.ts";
@@ -608,6 +609,7 @@ export default function DeckOverlay({
                     ? "no worker running"
                     : `live: ${model.liveIds.length}`}
               </span>
+              {model.liveIds.length > 1 && <span className="omp-deck-station-keys">[ ] focus · F frame</span>}
             </>
           ) : (
             <span className="omp-deck-station-meta">showing nothing</span>
@@ -664,7 +666,7 @@ export default function DeckOverlay({
                     </span>
                     <span className="omp-deck-lane-tail">
                       {station.wedged && <span className="omp-deck-lane-warn">stalled</span>}
-                      <span className="omp-deck-lane-action">{laneAction}</span>
+                      <span className="omp-deck-lane-action">{laneSummary(laneAction)}</span>
                     </span>
                   </button>
                   {station.focused && !dockOpen && (
@@ -725,7 +727,7 @@ export default function DeckOverlay({
                 {SEVERITY_GLYPH[alert.severity]}
               </span>
               <strong>{alert.kind}</strong>
-              <span className="omp-deck-banner-text">{alert.message}</span>
+              <span className="omp-deck-banner-text" title={alert.message}>{alertSummary(alert)}</span>
               <button
                 type="button"
                 className="omp-deck-alert-dismiss"
@@ -790,7 +792,7 @@ export default function DeckOverlay({
                           </span>
                           <span className="omp-deck-alert-severity">{alert.severity}</span>
                           <code className="omp-deck-alert-slice">{sliceId}</code>
-                          <span className="omp-deck-alert-message">{alert.message}</span>
+                          <span className="omp-deck-alert-message">{alertSummary(alert)}</span>
                         </button>
                         <button
                           type="button"
@@ -854,8 +856,11 @@ export default function DeckOverlay({
               )}
               {action && (
                 <span className="omp-deck-line-action" title={action}>
-                  {action}
+                  {laneSummary(action)}
                 </span>
+              )}
+              {hovered === null && (
+                <span className="omp-deck-line-keys">F frame · 1–8 inspect</span>
               )}
               {/* Inspecting acts on the *selection*; while the pointer is
                   previewing another pad the line is a hover readout, so the

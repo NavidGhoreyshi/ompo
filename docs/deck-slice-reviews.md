@@ -2380,3 +2380,27 @@ Worse: the collapsed lane summary duplicates the focus id already in the
 HUD row and the station line — one redundant chip, accepted for the `+N`
 affordance. The diagnostics panel is longer than before (it absorbed the
 row); that is the point — cost on demand, not on scan.
+
+## ux04 — semantic summaries + inline discoverability
+
+Objective: ambient text means something (§5: kind, never fragment); primary
+acts visible without H (§6). Independent of UX02 — only overlay copy.
+
+Reproduce: `bun test tests/deck-summary.test.ts` (3 pass); fixture check →
+alerts `envblock · blocked` / `longreason · failed` (full tails in
+`title=`), lane tails ≤40ch, `station-keys` + `line-keys` hints present.
+
+What landed: `scene/summary.ts` (pure: `alertSummary` kind-words,
+`laneSummary` 80ch hero heads, `basenameOf`, `liveHead`); overlay swaps
+alert rows + banners + lane/line actions to summaries with full text in
+`title=`; inline hints `[ ] focus · F frame` (station, multi-live only)
+and `F frame · 1–8 inspect` (selected line); theme.css quiet hint style;
+`tests/deck-summary.test.ts` (3 specs).
+
+Keys untouched: all 17 still fire; hints are text, not new controls. No
+renderer, tier, model, or store change — string-only, no frame cost.
+
+Worse: the lane `title=` still holds the raw hero string (long paths on
+hover) — full text preserved by design, Inspector owns the readable form.
+`liveHead` is tested but not yet rendered; the live window keeps the
+dashboard's own head (verbatim reuse wins over a deck-specific one).

@@ -4541,6 +4541,17 @@ button[data-slot="select-trigger"] {
   gap: 2px;
 }
 
+/* Inline discoverability (`ux04`): quiet key hints inside the station and
+ * selected lines. Text, not tooltips — the operator learns F / [ ] / 1–8
+ * where the action lives instead of pressing H first. */
+.omp-deck-station-keys,
+.omp-deck-line-keys {
+  font-size: 10px;
+  letter-spacing: 0.04em;
+  color: var(--omp-muted);
+  white-space: nowrap;
+}
+
 /* Degraded view (`ux02`): one quiet recovery button, top-center below the
  * time band. Present only while the camera lost the work; never automation. */
 .omp-deck-reframe {
