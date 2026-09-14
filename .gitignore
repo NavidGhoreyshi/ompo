@@ -3,6 +3,9 @@ ompo
 # deps + lockfile artifacts
 node_modules/
 web/dist/
+# Tauri build output (roadmap slice d12: the shell is packaging, not source)
+desktop/src-tauri/target/
+desktop/src-tauri/gen/
 test-results/
 playwright-report/
 # local pilot / scratch dirs live outside the repo; ignore any stray run state

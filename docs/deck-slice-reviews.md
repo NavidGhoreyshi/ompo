@@ -1,4 +1,4 @@
-# Deck slice reviews (d00–d09)
+# Deck slice reviews (d00–d12)
 
 Performance observations per slice, in the terms the operator cares about: what a frame costs, what
 an event costs, what the DOM does while nobody is looking, and whether the surface is still usable
@@ -1893,3 +1893,79 @@ runs. Material because it is the only place the new flag changed core sequencing
 4. **`--print-url` is dashboard-only.** The flag with `--tui`/any other command warns on stderr and
    is otherwise ignored; there is no machine-readable handshake for the TUI, and none is planned.
 5. **M10 (five timed tasks) is still owed** — unchanged by this slice; `d03v` remains the real gate.
+
+## d12 — Tauri 2 desktop shell (Windows-first, deliberately droppable)
+
+Packaging, not architecture: one window plus one reaped sidecar, zero Tauri commands, and the deck
+keeps obtaining its data through the existing ompo URL path. `deck-open` remains the better
+development/runtime path on this machine and is fully usable regardless.
+
+### Outcome
+
+- **`desktop/src-tauri/`** — `tauri.conf.json` (one window `main`, 1600×1000, min 900×600, hidden
+  until the handshake; `bundle.externalBin: ["binaries/ompo"]`, empty `bundle.resources`, version
+  pinned to `package.json`), `src/main.rs` (spawn sidecar with `--no-open --print-url`, 5 s `url=`
+  budget, `WebviewWindowBuilder` + `WebviewUrl::External(<url>/?surface=deck)`, kill on window
+  close / app exit / `Drop`, stderr-tail error window with the terminal reproduce), `build.rs`,
+  `Cargo.toml` (`tauri` 2 + `tauri-plugin-shell` + `tokio/time` only), `capabilities/default.json`
+  (`core:default` + `shell:allow-spawn/kill/stdin-write` scoped to the sidecar — no `fs`/`http`/
+  `dialog`/anything else), placeholder `icons/`, `README.md` with the platform matrix.
+- **`scripts/deck-desktop-check.ts`** (gated: `bun run deck:desktop:check`) — dependency-free static
+  verifier: config/capabilities/`main.rs`/`Cargo.toml` parsed and asserted, one specific message per
+  violation, exit 1 on any. No Rust needed.
+- **`scripts/deck-desktop-run.ts`** behind `deck:desktop:dev` / `deck:desktop:build` — missing Rust or
+  WebKitGTK fails with the prerequisite and the `deck-open` fallback, never an unattended install.
+- **`tests/deck-desktop.test.ts`** (6) — the check passes, no bundled SPA copy, the exact capability
+  allow-list, `deck-open` stays toolchain-free, the three `deck:desktop:*` scripts are wired, the
+  guard fails with instructions.
+- `.gitignore` gains `desktop/src-tauri/target/` + `gen/`. `web/src/**` untouched — the web surface
+  is byte-identical with and without `desktop/` present.
+
+### Verification
+
+- `bun scripts/deck-desktop-check.ts` → `deck-desktop-check: ok`.
+- `deck:desktop:dev` / `deck:desktop:build` on this box (no `rustc`/`cargo`, no `libwebkit2gtk`,
+  `/dev/dxg` present, no `/dev/dri`) → exit 1 with the rustup + WebKitGTK instructions and the
+  `deck-open` pointer. Recorded evidence that d12's toolchain does not exist here, per the roadmap.
+- `bun test` **858 pass / 0 fail** (63 files); `bunx tsc --noEmit` clean; `git diff --check` clean;
+  `tests/deck-desktop + deck-launch + release-gate` 41 pass.
+- Deck e2e: `deck-control.e2e.ts` 4 passed; `deck.e2e.ts` 9 observed passing before the 240 s `timeout`
+  wrapper killed the file's long tail (1.6 m surface-switch spec on SwiftShader); the 7-file
+  `--workers=1` sweep was stopped at 600 s mid-`deck-inspector` (19 passing specs observed, same
+  machine-slowness cause). `captures/` restored after each run. No e2e file was modified by this
+  slice, and `web/` is untouched — the slowness is the box (SwiftShader), not d12.
+- `bun run test:e2e -- --grep "smoke|health"` 1 passed (non-deck surface unaffected).
+- Launcher regression (`$OMPO_DECK_BROWSER` fake script): `bun scripts/deck-open.ts` printed the deck
+  URL, SIGINT exited the launcher, `pgrep -f "src/cli.ts --no-open"` returned to zero — no orphans.
+- Rust `cargo test` (the `main.rs` pure helpers) and the Windows manual acceptance (dev run,
+  `tasklist` cleanup, sidecar-kill recovery, webview renderer string + tier) were **not executed in
+  this environment** — no toolchain here. A Windows-side operator must run `cargo test` in
+  `desktop/src-tauri`, then `bun run deck:desktop:dev`, close-cleanup, sidecar-kill recovery, and
+  record `window.__ompoDeck.tier` + `bun scripts/deck-perf.ts` against the shell's URL.
+- `bun scripts/deck-perf.ts` was not re-run: d12 touches no performance-sensitive subsystem (no
+  `web/src` change, no bundle rebuild).
+
+### What this does worse, and open findings
+
+1. **The shell is unverified where it matters.** Everything above is static: no Rust compiler checked
+   `main.rs`, no webview ever loaded the deck URL, no close-cleanup was observed. The honest
+   statement is that d12 ships a reviewed-but-uncompiled crate plus a verifier — the Windows
+   acceptance is owed, not waived.
+2. **The icons are placeholders.** Solid-colour PNG/ICO/ICNS stand-ins satisfy the bundler schema;
+   a real release needs a designed icon set.
+3. **The `data:text/html` error path is untested against real WebView2/WebKitGTK.** The document
+   content is fixed by the roadmap, but whether every webview renders the encoded page identically
+   is a Windows-side observation, still owed.
+4. **The full deck e2e sweep does not fit this box's clock.** The 7-file `--workers=1` run exceeded
+   600 s with 19 specs observed passing; per-file runs pass (`deck-control` 4/4) but the suite as a
+   whole is a patience test on SwiftShader. Unchanged by d12, recorded because the gate evidence
+   must not pretend otherwise.
+5. **M10 (five timed tasks) is still owed** — unchanged by this slice; `d03v` remains the real gate.
+
+### Verdict
+
+**PASS — recommendation, not a decision.** The packaging question gets its honest answer: on this
+machine `deck-open` provides the better development/runtime path (zero toolchain, same app window,
+same handshake), and Tauri remains optional packaging, dropped from the critical path exactly as the
+roadmap allows. The shell earns its keep only if the Windows acceptance shows a capability the
+launcher lacks; until then it is a committed, verified recipe — not a second runtime.

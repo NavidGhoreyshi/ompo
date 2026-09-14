@@ -34,7 +34,10 @@
     "web:build": "bunx vite build --config web/vite.config.ts && bun scripts/embed-web.ts",
     "release:gate": "bun test tests/release-gate.test.ts",
     "build": "bun run web:build && bun build --compile src/cli.ts --outfile ompo",
-    "test:e2e": "playwright test"
+    "test:e2e": "playwright test",
+    "deck:desktop:check": "bun scripts/deck-desktop-check.ts",
+    "deck:desktop:dev": "bun scripts/deck-desktop-run.ts dev",
+    "deck:desktop:build": "bun scripts/deck-desktop-run.ts build"
   },
   "devDependencies": {
     "@playwright/test": "1.62.0",
