@@ -4541,6 +4541,30 @@ button[data-slot="select-trigger"] {
   gap: 2px;
 }
 
+/* Degraded view (`ux02`): one quiet recovery button, top-center below the
+ * time band. Present only while the camera lost the work; never automation. */
+.omp-deck-reframe {
+  position: absolute;
+  left: 50%;
+  top: calc(10px + var(--omp-deck-hud-h) + 8px + var(--omp-deck-time-h) + 8px);
+  transform: translateX(-50%);
+  font-family: var(--omp-mono);
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--omp-text);
+  background: color-mix(in srgb, var(--omp-panel) 92%, transparent);
+  border: 1px solid var(--omp-cyan);
+  border-radius: 999px;
+  padding: 3px 12px;
+  cursor: pointer;
+  pointer-events: auto;
+}
+
+.omp-deck-reframe:hover,
+.omp-deck-reframe:focus-visible {
+  background: var(--omp-panel-2);
+}
+
 /* The live window, docked bottom-left and never over the HUD: the same
  * component the dashboard renders, at the deck's own width. */
 .omp-deck-live {

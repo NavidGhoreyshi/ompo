@@ -41,7 +41,17 @@ import DeckInspector from "./DeckInspector.tsx";
 import DeckOverlay from "./DeckOverlay.tsx";
 import { deckAvailability, deckMode, nextDeckMode, type DeckAvailability } from "./fallback.ts";
 import { focusTarget, nextLiveId } from "./focus.ts";
-import { applyCameraIntent, edgeAnchor, focusIntent, lerpCamera, offScreenIds, type CameraIntent, type EdgeMarker } from "./camera.ts";
+import {
+  applyCameraIntent,
+  edgeAnchor,
+  focusIntent,
+  isDegradedView,
+  lerpCamera,
+  maxRetreatFor,
+  offScreenIds,
+  type CameraIntent,
+  type EdgeMarker,
+} from "./camera.ts";
 import { stationCountLabel } from "./lanes.ts";
 import { capLabels, labelIds } from "./labels.ts";
 import { createFrameLoop, type FrameLoop } from "./loop.ts";
@@ -1749,13 +1759,15 @@ export default function Deck({
         const step = event.shiftKey ? PAN_STEP * 3 : PAN_STEP;
         const right = event.key === "ArrowRight" ? step : event.key === "ArrowLeft" ? -step : 0;
         const forward = event.key === "ArrowUp" ? step : event.key === "ArrowDown" ? -step : 0;
-        dispatchCamera({ kind: "pan", right, forward }, true);
+        dispatchCamera({ kind: "pan", right, forward, bounds: model.bounds }, true);
       } else if (key === "+" || key === "=" || key === "-") {
-        dispatchCamera({ kind: "zoom", factor: key === "-" ? 1 / ZOOM_STEP : ZOOM_STEP }, true);
+        dispatchCamera(
+          { kind: "zoom", factor: key === "-" ? 1 / ZOOM_STEP : ZOOM_STEP, maxDistance: maxRetreatFor(model.bounds, aspect()) },
+          true,
+        );
       } else {
         return;
       }
-      event.preventDefault();
     },
     [
       autoTier,
@@ -1792,11 +1804,15 @@ export default function Deck({
       // scene area zooms.
       if (event.target instanceof Element && event.target.closest(".omp-livefeed-log, .omp-deck-lanes, .omp-deck-mirror") !== null) return;
       event.preventDefault();
-      dispatchCamera({ kind: "zoom", factor: event.deltaY > 0 ? ZOOM_STEP : 1 / ZOOM_STEP }, true);
+      const current = modelRef.current;
+      dispatchCamera(
+        { kind: "zoom", factor: event.deltaY > 0 ? ZOOM_STEP : 1 / ZOOM_STEP, maxDistance: maxRetreatFor(current.bounds, aspect()) },
+        true,
+      );
     };
     stage.addEventListener("wheel", onWheel, { passive: false });
     return () => stage.removeEventListener("wheel", onWheel);
-  }, [dispatchCamera]);
+  }, [aspect, dispatchCamera]);
 
   useEffect(() => {
     const container = containerRef.current;
@@ -1818,6 +1834,18 @@ export default function Deck({
     }
     return { labelRenderPositions: render, labelsHidden: hidden };
   }, [availability, labelPositions, model]);
+  /**
+   * Degraded view (`ux02`): pure read of camera vs work, recomputed from the
+   * same inputs as the markers (no new subscription, no automation). Flat
+   * never degrades — the table cannot lose the work.
+   */
+  const degraded = useMemo(
+    () => availability === "3d" && isDegradedView(cameraRef.current, model, aspect()),
+    // cameraRef/aspect read live at render: model + markers + labels move it.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [availability, model, edgeMarkers, labelPositions],
+  );
+
 
 
   /**
@@ -1868,6 +1896,8 @@ export default function Deck({
       helpOpen={hudOpen}
       labelPositions={labelRenderPositions}
       labelsHidden={labelsHidden}
+      degraded={degraded}
+      onReframe={() => framePreset(preset)}
     />
   );
 

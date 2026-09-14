@@ -23,18 +23,25 @@ export type CameraIntent =
   | { kind: "focus"; node: { x: number; z: number }; aspect: number }
   /** `rail`: fit the whole roadmap. */
   | { kind: "rail"; bounds: DeckModel["bounds"]; aspect: number }
-  /** Operator pan, in world units along the camera's floor basis. */
-  | { kind: "pan"; right: number; forward: number }
-  | { kind: "zoom"; factor: number }
+  /** Operator pan, in world units along the camera's floor basis. `bounds`
+   * clamps the target to the rail plus a margin (`ux02`); absent keeps the
+   * legacy unclamped behaviour for callers without a world. */
+  | { kind: "pan"; right: number; forward: number; bounds?: DeckModel["bounds"] }
+  /** Operator zoom. `maxDistance` caps the retreat (`ux02`); absent keeps the
+   * tier's absolute ceiling for callers without a world. */
+  | { kind: "zoom"; factor: number; maxDistance?: number }
   | { kind: "orbit"; dAzimuth: number; dElevation: number };
 
 /** Clamps shared by every intent; the renderer's near/far planes are 0.1/500. */
 export const CAMERA_LIMITS = {
   minDistance: 6,
   maxDistance: 400,
-  minElevation: 0.12,
+  /** `ux02`: 0.35 rad keeps pads readable — below this the rail goes edge-on
+   * and the `d03-workflow` sliver state returns (pads as lines, grid as noise). */
+  minElevation: 0.35,
   maxElevation: 1.45,
-  /** How far past the rail's box a pan may go before it stops. */
+  /** How far past the rail's box a pan may go before it stops. `pan` intents
+   * without bounds keep the legacy leash; bounded pans clamp to the rail. */
   panMargin: 12,
 } as const;
 
@@ -76,8 +83,10 @@ export function applyCameraIntent(state: CameraState, intent: CameraIntent): Cam
       return frameForNode(intent.node, intent.aspect);
     case "rail":
       return railFraming(intent.bounds, intent.aspect);
-    case "zoom":
-      return { ...state, distance: clamp(state.distance * intent.factor, CAMERA_LIMITS.minDistance, CAMERA_LIMITS.maxDistance) };
+    case "zoom": {
+      const ceiling = intent.maxDistance ?? CAMERA_LIMITS.maxDistance;
+      return { ...state, distance: clamp(state.distance * intent.factor, CAMERA_LIMITS.minDistance, ceiling) };
+    }
     case "orbit":
       return {
         ...state,
@@ -85,7 +94,7 @@ export function applyCameraIntent(state: CameraState, intent: CameraIntent): Cam
         elevation: clamp(state.elevation + intent.dElevation, CAMERA_LIMITS.minElevation, CAMERA_LIMITS.maxElevation),
       };
     case "pan":
-      return { ...state, target: panTarget(state, intent.right, intent.forward) };
+      return { ...state, target: panTarget(state, intent.right, intent.forward, intent.bounds) };
   }
 }
 
@@ -96,14 +105,27 @@ export function applyCameraIntent(state: CameraState, intent: CameraIntent): Cam
  * how the operator reads it. (Basis = three's `lookAt`: `z = eye − target`,
  * `x = normalize(cross(up, z))`, `y = cross(z, x)`.)
  */
-function panTarget(state: CameraState, right: number, forward: number): { x: number; y: number; z: number } {
+function panTarget(
+  state: CameraState,
+  right: number,
+  forward: number,
+  bounds?: DeckModel["bounds"],
+): { x: number; y: number; z: number } {
   const sinA = Math.sin(state.azimuth);
   const cosA = Math.cos(state.azimuth);
   // screen-right = (cosA, 0, −sinA); look direction = (−sinA, 0, −cosA)
+  const x = state.target.x + cosA * right - sinA * forward;
+  const z = state.target.z - sinA * right - cosA * forward;
+  if (!bounds) return { x, y: state.target.y, z };
+  // `ux02`: the target stays near the rail — the world cannot be panned out
+  // of the frame, only explored inside it. Margin is half the rail's short
+  // axis plus a small leash, so a long shallow rail keeps its short-axis
+  // context without permitting a cross-country pan along its length.
+  const margin = Math.min(bounds.width, bounds.depth) * 0.5 + 6;
   return {
-    x: state.target.x + cosA * right - sinA * forward,
+    x: clamp(x, bounds.centerX - margin, bounds.centerX + margin),
     y: state.target.y,
-    z: state.target.z - sinA * right - cosA * forward,
+    z: clamp(z, bounds.centerZ - margin, bounds.centerZ + margin),
   };
 }
 
@@ -256,4 +278,32 @@ export function edgeAnchor(
     angle: Math.atan2(-ndcY, ndcX),
     behind,
   };
+}
+
+/**
+ * Whether the camera has lost the work (`ux02`): fewer than half the live
+ * workers visible, or the focus outside the frustum. Pure state read — the
+ * caller shows a recovery affordance (`0` re-frames), never yanks the camera
+ * (correction §10: constraints, not automation).
+ */
+export function isDegradedView(
+  state: CameraState,
+  model: { focusId: string | null; liveIds: readonly string[]; nodes: readonly { id: string; x: number; z: number }[] },
+  aspect: number,
+): boolean {
+  const visible = new Set(visibleSliceIds(state, model.nodes, aspect));
+  if (model.focusId !== null && !visible.has(model.focusId)) return true;
+  if (model.liveIds.length === 0) return false;
+  const seen = model.liveIds.filter((id) => visible.has(id)).length;
+  return seen < model.liveIds.length / 2;
+}
+
+/**
+ * The `0`-key retreat (`ux02`): the rail fit when nothing is framed, else the
+ * `command` framing — bounded by construction, so recovery always lands on a
+ * readable state. The zoom ceiling keeps a huge-rail `0` from parking at
+ * 400 units: no farther than 1.6× the framing distance.
+ */
+export function maxRetreatFor(bounds: DeckModel["bounds"], aspect: number): number {
+  return railFraming(bounds, aspect).distance * 1.6;
 }

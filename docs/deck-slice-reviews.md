@@ -2325,3 +2325,29 @@ Worse: the default view keeps every pre-UX01 panel (lanes, HUD strip,
 alerts, control, live window) — subtraction is UX03's job, not this slice's.
 Labels sit above pads and can sit under the lane strip on narrow windows;
 the anchor is fixed, not occlusion-aware.
+
+## ux02 — camera safety without automation
+
+Objective: free exploration without destroyable framing (§10: constrain,
+never auto-move). No policy change: focus-follow, presets, keys, flights
+all preserved.
+
+Reproduce: `bun test tests/deck-focus.test.ts` (20 pass); fixture check →
+40× ArrowRight clamps at the rail leash (reframe shown), 40× `+` retreats
+to the rail-fit ceiling (no reframe — still readable), `0` restores
+`command` framing with reframe cleared and 3 labels.
+
+What landed: `camera.ts` — `minElevation 0.12→0.35` (kills the edge-on
+sliver state), bounded `pan` (`bounds` → rail center ± short-axis/2+6,
+absent keeps legacy), bounded `zoom` (`maxDistance` → 1.6× rail fit via
+`maxRetreatFor`), `isDegradedView` (focus off-screen OR <half live set
+visible); `Deck.tsx` passes bounds/ceiling on arrows/wheel/`+`-`-`,
+`degraded` memo (flat never degrades), `onReframe = framePreset(preset)`;
+`DeckOverlay.tsx` quiet `Reset framing (0)` button (present only when
+degraded); theme.css top-center placement; 4 new specs in
+`deck-focus.test.ts`.
+
+Worse: the pan leash is still generous along a long rail's length axis
+(short-axis bound, not a box); a determined operator can still frame mostly
+floor. Recovery is one key, not zero — accepted: automation would violate
+§10 and the d03/d04 focus-follow expectations.

@@ -26,7 +26,9 @@ import {
   edgeAnchor,
   EDGE_INSET,
   focusIntent,
+  isDegradedView,
   lerpCamera,
+  maxRetreatFor,
   offScreenIds,
   visibleSliceIds,
   type CameraState,
@@ -290,5 +292,39 @@ describe("the station shaft", () => {
     for (let i = 1; i < values.length; i++) expect(values[i]!).toBeGreaterThanOrEqual(values[i - 1]!);
     // Out-of-range input (a future pipeline with more or fewer steps) stays bounded.
     expect(shaftSegments(99)).toBe(4);
+  });
+});
+
+describe("ux02 camera safety: degenerate states are unreachable, recovery is one key", () => {
+  test("elevation never drops to edge-on, even under repeated orbit", () => {
+    let state = DEFAULT_CAMERA;
+    for (let i = 0; i < 20; i++) state = applyCameraIntent(state, { kind: "orbit", dAzimuth: 0, dElevation: -1 });
+    expect(state.elevation).toBeGreaterThanOrEqual(0.35);
+    expect(state.elevation).toBe(CAMERA_LIMITS.minElevation);
+  });
+
+  test("bounded pan stays on the rail; unbounded pan keeps legacy behaviour", () => {
+    const state: CameraState = { target: { x: 0, y: 0.35, z: 0 }, distance: 20, azimuth: 0, elevation: 0.5 };
+    const bounded = applyCameraIntent(state, { kind: "pan", right: 1000, forward: 1000, bounds: BOUNDS });
+    const margin = Math.min(BOUNDS.width, BOUNDS.depth) * 0.5 + 6;
+    expect(Math.abs(bounded.target.x - BOUNDS.centerX)).toBeLessThanOrEqual(margin);
+    expect(Math.abs(bounded.target.z - BOUNDS.centerZ)).toBeLessThanOrEqual(margin);
+    const legacy = applyCameraIntent(state, { kind: "pan", right: 1000, forward: 0 });
+    expect(legacy.target.x).toBeCloseTo(1000, 10);
+  });
+  test("bounded zoom retreats no farther than 1.6x the rail fit", () => {
+    const ceiling = maxRetreatFor(BOUNDS, 1.6);
+    let state = DEFAULT_CAMERA;
+    for (let i = 0; i < 60; i++) state = applyCameraIntent(state, { kind: "zoom", factor: 1.25, maxDistance: ceiling });
+    expect(state.distance).toBe(ceiling);
+    expect(ceiling).toBeLessThan(CAMERA_LIMITS.maxDistance);
+  });
+
+  test("isDegradedView fires when focus leaves or the live set is lost, never on a healthy frame", () => {
+    const healthy = railFraming(BOUNDS, 1.6);
+    expect(isDegradedView(healthy, { focusId: "n5", liveIds: ["n4", "n5"], nodes: NODES }, 1.6)).toBe(false);
+    expect(isDegradedView(healthy, { focusId: "n5", liveIds: [], nodes: NODES }, 1.6)).toBe(false);
+    const lost: CameraState = { target: { x: 1000, y: 0.35, z: 1000 }, distance: 20, azimuth: 0, elevation: 0.5 };
+    expect(isDegradedView(lost, { focusId: "n5", liveIds: ["n4", "n5"], nodes: NODES }, 1.6)).toBe(true);
   });
 });

@@ -138,6 +138,8 @@ export default function DeckOverlay({
   helpOpen = false,
   labelPositions,
   labelsHidden = 0,
+  degraded = false,
+  onReframe,
 }: {
   model: DeckModel;
   /** Pad under the pointer, if any — previewed without changing selection. */
@@ -233,6 +235,11 @@ export default function DeckOverlay({
   labelPositions?: ReadonlyMap<string, { x: number; y: number }>;
   /** Labels suppressed by the density cap — stated, never silent. */
   labelsHidden?: number;
+  /** The camera has lost the work (`ux02`): fewer than half the live set
+   * visible, or the focus off-screen. Shows the recovery affordance only. */
+  degraded?: boolean;
+  /** Re-frame to the readable state (`0` preset framing). Present only. */
+  onReframe?: () => void;
 }) {
   const nodeById = new Map(model.nodes.map((node) => [node.id, node]));
   const selected = model.nodes.find((node) => node.selected) ?? null;
@@ -504,6 +511,13 @@ export default function DeckOverlay({
             </button>
           ))}
         </div>
+      )}
+      {/* Degraded view (`ux02`): the camera lost the work. One quiet button
+          naming the exit — never an auto-reframe (correction §10). */}
+      {!flat && degraded && onReframe && (
+        <button type="button" className="omp-deck-reframe" onClick={onReframe} title="Re-frame the run (0)">
+          Reset framing (0)
+        </button>
       )}
       {/* Projected spatial labels (`ux01`): DOM identity at the pad's screen
           position — `id · Stage` plus glyphs, never diagnostics. Decorative
