@@ -125,7 +125,8 @@ ompo --tui            # TUI fallback: plan (if needed) → run → done in the t
 
 The dashboard ships a spatial operator surface — a 3D rail of the roadmap, live-worker stations and
 the bounded live window — at `?surface=deck` (a lazy chunk; the shell page pays nothing for it).
-One command opens it in a chrome-less app window:
+Three ways to open it: append `?surface=deck` to the dashboard URL, press the header `Deck` toggle
+(or `D` on either surface), or open it in a chrome-less app window:
 
 ```bash
 bun scripts/deck-open.ts   # start ompo + open the deck in an app window (Ctrl-C stops the server)
@@ -149,6 +150,22 @@ bun scripts/deck-open.ts   # start ompo + open the deck in an app window (Ctrl-C
 - **Stopping.** Ctrl-C in the terminal kills the ompo server it started (no orphans). Closing the
   window does not stop ompo — browser process semantics — which is why the launcher prints
   `stop: Ctrl-C` once rather than pretending otherwise.
+- **Fallback.** No WebGL2, a lost context, or `T` into flat mode renders the same slices, workers,
+  live window, alerts and controls as a document (no canvas) with a one-sentence notice naming the
+  reason. A failed deck chunk leaves a card with the way back; the dashboard never unmounts.
+- **Platforms.** Browser launcher is the supported path on Linux/WSL (software-rendered SwiftShader
+  → `minimal` tier). The optional Tauri 2 shell (`desktop/`, `bun run deck:desktop:dev`) targets
+  Windows 11/WebView2; Linux builds need Rust + WebKitGTK and macOS is untested — see
+  [`desktop/README.md`](desktop/README.md).
+- **When the dashboard is the better tool.** Dense textual forensics: scanning 20+ slices at once,
+  diffs, gate output, review findings, prompts, raw logs, the event query DSL, and any list over
+  ~10 items. Small windows, weak GPUs at `high`, and screen-reader-first operation also favour the
+  dashboard — which is why the deck embeds those exact 2D views in its dock instead of competing
+  with them.
+- **Evidence.** `bun run deck:captures` regenerates `captures/deck-*.png` + `captures/deck-qa.json`
+  against the fixture server (run `bun run web:build` first); frame budgets live in
+  [`docs/deck-performance-budget.md`](docs/deck-performance-budget.md). Architecture contract:
+  [`docs/deck-architecture.md`](docs/deck-architecture.md).
 
 
 ## Adopt a foreign roadmap (any template, mid-progress)

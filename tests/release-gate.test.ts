@@ -618,4 +618,33 @@ describe("release gate: deck boundary (roadmap d01)", () => {
     }
     expect(violations).toEqual([]);
   });
+  test("d14: the deck is removable — no file outside App.tsx references scene/", () => {
+    // Roadmap d14 removability proof: deleting the deck is a revert of the
+    // App.tsx wiring below plus optional deletions (web/src/scene/**,
+    // scripts/deck-*.ts, desktop/). Anything else importing the scene widens
+    // that revert. Comment mentions do not count — only module specifiers
+    // (static and dynamic) can pull the chunk back in.
+    const violations: string[] = [];
+    for (const file of walkFiles(webRoot, (name) => name.endsWith(".ts") || name.endsWith(".tsx"))) {
+      const name = relative(file);
+      if (name.startsWith("scene/")) continue;
+      const text = readFileSync(file, "utf8");
+      const refs = [
+        ...importSpecifiers(text),
+        ...[...text.matchAll(/import\(\s*["']([^"']+)["']\s*\)/g)].map((m) => m[1]!),
+      ].filter((spec) => spec.includes("scene/"));
+      if (refs.length > 0 && name !== "App.tsx") violations.push(`${name} references ${refs.join(", ")}`);
+    }
+    expect(violations).toEqual([]);
+    // The one allowed file touches exactly three seams: the instrument the
+    // shell feeds with event timestamps, the ReplayState type, and the lazy
+    // chunk itself. The Header toggle is prop-only (a "dashboard" | "deck"
+    // string), and the ?surface= read lives in App.tsx with it.
+    const app = readFileSync(join(webRoot, "App.tsx"), "utf8");
+    expect(app).toContain('from "./scene/instrument.ts"');
+    expect(app).toContain('from "./scene/types.ts"');
+    expect(app).toContain('import("./scene/Deck.tsx")');
+    const headerSpecs = importSpecifiers(readFileSync(join(webRoot, "components", "Header.tsx"), "utf8"));
+    expect(headerSpecs.some((spec) => spec.includes("scene/"))).toBe(false);
+  });
 });

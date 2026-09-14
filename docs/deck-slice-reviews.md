@@ -1,4 +1,4 @@
-# Deck slice reviews (d00–d12)
+# Deck slice reviews (d00–d14)
 
 Performance observations per slice, in the terms the operator cares about: what a frame costs, what
 an event costs, what the DOM does while nobody is looking, and whether the surface is still usable
@@ -2171,3 +2171,86 @@ and the boundedness of every parameter (fog, parallax, drift, settle).
 | toggling an effect never moves the camera, changes the selection, or re-creates scene objects | ✔ asserted, and the switch's own scene reading is asserted with it (`floorVisible`, `drawCalls`, `fogFar`) |
 | no colour literal in `scene/**` outside `palette.ts` | ✔ asserted by `tests/deck-palette.test.ts`, which also proves the palette and `tokens.css` agree |
 | gates clean | ✔ `tsc --noEmit`, `bun test` (890), `git diff --check` |
+
+---
+
+## d14 — operability, docs, evidence, release gate
+
+No product code: docs, one capture script, one gate assertion, one README section, and the
+sweep that proves the rest still holds. The only runtime-adjacent files touched are
+`tests/release-gate.test.ts` (+29 lines: the removability assertion) and `package.json`
+(one script: `deck:captures`).
+
+### Reproduce
+
+```bash
+bunx tsc --noEmit
+bun test                                                       # 892 pass / 0 fail, 65 files
+git diff --check
+bun run web:build                                              # bundle identical to the d13 build
+bun run deck:captures                                          # 9/9 shots ok → captures/deck-qa.json
+bun scripts/deck-desktop-check.ts                              # ok
+bun scripts/gen-captures.ts                                    # TUI captures byte-identical
+bun build --compile src/cli.ts --outfile /tmp/ompo-deck-smoke  # 98 646 144 bytes
+```
+
+### 1. What landed
+
+- **`docs/deck-architecture.md`** — the as-built sibling of
+  `docs/web-dashboard-architecture.md`: module map (§2), CP-1…CP-8 with evidence and triggers
+  (§3), data flow with every cadence and bound (§4), the endpoint table with the deck's exact
+  consumption per route (§5: shell-owned vs dock-owned vs live-window-owned), tier/effect tables
+  (§6), the enforced-rules table (§7), install/launch/run/reconnect/failure/cleanup (§8),
+  surface + prefs contracts (§9), bundle/binary/measured record (§10), platform matrix (§11),
+  removability proof (§12), honesty + not-built + revisit trigger (§13), accepted-vs-blocker
+  verdicts (§14), and the review checklist with the sweep commands (§15).
+- **`scripts/deck-captures.ts`** (`bun run deck:captures`) — evidence generator over the e2e
+  fixture server: prefs seeded per shot, 9 screenshots + `captures/deck-qa.json` with one
+  assertion each. This run: **9/9 ok** (minimal 3d, 2 alerts, standard, high, effects-off
+  `ambient []`, flat forced with 0 canvases, reduced `ambient [floor,fog]`, dock open · Output,
+  2 wall rows).
+- **Removability assertion** — `tests/release-gate.test.ts` scans every `web/src` module
+  specifier (static + dynamic; comments do not count): no file outside `App.tsx` references
+  `scene/`, and `App.tsx` touches exactly the three seams (instrument import, `ReplayState`
+  type, lazy chunk). `Header.tsx` asserted scene-free separately.
+- **README "Deck" section** — gained the three opens (URL, toggle/`D`, launcher), fallback,
+  platform pointer, the honest "dashboard is better at forensics" paragraph, and the evidence
+  pointers. The d11 handshake lines are unchanged.
+
+### 2. Measured
+
+| Artifact | Bytes | Note |
+|---|---|---|
+| `Deck-D4TrDqWJ.js` (lazy) | 639 890 (gzip ~162 KB) | byte-identical name+size to the d13 build |
+| `index-meK1i3v6.js` (shell) | 458 380 (gzip ~134 KB) | untouched — the dashboard pays nothing |
+| Smoke binary `/tmp/ompo-deck-smoke` | 98 646 144 | +180 224 (+0.18%) vs gitignored `./ompo` — toolchain noise, embedded bundle identical |
+| Smoke serves | `/` 200 · `/api/health` `{"ok":true,"version":"0.2.0"}` · `/?surface=deck` 200 · deck chunk 200 | loopback proxy bypass (`NO_PROXY`) required — without it the same curls 502 |
+| `bun test` | 892 pass / 0 fail (65 files) | release-gate 19/19 incl. the new assertion |
+| CLI smoke | `plan` 0 (1 warning) · `run --dry-run` 0 · `--tui --help` 0 · `logs --help` 0 | no regressions on the non-deck surfaces |
+| `deck.e2e.ts --workers=1` | 31 passed / 2 failed in the full file (7.3 min) — both classified environmental (below): each passes alone (7.0 s / 9.3 s) |
+
+### 3. What this does worse, and open findings
+
+1. **Two full-file e2e failures, both classified — not this slice's.** `deck focus › F pins the
+   selection` (camera `x` 0 vs 0.0011, `z` 5.5200 vs 5.5194 — the spec's own documented
+   `settledCamera` hazard: two equal samples both pre-flight when frames starve) and `deck
+   alerts › dismissing clears row and beacon` (`beacons` 0 where ≥ alerts expected — an earlier
+   spec's control event had already moved the shared fixture: the snapshot shows `p-two`/`p-one`
+   skipped with a `control-rejected` alert outstanding). Both pass alone (7.0 s / 9.3 s); d13
+   recorded the same class twice under load; d14 writes no camera, alert, or control code.
+   Left as recorded environmental behaviour rather than re-pinned or loosened here.
+2. **The e2e tail is the release's slowest gate.** `deck.e2e.ts` alone runs for many minutes on
+   SwiftShader; the full `--workers=1` sweep is a patience test this box has never completed in
+   one sitting (d12). d14 adds no coverage to make it slower — but it does not make it faster
+   either.
+3. **`deck-captures.ts` overlaps the d13 captures.** The d13 PNGs (`deck-d13-*.png`) stay as the
+   expression pass's own record; the d14 set (`deck-tier-*.png`, `deck-effects-off.png`, …) is
+   the release record. Two captures of "effects off" exist on purpose, one per slice.
+4. **M10, Tauri acceptance, drift's look, the help/HUD overlap** — unchanged, all accepted
+   risks (§14 of the architecture note). d14 decides them, fixes none of them.
+
+### Verdict
+
+**PASS — recommendation, not a decision.** d14 is the release gate doing its job: the deck is
+documented, reproducible, removable, and measured — with the same owed items it entered with,
+named as accepted risks rather than fixed.

@@ -1,0 +1,58 @@
+{
+  "at": "2026-09-14T11:08:57.065Z",
+  "base": "/?surface=deck",
+  "viewport": {
+    "width": 1440,
+    "height": 900
+  },
+  "server": "tests/e2e/serve.ts",
+  "bundle": "embedded (bun run web:build first)",
+  "shots": [
+    {
+      "file": "deck-tier-minimal.png",
+      "ok": true,
+      "detail": "tier minimal (3d)"
+    },
+    {
+      "file": "deck-alerts.png",
+      "ok": true,
+      "detail": "2 alerts active"
+    },
+    {
+      "file": "deck-tier-standard.png",
+      "ok": true,
+      "detail": "tier standard"
+    },
+    {
+      "file": "deck-tier-high.png",
+      "ok": true,
+      "detail": "tier high"
+    },
+    {
+      "file": "deck-effects-off.png",
+      "ok": true,
+      "detail": "ambient []"
+    },
+    {
+      "file": "deck-flat.png",
+      "ok": true,
+      "detail": "flat (forced), 0 canvases"
+    },
+    {
+      "file": "deck-motion-reduced.png",
+      "ok": true,
+      "detail": "motion reduced, ambient [floor, fog]"
+    },
+    {
+      "file": "deck-inspector.png",
+      "ok": true,
+      "detail": "dock open · Output"
+    },
+    {
+      "file": "deck-wall.png",
+      "ok": true,
+      "detail": "2 run rows"
+    }
+  ],
+  "ok": true
+}
