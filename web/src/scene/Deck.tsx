@@ -43,6 +43,7 @@ import { deckAvailability, deckMode, nextDeckMode, type DeckAvailability } from 
 import { focusTarget, nextLiveId } from "./focus.ts";
 import { applyCameraIntent, edgeAnchor, focusIntent, lerpCamera, offScreenIds, type CameraIntent, type EdgeMarker } from "./camera.ts";
 import { stationCountLabel } from "./lanes.ts";
+import { capLabels, labelIds } from "./labels.ts";
 import { createFrameLoop, type FrameLoop } from "./loop.ts";
 import { createDeckRenderer, probeRendererString, type DeckRenderer } from "./renderer.ts";
 import { instrument } from "./instrument.ts";
@@ -74,6 +75,13 @@ const ZOOM_STEP = 1.12;
  * ≤ `RIBBON_MAX_BUCKETS × this`.
  */
 const PLAY_MS = 320;
+/**
+ * Projected labels shown at once (`ux01`): the focus/primary pair plus live
+ * workers, capped for human parsing — past this the remainder keeps its lane
+ * row and the label layer states the count. Focus + primary are never capped
+ * away (`capLabels`).
+ */
+const LABEL_CAP = 8;
 /**
  * The two camera presets this slice owns (`d04` adds `topology`): `command`
  * frames the focus target, `rail` fits the whole roadmap. Auto-framing only
@@ -333,6 +341,14 @@ export default function Deck({
   const [dock, setDock] = useState<DockState>(DOCK_CLOSED);
   /** `command` follows the work; `rail` is the operator's whole-run overview. */
   const [preset, setPreset] = useState<DeckCameraPreset>("command");
+  /**
+   * Projected spatial labels (`ux01`): screen-space positions of the label
+   * set, recomputed when the camera settles or the world changes — never per
+   * frame. Entries whose pad projects to `null` (off-screen, behind) are
+   * suppressed by rule, not hidden by clipping.
+   */
+  const [labelPositions, setLabelPositions] = useState<ReadonlyMap<string, { x: number; y: number }>>(new Map());
+  const labelKeyRef = useRef("");
   const containerRef = useRef<HTMLDivElement | null>(null);
   const stageRef = useRef<HTMLDivElement | null>(null);
   const dockRef = useRef(dock);
@@ -681,6 +697,39 @@ export default function Deck({
     deckHook().offScreen = markers.map((marker) => marker.id);
     setEdgeMarkers(markers);
   }, [aspect]);
+  /**
+   * Projected label positions (`ux01`): the `labelIds` set resolved to
+   * screen-space points at pad-top height. Same cadence as the edge markers
+   * (camera settle / world change, never per frame); a pad whose projection
+   * is `null` stays out of the map, and a settled camera with an unchanged
+   * set commits nothing. Labels never request a frame and never schedule one.
+   */
+  const refreshLabelPositions = useCallback((): void => {
+    const renderer = rendererRef.current;
+    const current = modelRef.current;
+    if (!renderer) {
+      if (labelKeyRef.current !== "") {
+        labelKeyRef.current = "";
+        setLabelPositions(new Map());
+      }
+      return;
+    }
+    const nodeById = new Map(current.nodes.map((node) => [node.id, node]));
+    const next = new Map<string, { x: number; y: number }>();
+    for (const id of labelIds(current)) {
+      const node = nodeById.get(id);
+      if (!node) continue;
+      // Above the tallest pad (running/verifying 0.85) plus the station
+      // column's headroom — a fixed anchor, never per-status math here.
+      const point = renderer.project(node.x, 2.2, node.z);
+      if (point) next.set(id, point);
+    }
+    const key = [...next.entries()].map(([id, point]) => `${id}@${point.x.toFixed(1)},${point.y.toFixed(1)}`).join("|");
+    if (key === labelKeyRef.current) return;
+    labelKeyRef.current = key;
+    setLabelPositions(next);
+  }, []);
+
 
   /** Write a camera state through to the renderer and publish it to the hook. */
   const applyCamera = useCallback((renderer: DeckRenderer, next: DeckCamera): void => {
@@ -704,12 +753,13 @@ export default function Deck({
         tweenRef.current = null;
         applyCamera(renderer, to);
         refreshEdgeMarkers();
+        refreshLabelPositions();
       } else {
         tweenRef.current = { from: cameraRef.current, to, startedAt: performance.now(), durationMs: CAMERA_LERP_MS };
       }
       loopRef.current?.request();
     },
-    [applyCamera, refreshEdgeMarkers, reducedMotion],
+    [applyCamera, refreshEdgeMarkers, refreshLabelPositions, reducedMotion],
   );
 
   /** Frame one slice id, from the model's own node list. */
@@ -812,6 +862,7 @@ export default function Deck({
         renderer.setSize(size.width, size.height);
         loopRef.current?.request();
         refreshEdgeMarkers();
+        refreshLabelPositions();
       } else {
         setReady(true);
       }
@@ -834,7 +885,7 @@ export default function Deck({
     // `availability` re-runs this when the deck returns from flat mode: the
     // stage is a different element then, and it must be measured before the
     // renderer effect builds a context for it.
-  }, [availability, refreshEdgeMarkers]);
+  }, [availability, refreshEdgeMarkers, refreshLabelPositions]);
 
   // Renderer + loop lifecycle: one WebGL context per mount. Creating contexts
   // is the expensive, fragile part on a software rasterizer (measured: a second
@@ -881,8 +932,8 @@ export default function Deck({
         applyCamera(active, lerpCamera(tween.from, tween.to, t * t * (3 - 2 * t)));
         if (t >= 1) {
           tweenRef.current = null;
-          // The camera has stopped: the off-screen set is what it is now.
           refreshEdgeMarkers();
+          refreshLabelPositions();
         }
       }
       /**
@@ -977,6 +1028,7 @@ export default function Deck({
     frameSlice(modelRef.current.focusId, true);
     framingRef.current = { focusId: modelRef.current.focusId, shape: boundsShape(modelRef.current.bounds) };
     refreshEdgeMarkers();
+    refreshLabelPositions();
     hook.screenPosition = (id: string) => {
       const node = modelRef.current.nodes.find((candidate) => candidate.id === id);
       const active = rendererRef.current;
@@ -1057,7 +1109,8 @@ export default function Deck({
     previousModelRef.current = model;
     applyToScene(renderer, model, deltas);
     refreshEdgeMarkers();
-  }, [model, applyToScene, refreshEdgeMarkers]);
+    refreshLabelPositions();
+  }, [model, applyToScene, refreshEdgeMarkers, refreshLabelPositions]);
 
   /**
    * The camera policy — the only place that decides a framing without the
@@ -1749,6 +1802,23 @@ export default function Deck({
     const container = containerRef.current;
     if (container && !container.contains(document.activeElement)) container.focus({ preventScroll: true });
   }, []);
+  /**
+   * The capped render set (`ux01`): `labelIds` priority order through
+   * `capLabels`, intersected with the projected positions (off-screen stays
+   * out). Flat renders none — the table is the identity there.
+   */
+  const { labelRenderPositions, labelsHidden } = useMemo(() => {
+    if (availability === "flat" || labelPositions.size === 0) return { labelRenderPositions: labelPositions, labelsHidden: 0 };
+    const ordered = labelIds(model);
+    const { shown, hidden } = capLabels(ordered, model.focusId, model.primaryId, LABEL_CAP);
+    const kept = new Set(shown);
+    const render = new Map<string, { x: number; y: number }>();
+    for (const [id, point] of labelPositions) {
+      if (kept.has(id)) render.set(id, point);
+    }
+    return { labelRenderPositions: render, labelsHidden: hidden };
+  }, [availability, labelPositions, model]);
+
 
   /**
    * The DOM layer is identical whichever path renders — the canvas draws
@@ -1796,6 +1866,8 @@ export default function Deck({
       slices={detail?.slices ?? []}
       flat={availability === "flat"}
       helpOpen={hudOpen}
+      labelPositions={labelRenderPositions}
+      labelsHidden={labelsHidden}
     />
   );
 

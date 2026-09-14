@@ -49,6 +49,9 @@ export const SEVERITY_RANK: Record<AlertSeverity, number> = { high: 0, medium: 1
 /** How many rings a severity draws (the scene's non-colour channel). */
 export const SEVERITY_RINGS: Record<AlertSeverity, number> = { high: 2, medium: 1, advisory: 1 };
 
+/** Severity as a glyph, next to the plain word. The stack never depends on colour. */
+export const SEVERITY_GLYPH: Record<AlertSeverity, string> = { high: "!!", medium: "!", advisory: "i" };
+
 const SEVERITY_BY_KIND: Record<DeckAlertKind, AlertSeverity> = {
   failed: "high",
   "blocked-env": "high",

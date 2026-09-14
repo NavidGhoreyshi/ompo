@@ -30,9 +30,10 @@ import { formatEventTime, liveSliceEvent } from "../lib/events.ts";
 import { formatDurationMs, formatSpan } from "../lib/format.ts";
 import { heroAction } from "../lib/selection.ts";
 import type { TimelineAttempt } from "../lib/timeline.ts";
-import type { AlertSeverity, DeckAlert } from "./alerts.ts";
+import { SEVERITY_GLYPH, type AlertSeverity, type DeckAlert } from "./alerts.ts";
 import type { EdgeMarker } from "./camera.ts";
 import { flatRowLabel, flatRows, focusMirrorText } from "./fallback.ts";
+import { alertGlyphFor, labelStage, spatialLabelFor } from "./labels.ts";
 import FlatDeck from "./FlatDeck.tsx";
 import type { RibbonBucket } from "./history.ts";
 import { useRovingFocus } from "./roving.ts";
@@ -40,13 +41,6 @@ import type { DeckModel, ReplayState } from "./types.ts";
 import { DECK_KEYS } from "./types.ts";
 import HistoryWall from "./HistoryWall.tsx";
 import DeckControlBar from "./ControlBar.tsx";
-
-/**
- * Severity as a glyph, next to the plain word. The stack never depends on
- * colour: the ring count in the scene, the glyph and the word here, and the
- * message itself all say the same thing.
- */
-const SEVERITY_GLYPH: Record<AlertSeverity, string> = { high: "!!", medium: "!", advisory: "i" };
 
 /**
  * Pads listed in the DOM mirror. Past this the list states the remainder in
@@ -142,6 +136,8 @@ export default function DeckOverlay({
   slices,
   flat = false,
   helpOpen = false,
+  labelPositions,
+  labelsHidden = 0,
 }: {
   model: DeckModel;
   /** Pad under the pointer, if any — previewed without changing selection. */
@@ -228,6 +224,15 @@ export default function DeckOverlay({
   flat?: boolean;
   /** The keyboard help panel (`d09`), toggled by `H`/`?` on the deck. */
   helpOpen?: boolean;
+  /**
+   * Projected label positions (`ux01`): screen-space points keyed by slice
+   * id, resolved by the shell from `renderer.project` at camera settle. The
+   * overlay only renders the entries present — suppression (off-screen,
+   * uncapped) already happened upstream.
+   */
+  labelPositions?: ReadonlyMap<string, { x: number; y: number }>;
+  /** Labels suppressed by the density cap — stated, never silent. */
+  labelsHidden?: number;
 }) {
   const nodeById = new Map(model.nodes.map((node) => [node.id, node]));
   const selected = model.nodes.find((node) => node.selected) ?? null;
@@ -500,6 +505,56 @@ export default function DeckOverlay({
           ))}
         </div>
       )}
+      {/* Projected spatial labels (`ux01`): DOM identity at the pad's screen
+          position — `id · Stage` plus glyphs, never diagnostics. Decorative
+          duplication of the lane strip's identity, so `aria-hidden`: the
+          mirror stays the assistive-technology path, and the labels take no
+          focus and no pointer events. Suppression (off-screen, over-cap)
+          happened upstream; only present positions render. */}
+      {!flat && labelPositions && labelPositions.size > 0 && (
+        <div className="omp-deck-labels" aria-hidden="true">
+          {[...labelPositions.entries()].map(([id, point]) => {
+            const node = nodeById.get(id);
+            const station = model.stations.find((candidate) => candidate.id === id);
+            if (!node || !station) return null;
+            const label = spatialLabelFor(node, station, alertGlyphFor(id, model.beaconAlerts));
+            return (
+              <span
+                key={id}
+                className="omp-deck-label"
+                data-slice-id={id}
+                data-focused={label.focused ? "true" : "false"}
+                data-primary={label.primary ? "true" : "false"}
+                style={{ left: `${point.x.toFixed(1)}px`, top: `${point.y.toFixed(1)}px` }}
+              >
+                <span className="omp-deck-label-id">{label.id}</span>
+                {label.stage !== "" && <span className="omp-deck-label-stage">{label.stage}</span>}
+                {label.alertGlyph !== null && <span className="omp-deck-label-alert">{label.alertGlyph}</span>}
+              </span>
+            );
+          })}
+          {labelsHidden > 0 && <span className="omp-deck-labels-more">+{labelsHidden} more</span>}
+        </div>
+      )}
+      {/* Legend (`ux01`): the frozen visual semantics (§11) in words, as a
+          closed disclosure so it costs one chip until asked. Clarifies; adds
+          no new channel. */}
+      {!flat && (
+        <details className="omp-deck-legend">
+          <summary>Legend</summary>
+          <ul>
+            <li>position · roadmap topology</li>
+            <li>height · status</li>
+            <li>brightness · focus</li>
+            <li>ring · selection</li>
+            <li>floor rings · alert severity</li>
+            <li>broken column · stalled</li>
+            <li>dashed edge · waiting on deps</li>
+            <li>column marks · pipeline stage</li>
+          </ul>
+        </details>
+      )}
+
 
       {/* The top band: the station line (what the scene is pointed at, in
           words) and the lane strip (every live worker). Side by side normally;

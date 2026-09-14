@@ -2291,3 +2291,37 @@ S1–S4 derive from this run — no new benchmark framework.
 Worse: d14's committed "9/9 ok" claim contradicted the tree until this fix
 (the script could not run at HEAD). No renderer, tier, model, or overlay
 change in this slice.
+
+## ux01 — conservative spatial labels + legend
+
+Objective: name the pooled stations in the scene so the operator stops
+cross-referencing the lane strip for basic identity (§2 hierarchy:
+focus/primary always, live normally, beaconed conditionally).
+
+Reproduce: `bunx tsc --noEmit`; `bun test tests/deck-labels.test.ts
+tests/deck-fallback.test.ts tests/release-gate.test.ts` (40 pass);
+`bun run web:build` + fixture check → 3 labels
+(`longtitle·Work` focused, `verifying·Verify`, `running·Work`), legend
+closed chip, flat 0 labels / 0 legend / 0 canvases, reduced-motion 3 labels.
+
+What landed: `scene/labels.ts` (pure: `labelStage` first-word short,
+`spatialLabelFor` `id · Stage` + glyphs, `labelIds` focus→primary→live→alerted
+over pooled stations only, `capLabels` with focus/primary protection,
+`alertGlyphFor` severest beacon); `Deck.tsx` projection at camera-settle /
+model / resize cadence (`refreshLabelPositions`, `LABEL_CAP=8`, anchor y=2.2
+above tallest pad .85 + station headroom); `DeckOverlay.tsx` `aria-hidden`
+labels layer + closed `Legend` disclosure (§11 semantics, 8 rows); theme.css
+positioning (labels `translate(-50%,-130%)`, legend above live window);
+`SEVERITY_GLYPH` hoisted `DeckOverlay.tsx` → `alerts.ts` (shared, no copy).
+`tests/deck-labels.test.ts` (5 specs: stage short, text cap, order,
+alert-after-live, cap protection).
+
+Acceptance: labels materially simpler than lanes (id+stage+glyph vs lane's
+status/stage/meta/action tail + Inspect); capped at 8 with `+N more` stated;
+crowding solved by suppression (project-null, over-cap), never smaller text;
+no logs/paths/reasons/controls/tables in labels — Inspector owns those.
+
+Worse: the default view keeps every pre-UX01 panel (lanes, HUD strip,
+alerts, control, live window) — subtraction is UX03's job, not this slice's.
+Labels sit above pads and can sit under the lane strip on narrow windows;
+the anchor is fixed, not occlusion-aware.

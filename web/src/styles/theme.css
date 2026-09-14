@@ -4449,6 +4449,98 @@ button[data-slot="select-trigger"] {
   white-space: nowrap;
 }
 
+/* Projected spatial labels (`ux01`): DOM identity at the pad's screen
+ * position. Small by rule — `id · Stage` plus glyphs, never a card. The
+ * layer takes no pointer events and no focus: the lane strip, the mirror
+ * and canvas picking stay the interaction paths. */
+.omp-deck-labels {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  overflow: hidden;
+}
+
+.omp-deck-label {
+  position: absolute;
+  transform: translate(-50%, -130%);
+  display: inline-flex;
+  align-items: baseline;
+  gap: 6px;
+  max-width: 26ch;
+  padding: 2px 8px;
+  font-family: var(--omp-mono);
+  font-size: 11px;
+  line-height: 1.5;
+  white-space: nowrap;
+  color: var(--omp-text);
+  background: color-mix(in srgb, var(--omp-panel) 92%, transparent);
+  border: 1px solid var(--omp-border);
+  border-radius: 999px;
+}
+
+.omp-deck-label[data-focused="true"] {
+  border-color: var(--omp-cyan);
+}
+
+.omp-deck-label[data-primary="true"]:not([data-focused="true"]) {
+  border-style: dashed;
+}
+
+.omp-deck-label-id {
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.omp-deck-label-stage {
+  color: var(--omp-secondary);
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.omp-deck-label-alert {
+  color: var(--omp-amber);
+  font-weight: 700;
+}
+
+.omp-deck-labels-more {
+  position: absolute;
+  right: 10px;
+  bottom: 10px;
+  font-family: var(--omp-mono);
+  font-size: 11px;
+  color: var(--omp-muted);
+}
+
+/* Legend (`ux01`): the frozen §11 semantics in words. One closed chip until
+ * asked; opens as a small list, never a card wall. Anchored above the live
+ * window's corner so the two never share a pixel. */
+.omp-deck-legend {
+  position: absolute;
+  left: 10px;
+  bottom: 10px;
+  margin-bottom: calc(min(46%, 46vh) + 8px);
+  font-family: var(--omp-mono);
+  font-size: 11px;
+  color: var(--omp-secondary);
+  background: color-mix(in srgb, var(--omp-panel) 92%, transparent);
+  border: 1px solid var(--omp-border);
+  border-radius: 8px;
+  padding: 3px 9px;
+}
+
+.omp-deck-legend summary {
+  cursor: pointer;
+  color: var(--omp-secondary);
+}
+
+.omp-deck-legend ul {
+  margin: 6px 0 2px;
+  padding-left: 16px;
+  display: grid;
+  gap: 2px;
+}
+
 /* The live window, docked bottom-left and never over the HUD: the same
  * component the dashboard renders, at the deck's own width. */
 .omp-deck-live {
