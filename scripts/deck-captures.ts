@@ -26,6 +26,10 @@ process.env.no_proxy = process.env.NO_PROXY;
 
 const ROOT = join(import.meta.dir, "..");
 const OUT = join(ROOT, "captures");
+const portArg = process.argv.indexOf("--port");
+const port = portArg >= 0 ? Number(process.argv[portArg + 1]) : 4322;
+const base = `http://127.0.0.1:${port}`;
+const headed = process.argv.includes("--headed");
 
 if (process.argv.includes("--help") || process.argv.includes("-h")) {
   console.log("Usage: bun scripts/deck-captures.ts [--port 4322] [--headed]");

@@ -2254,3 +2254,40 @@ bun build --compile src/cli.ts --outfile /tmp/ompo-deck-smoke  # 98 646 144 byte
 **PASS — recommendation, not a decision.** d14 is the release gate doing its job: the deck is
 documented, reproducible, removable, and measured — with the same owed items it entered with,
 named as accepted risks rather than fixed.
+
+## ux00 — baseline freeze (UX correction pass, pre-UX01)
+
+Baseline for UX01–UX04 comparison. No product code changed. One tooling fix:
+`scripts/deck-captures.ts` (+4 lines: restore the `--port`/`base`/`headed`
+bindings the d14 commit dropped — as committed the script threw
+`ReferenceError: port is not defined` before spawning the fixture server).
+
+Reproduce: `bun run web:build && bun run deck:captures` → **9/9 ok**
+(`captures/deck-qa.json`, 1440×900, `tests/e2e/serve.ts` fixture, embedded
+bundle). This run (2026-09-14): minimal 3d, 2 alerts, standard, high,
+effects-off `ambient []`, flat forced 0 canvases, reduced `ambient
+[floor,fog]`, dock open · Output, 2 wall rows — all ok.
+
+Primary states (the "before" pictures): `deck-tier-minimal.png` (default
+operator view, SwiftShader → minimal), `deck-alerts.png` (same world, failed +
+blocked-env stack), `deck-flat.png` (forced flat, 0 canvases), `deck-inspector.png`
+(dock open · Output), `deck-wall.png` (2 run rows).
+
+Overlay/layout config frozen: HUD one strip (state / frame / world clusters +
+`last change` line + `dl.omp-deck-costs` + effects disclosure behind `HUD`);
+time band (`--omp-deck-time-h: 76px`: LIVE/RETURN, slider, ribbon `ol`,
+`runs (N)`, `verify replay`); station line left + `omp-deck-lanes` right
+(per-station `heroAction` tail, focused-row `Inspect`); right column
+(`omp-deck-right`: alertcol above linewrap = alerts + selected line +
+`DeckControlBar`); live window (`LiveFeed` verbatim) bottom-left; mirror
+(`MIRROR_LIMIT=200`, roving) hidden until focused; help (`DECK_KEYS` verbatim,
+`H`/`?`) overlaps the HUD panel — accepted risk, arch §14.
+
+UX05 fixtures frozen to the same `serve.ts` run (`e2emain`: s-alpha/s-beta
+done, longtitle + verifying + running live = 3, longreason failed,
+envblock blocked-env, p-one/p-two pending; + `e2e-overflow-probe` run).
+S1–S4 derive from this run — no new benchmark framework.
+
+Worse: d14's committed "9/9 ok" claim contradicted the tree until this fix
+(the script could not run at HEAD). No renderer, tier, model, or overlay
+change in this slice.
