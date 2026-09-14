@@ -2437,3 +2437,61 @@ primary, deck optional viz.
 Worse: the agent half proves testability, not value — recording `ok` here
 as anything but scaffolding would repeat the d03v failure mode (§5).
 UX06 must not run its consolidation on this file alone.
+
+## ux06 — consolidation: what changed, what is owed, what stops next
+
+UX06 obeys the UX05 verdict — and the human half is still PENDING, so this
+slice consolidates the hypothesis, not a win. No new features.
+
+### Gates (this tree)
+
+- `bun test`: **904 pass / 0 fail** (67 files).
+- `bunx tsc --noEmit`: clean. `git diff --check`: clean.
+- `bun scripts/deck-desktop-check.ts`: ok.
+- `bun run deck:captures`: **9/9 ok** (restored to `captures/` after the
+  run — PNG churn is not evidence).
+- `bun run ux05:compare`: agent half ok (sameRun e2emain, live 3, 3
+  labels); human template unfilled.
+- Architecture locks intact: `three` confined to `renderer.ts`, no
+  `fetch`/`EventSource` under `scene/`, M1 derivation set extended only by
+  pure view modules (`labels.ts`, `summary.ts` — no status/stage/ranking
+  derivation, release-gate green), removability holds (App.tsx the only
+  `scene/` importer).
+
+### The 2-second test (operator prediction, not a claim)
+
+Default fixture view now scans: `quiescent live: 3 alerts: 2 focus:
+longtitle` + 3 projected labels (`longtitle·Work` focused, 2 live peers)
++ station line + alert head (`highest: high · blocked-env`). An operator
+can likely name live-count, focus, and attention-flag without the dock.
+Whether they actually do — labels vs lanes first, T1/T5 parity, concurrency
+gain — is exactly what the human half must observe.
+
+### Disposition (conditional on the human half)
+
+- UX01 labels / UX02 camera / UX03 hierarchy / UX04 summaries: **keep** as
+  the testable hypothesis (each independently useful, each reviewable).
+- If human says Complementary: keep the role, preserve dashboard default
+  for forensics, deck for live concurrency + history.
+- If Narrow: narrow the stated purpose to the winning tasks (likely T2/T9
+  or history-only) and drop the rest from the deck's claims.
+- If Insufficient, or T1/T5 worse, or labels ignored, or cross-ref
+  persists, or value is aesthetics-only, or fixes would break the locks:
+  **stop** — dashboard primary, deck optional viz, expression candidates
+  (`drift`/`settle`, fog-at-high) dropped per the revisit trigger. No
+  UX07. Interesting-but-nonessential discoveries are ignored (§15).
+
+### Owed (explicit, not waived)
+
+- UX05 human half: T1–T10 with a real operator, §16 evidence rule
+  (dashboard-better / deck-better / tie / needs-inspection / look-at /
+  cross-ref), verdict signed by the operator.
+- Windows Tauri acceptance, `drift` look on hardware GL, 100k-event
+  pathological index — pre-existing, unchanged by this pass.
+
+### Verdict
+
+**PASS (scaffold) — recommendation, not a decision.** UX00–UX04 make the
+hypothesis testable with less chrome, not more; UX05-agent proves the test
+runs; the product decision waits on human evidence. Polish without a human
+win is rejected in advance.
