@@ -2404,3 +2404,36 @@ Worse: the lane `title=` still holds the raw hero string (long paths on
 hover) — full text preserved by design, Inspector owns the readable form.
 `liveHead` is tested but not yet rendered; the live window keeps the
 dashboard's own head (verbatim reuse wins over a deck-specific one).
+
+## ux05 — operator comparison, agent half (human half PENDING)
+
+Objective: decide where the deck genuinely wins (§H) — without claiming a
+human result from an automated run (§5). Agent half only; the verdict is
+not validated until a real operator fills `ux05-human.json`.
+
+Reproduce: `bun run ux05:compare -- --port 4351` → `ux05-agent.json` ok
+(sameRun e2emain/e2emain, live 3, alerts 2, focus longtitle, 3 labels);
+`bun run ux05:compare -- --init-human` → human task template (T1–T10 ×
+deck/dashboard, seconds/correct/inspection/crossRefs, verdict scale +
+evidence rule + stop list).
+
+What landed: `scripts/ux05-compare.ts` (guard-typed hook/run reads — no
+`any`; same-run check, deck + dashboard selector presence, 4 states × 10
+tasks logged, `ok` = same run + live ≥ 1 + labels ≥ 1); `package.json`
+`ux05:compare` script; `captures/ux-comparison/ux05-agent.json` +
+`ux05-human.json` (template, unfilled).
+
+Agent-verifiable (done): fixtures render both surfaces on the same run;
+truth deterministic (live/alerts/focus logged); setup reproducible
+(URLs + prefs per state); raw measurements captured.
+
+Human-evaluated (owed): T1–T10 seconds, correctness, inspection use,
+cross-refs, where operators look, verdict Strong / Complementary / Narrow
+/ Insufficient with the §16 evidence rule. Stop list armed (§17): worse
+on T1/T5, labels ignored, no concurrency gain, cross-ref persists,
+aesthetics-only value, or architecture-compromising fixes → dashboard
+primary, deck optional viz.
+
+Worse: the agent half proves testability, not value — recording `ok` here
+as anything but scaffolding would repeat the d03v failure mode (§5).
+UX06 must not run its consolidation on this file alone.

@@ -38,7 +38,8 @@
     "deck:desktop:check": "bun scripts/deck-desktop-check.ts",
     "deck:desktop:dev": "bun scripts/deck-desktop-run.ts dev",
     "deck:desktop:build": "bun scripts/deck-desktop-run.ts build",
-    "deck:captures": "bun scripts/deck-captures.ts"
+    "deck:captures": "bun scripts/deck-captures.ts",
+    "ux05:compare": "bun scripts/ux05-compare.ts"
   },
   "devDependencies": {
     "@playwright/test": "1.62.0",

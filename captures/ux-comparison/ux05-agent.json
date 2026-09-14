@@ -1,0 +1,91 @@
+{
+  "at": "2026-09-14T13:09:41.048Z",
+  "base": "/?surface=deck vs /",
+  "server": "tests/e2e/serve.ts (UX00 baseline run)",
+  "states": [
+    {
+      "id": "S-live3",
+      "note": "fixture default: 3 live (longtitle, verifying, running), 2 alerts"
+    },
+    {
+      "id": "S-focus",
+      "note": "same run: focus + labels + station line name the worker"
+    },
+    {
+      "id": "S-alerts",
+      "note": "same run: 2 high alerts (envblock, longreason) + beacons"
+    },
+    {
+      "id": "S-history",
+      "note": "same run scrubbed to a recorded bucket, then RETURN TO LIVE"
+    }
+  ],
+  "tasks": [
+    {
+      "id": "T1",
+      "q": "Which worker is currently live, and what is it doing?"
+    },
+    {
+      "id": "T2",
+      "q": "Which workers are active concurrently?"
+    },
+    {
+      "id": "T3",
+      "q": "Which worker is blocked?"
+    },
+    {
+      "id": "T4",
+      "q": "Why is that worker blocked?"
+    },
+    {
+      "id": "T5",
+      "q": "Which worker has the operator's focus?"
+    },
+    {
+      "id": "T6",
+      "q": "What was the most recent meaningful state change?"
+    },
+    {
+      "id": "T7",
+      "q": "Which worker completed most recently?"
+    },
+    {
+      "id": "T8",
+      "q": "Which area of the roadmap is currently active?"
+    },
+    {
+      "id": "T9",
+      "q": "Which worker needs attention?"
+    },
+    {
+      "id": "T10",
+      "q": "Return from the historical view to the current live state."
+    }
+  ],
+  "agentChecks": {
+    "sameRun": true,
+    "deckRunId": "e2emain",
+    "dashRunId": "e2emain",
+    "deckLive": 3,
+    "deckAlerts": 2,
+    "deckFocus": "longtitle",
+    "deckSelectors": {
+      ".omp-deck-label": 3,
+      ".omp-deck-lanes": 1,
+      ".omp-deck-alert": 2,
+      ".omp-deck-row": 1,
+      ".omp-deck-live": 1,
+      ".omp-deck-time": 1
+    },
+    "dashSelectors": {
+      ".omp-exec": 1,
+      ".omp-livefeed-log": 1,
+      ".omp-attention": 1,
+      ".omp-lanes": 1,
+      ".omp-board": 1,
+      ".omp-run-header": 0
+    }
+  },
+  "human": "PENDING — run with a real operator using captures/ux-comparison/ux05-human.json; do not mark validated from this file alone.",
+  "ok": true
+}

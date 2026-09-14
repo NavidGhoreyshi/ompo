@@ -1,0 +1,187 @@
+{
+  "how": "One operator, alternating deck/dashboard per task, 2 reps. Record seconds, correct (store-checked), inspectionOpened, crossRefs (DOM↔scene hops).",
+  "verdictScale": [
+    "Strong",
+    "Complementary",
+    "Narrow",
+    "Insufficient"
+  ],
+  "evidenceRule": [
+    "dashboard better",
+    "deck better",
+    "tie",
+    "needs inspection",
+    "operators look at",
+    "cross-ref remains"
+  ],
+  "stopIf": [
+    "deck worse on T1/T5 after UX01-UX04",
+    "operators ignore spatial labels",
+    "no concurrency advantage",
+    "cross-ref still needed for spatial tasks",
+    "value collapses into aesthetics",
+    "fixing UX would break the architecture"
+  ],
+  "tasks": [
+    {
+      "id": "T1",
+      "q": "Which worker is currently live, and what is it doing?",
+      "deck": {
+        "seconds": null,
+        "correct": null,
+        "inspectionOpened": null,
+        "crossRefs": null
+      },
+      "dashboard": {
+        "seconds": null,
+        "correct": null,
+        "inspectionOpened": null,
+        "crossRefs": null
+      }
+    },
+    {
+      "id": "T2",
+      "q": "Which workers are active concurrently?",
+      "deck": {
+        "seconds": null,
+        "correct": null,
+        "inspectionOpened": null,
+        "crossRefs": null
+      },
+      "dashboard": {
+        "seconds": null,
+        "correct": null,
+        "inspectionOpened": null,
+        "crossRefs": null
+      }
+    },
+    {
+      "id": "T3",
+      "q": "Which worker is blocked?",
+      "deck": {
+        "seconds": null,
+        "correct": null,
+        "inspectionOpened": null,
+        "crossRefs": null
+      },
+      "dashboard": {
+        "seconds": null,
+        "correct": null,
+        "inspectionOpened": null,
+        "crossRefs": null
+      }
+    },
+    {
+      "id": "T4",
+      "q": "Why is that worker blocked?",
+      "deck": {
+        "seconds": null,
+        "correct": null,
+        "inspectionOpened": null,
+        "crossRefs": null
+      },
+      "dashboard": {
+        "seconds": null,
+        "correct": null,
+        "inspectionOpened": null,
+        "crossRefs": null
+      }
+    },
+    {
+      "id": "T5",
+      "q": "Which worker has the operator's focus?",
+      "deck": {
+        "seconds": null,
+        "correct": null,
+        "inspectionOpened": null,
+        "crossRefs": null
+      },
+      "dashboard": {
+        "seconds": null,
+        "correct": null,
+        "inspectionOpened": null,
+        "crossRefs": null
+      }
+    },
+    {
+      "id": "T6",
+      "q": "What was the most recent meaningful state change?",
+      "deck": {
+        "seconds": null,
+        "correct": null,
+        "inspectionOpened": null,
+        "crossRefs": null
+      },
+      "dashboard": {
+        "seconds": null,
+        "correct": null,
+        "inspectionOpened": null,
+        "crossRefs": null
+      }
+    },
+    {
+      "id": "T7",
+      "q": "Which worker completed most recently?",
+      "deck": {
+        "seconds": null,
+        "correct": null,
+        "inspectionOpened": null,
+        "crossRefs": null
+      },
+      "dashboard": {
+        "seconds": null,
+        "correct": null,
+        "inspectionOpened": null,
+        "crossRefs": null
+      }
+    },
+    {
+      "id": "T8",
+      "q": "Which area of the roadmap is currently active?",
+      "deck": {
+        "seconds": null,
+        "correct": null,
+        "inspectionOpened": null,
+        "crossRefs": null
+      },
+      "dashboard": {
+        "seconds": null,
+        "correct": null,
+        "inspectionOpened": null,
+        "crossRefs": null
+      }
+    },
+    {
+      "id": "T9",
+      "q": "Which worker needs attention?",
+      "deck": {
+        "seconds": null,
+        "correct": null,
+        "inspectionOpened": null,
+        "crossRefs": null
+      },
+      "dashboard": {
+        "seconds": null,
+        "correct": null,
+        "inspectionOpened": null,
+        "crossRefs": null
+      }
+    },
+    {
+      "id": "T10",
+      "q": "Return from the historical view to the current live state.",
+      "deck": {
+        "seconds": null,
+        "correct": null,
+        "inspectionOpened": null,
+        "crossRefs": null
+      },
+      "dashboard": {
+        "seconds": null,
+        "correct": null,
+        "inspectionOpened": null,
+        "crossRefs": null
+      }
+    }
+  ]
+}
