@@ -277,3 +277,117 @@ renderer created, then calls `forceContextLoss()`; no other module owns GPU stat
 prediction from the cost model, not a measurement — the model is linear in pixels and objects and
 was taken over a 0.23–16.6 MPx and 1–20 000 object range, which covers the deck's design envelope
 by more than an order of magnitude in both dimensions.
+
+## 6. The expression pass (`d13`)
+
+What the deck is allowed to add *on top* of its information hierarchy, and what
+each addition costs. The registry lives in `web/src/scene/ambient.ts`
+(`AMBIENT_EFFECTS`); this section is the contract those effects are admitted
+under, and `tests/deck-ambient.test.ts` fails if an effect exists that this
+table does not list.
+
+Every effect is switchable in the deck's HUD panel, and every one of them off
+leaves a plain but fully working deck — the acceptance criterion of `d13` is
+that polish is *optional*, never load-bearing.
+
+### 6.1 Effect budget table
+
+| effect | tier | cost class | draw calls | max concurrent | why it fits the budget |
+|---|---|---|---|---|---|
+| `floor` | minimal | geometry | 1 (`GridHelper`, `LineSegments`) | 1 grid | ≤ `GRID_MAX_DIVISIONS` = 64 → 130 line segments, 1 px wide, no fill; the floor is *centred on the rail's box*, so the lines cover the world instead of half of it |
+| `fog` | minimal, **off at `high`** | fill | 0 | 1 fog | a fragment branch on materials that already shade those pixels; the cost is the deck's own `shadedPixels` (§4.1), not a layer — the deck issues **zero** full-screen layers with it on. It ships **off at `high`** because that is where the measurement put it over the pin (§6.2); the switch still works |
+| `parallax` | minimal | CPU | 0 | 1 object | one `position` write **per camera change**, never per frame: a settled camera writes nothing and an idle deck renders nothing |
+| `settle` | minimal | geometry | +1 while a plate falls (≤ 400 ms) | `SETTLE_MAX` = 4 plates | 4 × 12 triangles = 48 triangles, drawn only on a completion and coalesced past the cap; `instances` (the model's pools) is unchanged |
+| `drift` | high | CPU | 0 | 1 camera | a bounded (≤ 0.5 world units) offset on the camera target, advanced only across frames that were already being drawn for something else; it never schedules a frame and the exact framing is restored before the loop settles |
+
+**Defaults are not caps.** An effect can be *allowed* at a tier and still ship off
+there: `defaultOff` on a registry entry is the roadmap's rule for an effect that
+does not fit a tier's measured budget ("any tier that fails its budget with
+effects on must ship that effect disabled by default for that tier"), and the
+operator's switch overrides it in both directions. `fog` is the one case today,
+at `high`.
+
+The **tier** column is enforced in `ambientEnabled(tier, prefs, reducedMotion)`:
+the effect's own minimum, then the tier's `ambient` allowance for the effects
+marked `expression` (today only `drift`), then reduced motion, then the
+operator's switch. An override can only ever remove an effect — a machine that
+did not classify for one cannot be talked into paying for it.
+
+Why the clarifying four are **not** behind the `ambient` flag: they refine
+surfaces the deck already draws (the floor, the pads' contrast, the camera's
+own movement, the pad a slice already occupies). They are admitted by
+measurement instead — §6.2 is that measurement — while the flag stays what `d00`
+defined it as, the allowance for the *expression* pass that decorates rather
+than clarifies.
+
+### 6.2 Measured (effects on)
+
+```bash
+bun run web:build
+bun scripts/deck-perf.ts                              # this box's tier (auto → minimal)
+bun scripts/deck-perf.ts --tier standard --tier high  # pinned
+```
+
+Build of 2026-09-14, `--frames 300`, each tier's default effect set on. **Read the
+`frames` column first**: the harness needs `--frames` rendered frames before it can
+measure percentiles, and this box was carrying a foreign build (load average ≈ 5–9
+on 4 vCPUs) for all of these runs. `frames` short of 300 is the *window*, not the
+scene: with every effect off the same build still reached only 218 at `high`.
+
+| tier | requested | frames | p50 ms | p95 ms | worst ms | draw calls | objects | layers | programs | idle frames | budget |
+|---|---|---|---|---|---|---|---|---|---|---|---|
+| minimal | auto | 314 | 1.10 | 6.80 | 17.90 | 10 | 78 | 0 | 4 | 0 | **PASS** (all checks) |
+| minimal | auto | 253 | 1.60 | 13.30 | — | 10 | 80 | 0 | 4 | 0 | p50/p95/calls/layers/caps/idle pass; window short |
+| standard | pinned | 317 | 1.40 | 8.00 | 24.20 | 10 | 85 | 0 | 4 | 0 | **PASS** (all checks) |
+| high | pinned | 228 | 1.90 | 14.10 | — | 10 | 106 | 0 | 4 | 0 | p50/p95/calls/layers/caps/idle pass; window short |
+
+Every budget check passes at every tier with the tier's default set — the enforced
+ones (`frameBudgetMs` / `frameP95Ms`), the draw-call ceiling, "no full-screen
+layers", the station and beacon caps, constant GPU counters and zero idle frames.
+`programs` staying at **4** everywhere is the fog's own claim: the branch is
+compiled into the materials the deck already draws, so the effect adds no program,
+no material and no pass. The two short windows are the machine: `d10` §5.2 already
+records that at this box's `minimal`/`high` the *interval* belongs to the
+rasterizer.
+
+**Attribution, measured — and what it changed.** Three runs of the same build at
+`high`, differing only in which effects ran (one temporary gate edit each, reverted
+before commit), all at load ≈ 9:
+
+| `high` configuration | frames | p50 ms | p95 ms | draw calls |
+|---|---|---|---|---|
+| every effect on | 113 | 2.60 | **21.10** (over the 20 ms pin) | 10 |
+| `fog` off, the other four on | 160 | 1.80 | 13.10 | 10 |
+| every effect off | 218 | 1.70 | 13.10 | 9 |
+
+The p95 miss was the **fog's** — the one effect whose cost is fill, amplified by
+MSAA in that tier — so `fog` ships off at `high` (§6.1), and the re-measure in the
+table above shows that tier's pin met again (14.10 ms). The residual frame-count
+shortfall is **not** the effects': with every effect off the window still reached
+only 218 of 300. At `minimal` the same build with the effects gated off measured
+p50 0.90 ms / p95 3.00 ms against 1.10 / 6.80 with them on, on a run whose churn
+phase happened to leave a different live set (9 workers against 4) — inside the
+spread `d00` documents between *identical* configurations (1.6×), so at that tier
+the effect set is not resolvable above this machine's noise floor, and both
+configurations sit 6–14× inside the p95 budget.
+
+The `minimal` p50 here (1.10–1.60 ms) sits above the 0.5 ms `d10` recorded on an
+idle box (§5.2); the box, not the scene, is the difference, and it is recorded
+rather than adjusted for.
+
+### 6.3 What the effects may never do
+
+1. **Schedule a frame.** No effect may render for its own sake: `M3` (zero
+   frames while settled) binds here exactly as it does for the rail. Drift and
+   parallax are functions of frames that are already happening; the settle is a
+   transition cue and expires.
+2. **Change what is reported.** No effect may alter a pad's height, a status
+   colour, a count, a position or a word. The settle plate is a *separate*
+   instance that lands on a pad whose state was already written; fog moves
+   contrast with distance and never hue.
+3. **Add a pass.** No effect may shade the whole viewport: the deck's
+   `fullScreenLayers` stays 0 with every effect on, which is what keeps the
+   minimal tier's fill budget intact.
+4. **Survive without an off switch.** Every effect has a row in the HUD panel
+   with its tier requirement, and a blocked effect says which tier (or which
+   motion preference) it is waiting for.

@@ -49,6 +49,7 @@ import {
 import type { SliceDetail, SliceSummary } from "../api.ts";
 import type {
   AlertKind,
+  DeckCompletion,
   DeckCounts,
   DeckHistoryInput,
   DeckInput,
@@ -214,6 +215,25 @@ function wallTiles(input: DeckInput, detailRunId: string, bounds: RailBounds): {
   return { tiles, overflow: Math.max(0, input.runs.length - newest.length) };
 }
 
+/** The run's standing (`d13`), from the counts and the DTO's own timestamps. */
+function completionOf(counts: DeckCounts, createdAt: string | null, at: string | null): DeckCompletion {
+  const total = counts.done + counts.active + counts.failed + counts.skipped + counts.blockedEnv + counts.pending;
+  const remaining = counts.active + counts.pending;
+  const start = createdAt === null ? Number.NaN : Date.parse(createdAt);
+  const end = at === null ? Number.NaN : Date.parse(at);
+  return {
+    total,
+    done: counts.done,
+    failed: counts.failed,
+    skipped: counts.skipped,
+    blocked: counts.blockedEnv,
+    remaining,
+    complete: total > 0 && counts.done === total,
+    terminal: total > 0 && remaining === 0,
+    durationMs: Number.isFinite(start) && Number.isFinite(end) && end >= start ? end - start : null,
+  };
+}
+
 /** The model for "nothing to project yet" (loading, or a run with no slices). */
 function emptyModel(input: DeckInput): DeckModel {
   const history = input.history;
@@ -249,6 +269,7 @@ function emptyModel(input: DeckInput): DeckModel {
     historyActive: snapshot?.activeIds.length ?? 0,
     tiles: wall.tiles,
     tilesOverflow: wall.overflow,
+    completion: completionOf(ZERO_COUNTS, null, null),
     digest: `${input.runId ?? ""}\u0002loading\u0002${cursor ?? "now"}`,
   };
 }
@@ -449,6 +470,7 @@ export function buildDeckModel(input: DeckInput): DeckModel {
     z: ribbonZ(bounds),
   };
   const wall = wallTiles(input, detail.runId, bounds);
+  const counts = snapshot === null ? { ...detail.counts } : countStatuses(viewSlices.map((slice) => slice.status));
 
   return {
     runId: detail.runId,
@@ -456,7 +478,8 @@ export function buildDeckModel(input: DeckInput): DeckModel {
     loading: false,
     nodes,
     edges,
-    counts: snapshot === null ? { ...detail.counts } : countStatuses(viewSlices.map((slice) => slice.status)),
+    counts,
+    completion: completionOf(counts, detail.createdAt ?? null, snapshot === null ? (detail.updatedAt ?? null) : snapshot.at),
     primaryId,
     liveIds: stations.map((station) => station.id),
     stations,

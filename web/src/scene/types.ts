@@ -8,6 +8,7 @@
  */
 
 import type { AgentRow, RunDetail, RunEvent, RunSummary, SliceDetail } from "../api.ts";
+import { sanitizeEffects } from "./ambient.ts";
 import type { DeckAlert } from "./alerts.ts";
 import type { HistoryIndex, RibbonBucket } from "./history.ts";
 import type { QualityTier } from "./tier.ts";
@@ -34,11 +35,20 @@ export interface DeckPrefs {
    * lost context. `null` lets capability decide.
    */
   forced: "3d" | "flat" | null;
+  /**
+   * The operator's per-effect choices (`d13`), keyed by `AmbientEffectId`:
+   * absent means the registry's default (on, where the tier allows it) and
+   * `false` means switched off. Only explicit *off* decisions are stored, so a
+   * new effect ships on for an operator who never opened the panel, and the
+   * panel's own gate (`ambientEnabled`) still decides what a tier may run —
+   * this object can only ever remove an effect, never add one.
+   */
+  effects?: Record<string, boolean>;
 }
 
 export const DECK_PREFS_KEY = "ompo.deck.prefs";
 
-export const DEFAULT_DECK_PREFS: DeckPrefs = { tier: "auto", motion: "system", forced: null };
+export const DEFAULT_DECK_PREFS: DeckPrefs = { tier: "auto", motion: "system", forced: null, effects: {} };
 
 const TIERS: QualityTier[] = ["minimal", "standard", "high"];
 const MOTIONS: DeckMotion[] = ["system", "on", "reduced"];
@@ -73,7 +83,11 @@ export function parseDeckPrefs(raw: string | null): DeckPrefs {
       ? "reduced"
       : DEFAULT_DECK_PREFS.motion;
   const forced = forcedValue === "flat" || forcedValue === "3d" ? forcedValue : DEFAULT_DECK_PREFS.forced;
-  return { tier, motion, forced };
+  // The effect map is validated against the registry (`sanitizeEffects`), so a
+  // renamed or retired effect id in storage cannot resurrect itself, and a
+  // hand-edited value can only ever turn a known effect off.
+  const effects = sanitizeEffects("effects" in value ? value.effects : undefined);
+  return { tier, motion, forced, effects };
 }
 
 /** Orbital camera state (roadmap §D.4). Excluded from the scene model. */
@@ -364,11 +378,45 @@ export interface DeckModel {
   /** Runs the tile row could not draw (`0` normally; the DOM list shows all). */
   tilesOverflow: number;
   /**
+   * Where the run stands, as one line (`d13`): the counts the pads already
+   * show, plus the run's own wall clock. Derived from `counts` and the DTO
+   * timestamps and nothing else — the completion moment is a *reading* of the
+   * run, never a new state, and it is DOM-only (the scene draws no celebration).
+   */
+  completion: DeckCompletion;
+  /**
    * Content key of everything the renderer consumes. Derived from the
    * projection (never a counter), so identical inputs give an identical
    * digest and the scene can prove it did no work.
    */
   digest: string;
+}
+
+/**
+ * The run's standing (`d13`), for the HUD's completion line. `complete` is the
+ * strict all-done case; `terminal` is "nothing will run again" and names what
+ * is left over, so a run that ended with failures says so instead of showing
+ * nothing at all. Both are functions of `DeckCounts` — the same numbers the
+ * pads and the dashboard's own board show.
+ */
+export interface DeckCompletion {
+  total: number;
+  done: number;
+  failed: number;
+  skipped: number;
+  blocked: number;
+  /** Slices still to run: active + pending. */
+  remaining: number;
+  /** Every slice is `done`. */
+  complete: boolean;
+  /** Nothing is active or pending. */
+  terminal: boolean;
+  /**
+   * Wall clock from the run's own timestamps (`createdAt` → `updatedAt`, or
+   * `createdAt` → the cursor's moment in history), `null` when the DTOs do not
+   * carry one. An observed span, never an estimate.
+   */
+  durationMs: number | null;
 }
 
 /**
@@ -544,6 +592,21 @@ export interface RenderStats {
    */
   beacons: number;
   /**
+   * Completion plates drawn (`d13`): a slice that finished in this model
+   * application has one for ≤ `SETTLE_MS`, at most `SETTLE_MAX` at a time.
+   * Counted separately from `instances`, which stays the model's own pools.
+   */
+  settles: number;
+  /**
+   * The expression layer's live values (`d13`), so "the switch reached the
+   * scene" is a reading and not a claim: the fog's far plane in force
+   * (`FOG_OFF` when the effect is off), whether the floor is in the draw list,
+   * and the magnitude of the parallax offset the camera last produced.
+   */
+  fogFar: number;
+  floorVisible: number;
+  parallax: number;
+  /**
    * Transition cues active in the last frame (`d05`). `0` in every steady
    * state; a sequence of transitions must return to `0` when it ends, which is
    * the acceptance test for "no queue growth".
@@ -707,6 +770,19 @@ export interface DeckDebugHook {
   camera: DeckCamera;
   /** Filled marks of the focused station (`0` when nothing is framed). */
   stationSegments: number;
+  /**
+   * The expression layer (`d13`): the effect ids the deck is **running** right
+   * now — the registry gated by tier, reduced motion and the operator's
+   * overrides (`ambientEnabled`). The settings panel's own state, so a spec can
+   * prove a toggle reached the renderer.
+   */
+  ambient: string[];
+  /** Completion plates drawn (`d13`) — transient, separate from `instances`. */
+  settles: number;
+  /** The focus drift applied to the camera this frame, world units (view only). */
+  cameraDrift: { x: number; z: number };
+  /** The run's standing (`d13`): counts plus the DTO's own wall clock. */
+  completion: { total: number; done: number; failed: number; skipped: number; remaining: number; complete: boolean; terminal: boolean; durationMs: number | null } | null;
   /** Rows in the live window and raw lines behind it — the bounded-window evidence. */
   liveRows: number;
   logLines: number;

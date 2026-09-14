@@ -3791,7 +3791,10 @@ button[data-slot="select-trigger"] {
   --omp-deck-time-h: 76px;
   min-width: 0;
   overflow: hidden;
-  background: #0a0e14;
+  /* The scene's clear colour is this token's value (`palette.ts`), so the
+     canvas and the panel it sits in are the same colour: the fog dissolves
+     into the panel edge instead of drawing a horizon. */
+  background: var(--omp-bg);
   border: 1px solid var(--omp-border);
   border-radius: var(--omp-radius);
 }
@@ -5777,4 +5780,195 @@ button[data-slot="select-trigger"] {
   color: var(--omp-text);
   background: var(--omp-panel-2);
   border-color: var(--omp-border-strong);
+}
+
+/* ---------- deck expression pass (slice d13): HUD composition, the effect
+ * settings panel, and the completion moment. Nothing here changes what the
+ * deck reports; it decides what the operator's eye reaches first. ---------- */
+
+/* The compact row reads as three clusters instead of fifteen chips in a line —
+ * in the operator's own order of questions: what the run *is* (state, alerts,
+ * an ending), what the frame *costs*, and where the deck is pointed. A hairline
+ * separates them. Grouping is layout only: every chip keeps its class and its
+ * data attributes, so nothing that reads the HUD has to know about it. */
+.omp-deck-group {
+  display: inline-flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+
+.omp-deck-group + .omp-deck-group {
+  padding-left: 10px;
+  border-left: 1px solid var(--omp-border);
+}
+
+/* Measurements are chrome; the run's state is the subject. The frame cluster is
+ * muted so a 30 fps reading cannot compete with a live worker or an alert. */
+.omp-deck-group[data-group="frame"] .omp-deck-metric {
+  color: var(--omp-muted);
+}
+
+/* What just changed: its own line. It is the only chip whose content moves at
+ * run cadence, and it answers the operator's third question — so it gets the
+ * width instead of competing for the state cluster's pixels. */
+.omp-deck-row > .omp-deck-event {
+  flex-basis: 100%;
+  max-width: min(100%, 96ch);
+}
+
+.omp-deck-event-tag {
+  margin-right: 7px;
+  font-size: 10px;
+  letter-spacing: 0.09em;
+  text-transform: uppercase;
+  color: var(--omp-muted);
+}
+
+/* The run's ending (`d13`): a state, not telemetry — one line in the state
+   cluster, in the tone of what it reports (success for all done, amber for a
+   run that finished with failures or skips), and it disappears the moment the
+   run moves again because the model stops being terminal. */
+.omp-deck-complete {
+  font-weight: 600;
+  color: var(--omp-green);
+}
+
+.omp-deck-complete[data-completion="finished"] {
+  color: var(--omp-amber);
+}
+
+/* The effect settings (`d13`), generated from the registry in `ambient.ts`:
+ * one row per effect with its tier requirement, its sentence, and its switch.
+ * A blocked effect stays visible and disabled and says which tier — or which
+ * motion preference — it is waiting for, so "greyed out" is never a mystery. */
+.omp-deck-effects {
+  display: grid;
+  gap: 8px;
+  padding-top: 10px;
+  border-top: 1px solid var(--omp-border);
+}
+
+.omp-deck-effect-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: grid;
+  gap: 7px;
+}
+
+.omp-deck-effect label {
+  display: grid;
+  grid-template-columns: auto 15ch auto minmax(0, 1fr);
+  align-items: baseline;
+  gap: 8px;
+  cursor: pointer;
+}
+
+.omp-deck-effect[data-blocked]:not([data-blocked=""]) label,
+.omp-deck-effect input:disabled {
+  cursor: not-allowed;
+}
+
+.omp-deck-effect input {
+  margin: 0;
+  accent-color: var(--omp-cyan);
+}
+
+.omp-deck-effect-label {
+  font-weight: 600;
+  color: var(--omp-text);
+}
+
+.omp-deck-effect[data-on="false"] .omp-deck-effect-label {
+  color: var(--omp-secondary);
+}
+
+.omp-deck-effect-tier {
+  font-size: 11px;
+  color: var(--omp-muted);
+}
+
+.omp-deck-effect-note {
+  color: var(--omp-muted);
+  line-height: 1.5;
+}
+
+.omp-deck-effect[data-blocked]:not([data-blocked=""]) .omp-deck-effect-note {
+  color: var(--omp-amber);
+}
+
+/* The empty and loading states (`d13`): the deck used to centre one lowercase
+ * sentence on a black stage, which reads like a broken canvas. It now says
+ * which state it is in, what it is holding meanwhile, and where the way back
+ * is — the flat notice's own three-part shape, so "nothing here" is a state
+ * rather than a failure. */
+.omp-deck-empty {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-content: center;
+  justify-items: center;
+  gap: 7px;
+  margin: 0;
+  padding: 0 24px;
+  text-align: center;
+  font-family: var(--omp-mono);
+  font-size: 12px;
+  pointer-events: none;
+}
+
+.omp-deck-empty-title {
+  margin: 0;
+  font-size: 13px;
+  color: var(--omp-text);
+}
+
+.omp-deck-empty-hint {
+  margin: 0;
+  max-width: 58ch;
+  color: var(--omp-muted);
+  line-height: 1.65;
+}
+
+/* Stacking inside the deck (`d13`): the runs list hangs from the time band as a
+ * dropdown, so its box crosses the bands below it — and DOM order painted it
+ * *under* the lane strip, where an operator could see a run row and not click
+ * it (found while testing the run-complete moment of this slice). The bands
+ * themselves are anchored so they never overlap; only the open list does, and
+ * an operator-opened list belongs above everything it covers. The band keeps
+ * `z-index: auto`, so nothing but the list changes paint order. */
+.omp-deck-wall {
+  z-index: 3;
+}
+
+/* The effects list's disclosure head (`d13`), the alert stack's own pattern:
+ * one line that names the settings and says how many are running, and the rows
+ * only when the operator asks for them. */
+.omp-deck-effects-head {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  width: 100%;
+  padding: 0;
+  font: inherit;
+  text-align: left;
+  color: var(--omp-secondary);
+  background: transparent;
+  border: 0;
+  cursor: pointer;
+}
+
+.omp-deck-effects-head:hover,
+.omp-deck-effects-head:focus-visible {
+  color: var(--omp-text);
+}
+
+.omp-deck-effects-title {
+  font-weight: 600;
+  color: var(--omp-text);
+}
+
+.omp-deck-effects-toggle {
+  margin-left: auto;
 }

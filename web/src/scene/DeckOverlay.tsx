@@ -448,9 +448,18 @@ export default function DeckOverlay({
   if (model.nodes.length === 0) {
     return (
       <div className="omp-deck-overlay">
-        <p className="omp-deck-empty" role="status">
-          {model.loading ? `loading run ${model.runId ?? ""}…` : "no slices in this run"}
-        </p>
+        {/* The deck's two "nothing on the rail" states (`d13`): which state it
+            is in, what it is holding meanwhile, and where the way back is. */}
+        <div className="omp-deck-empty" role="status">
+          <p className="omp-deck-empty-title">
+            {model.loading ? `loading run ${model.runId ?? ""}…` : "no slices in this run"}
+          </p>
+          <p className="omp-deck-empty-hint">
+            {model.loading
+              ? "the deck keeps the last world it drew on the floor until this run's slices arrive — nothing is lost, and the panels below are already live"
+              : "a run with no slices has nothing to place on the rail; the Runs list in the dashboard is the way to another run"}
+          </p>
+        </div>
         {timeBar}
         {focusStatus}
         {helpPanel}

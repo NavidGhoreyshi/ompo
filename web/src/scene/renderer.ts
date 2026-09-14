@@ -24,8 +24,19 @@
 
 import * as THREE from "three";
 import { SEVERITY_RINGS, type AlertSeverity, type DeckAlert, type DeckAlertKind } from "./alerts.ts";
+import {
+  AMBIENT_DEFAULT,
+  FOG_OFF,
+  SETTLE_LIFT,
+  SETTLE_MAX,
+  SETTLE_MS,
+  fogPlan,
+  parallaxOffset,
+  type AmbientState,
+} from "./ambient.ts";
 import { cueEntity, type SceneDelta } from "./deltas.ts";
 import { HISTORY_TILE_CAP } from "./model.ts";
+import { readPalette, type AmbientRole } from "./palette.ts";
 import { TIER_BUDGETS, type QualityTier } from "./tier.ts";
 import {
   cameraPose,
@@ -70,6 +81,14 @@ export interface DeckRenderer {
    * renderer only when that bit changes — not on every tier change.
    */
   setTier(tier: QualityTier): void;
+  /**
+   * Apply the resolved expression state (`d13`): fog, camera parallax and the
+   * completion settle, each independently switchable. Costs one uniform write
+   * and one object position — no buffer is rewritten, no geometry or program is
+   * created, and the model on screen is untouched (a toggle is presentation,
+   * never state).
+   */
+  setAmbient(state: AmbientState): void;
   render(): RenderStats;
   info(): RenderStats;
   /** True while a transition cue or the intro fade still wants frames. */
@@ -82,6 +101,12 @@ export interface DeckRenderer {
 
 export interface DeckRendererOptions {
   reducedMotion?: boolean;
+  /**
+   * The resolved expression state (`d13`). Defaults to `AMBIENT_DEFAULT`
+   * (everything the tier allows), so a caller that says nothing gets the deck's
+   * designed look; the deck shell always passes the gated state.
+   */
+  ambient?: AmbientState;
   /** Clock injection: the fade and fps sampling are deterministic in tests. */
   now?: () => number;
 }
@@ -105,41 +130,28 @@ export function probeRendererString(): string | null {
   }
 }
 
-/** Theme tokens → scene colours; the values are `tokens.css`'s fallbacks. */
-const TOKEN_FALLBACKS = {
-  info: 0x35d6f2,
-  success: 0x3ee6a6,
-  warning: 0xffb838,
-  destructive: 0xff6b6b,
-  muted: 0x8595a8,
-  ring: 0x8f86ff,
-} satisfies Record<string, number>;
-
-type TokenName = keyof typeof TOKEN_FALLBACKS;
-
-const TOKEN_VARS: Record<TokenName, string> = {
-  info: "--info",
-  success: "--success",
-  warning: "--warning",
-  destructive: "--destructive",
-  muted: "--muted-foreground",
-  ring: "--ring",
-};
-
 /**
- * Read the dashboard's status tokens once, at renderer creation (CP-3: the
- * scene uses the operator's palette, not a second one). A token that is missing
- * falls back to its `tokens.css` value — a failed stylesheet must not paint the
- * rail black.
+ * The scene's colours come from `palette.ts` (`d13`) — one conversion from the
+ * design tokens to scene colours, and one place where the derived colours (the
+ * clear colour, the floor's two line tones, the completion colour) are defined
+ * instead of being literals here. This module is still the only one that turns
+ * a colour into a `THREE.Color`.
  */
-function readTokens(): Record<TokenName, THREE.Color> {
-  const computed = typeof getComputedStyle === "function" ? getComputedStyle(document.documentElement) : null;
-  const out = {} as Record<TokenName, THREE.Color>;
-  for (const name of Object.keys(TOKEN_FALLBACKS) as TokenName[]) {
-    const raw = computed?.getPropertyValue(TOKEN_VARS[name]).trim() ?? "";
-    out[name] = new THREE.Color(raw.length > 0 ? raw : TOKEN_FALLBACKS[name]);
-  }
-  return out;
+const TOKEN_ROLES = ["info", "success", "warning", "destructive", "muted", "ring"] as const;
+type TokenName = (typeof TOKEN_ROLES)[number];
+
+interface SceneColours {
+  tokens: Record<TokenName, THREE.Color>;
+  ambient: Record<AmbientRole, THREE.Color>;
+}
+
+function readSceneColours(): SceneColours {
+  const palette = readPalette();
+  const tokens = {} as Record<TokenName, THREE.Color>;
+  for (const role of TOKEN_ROLES) tokens[role] = new THREE.Color(palette.roles[role]);
+  const ambient = {} as Record<AmbientRole, THREE.Color>;
+  for (const role of Object.keys(palette.ambient) as AmbientRole[]) ambient[role] = new THREE.Color(palette.ambient[role]);
+  return { tokens, ambient };
 }
 
 /** Pad height and colour per roadmap status — the non-colour encoding. */
@@ -215,8 +227,22 @@ const CUE_START_SCALE = 0.42;
 const CUE_MARK_SCALE = 0.35;
 /** How far a status change lerps the pad toward the focus token at t=0. */
 const CUE_PULSE = 0.5;
-/** The scene's clear colour: a cleared beacon fades toward it (a floor fade). */
-const BEACON_FLOOR = 0x0a0e14;
+
+/**
+ * The completion settle (`d13`): a slice reaching `done` gets a thin,
+ * success-coloured plate that drops the last world unit onto its pad and
+ * dissolves into it. It is *additive* — the pad's own height and colour are
+ * the model's from the first frame, and the plate is a separate instance that
+ * only ever decorates the pad it lands on.
+ *
+ * Coalescing is `SETTLE_MAX` (in `ambient.ts`): a burst of completions gets
+ * that many plates and ordinary highlights for the rest, never a queue.
+ */
+const SETTLE_W = 0.9;
+/** Plate thickness: a lid, not a slab (the pad below it stays readable). */
+const SETTLE_T = 0.07;
+/** Plates alive at once — the pool, allocated once (≤ `SETTLE_MAX` are cued). */
+const SETTLE_POOL = SETTLE_MAX * 2;
 
 /**
  * Stations (`d03`–`d04`): one short box per filled stage mark, standing on the
@@ -319,7 +345,7 @@ interface LineBuffer {
  * second gets one cue at the newer target — the roadmap's interruption rule,
  * with no queue to grow.
  */
-export type CueKind = "pulse" | "marks" | "beacon-in" | "beacon-out";
+export type CueKind = "pulse" | "marks" | "beacon-in" | "beacon-out" | "settle";
 
 interface Cue {
   kind: CueKind;
@@ -354,29 +380,52 @@ export function createDeckRenderer(canvas: HTMLCanvasElement, tier: QualityTier,
   // The `d00` budget is denominated in backing-store pixels, so the ratio is
   // fixed at 1 and the tier's scale is applied in `setSize` instead.
   renderer.setPixelRatio(1);
-  renderer.setClearColor(0x0a0e14, 1);
+  const surface = readSceneColours();
+  const tokens = surface.tokens;
+  const floorColour = surface.ambient;
+  renderer.setClearColor(floorColour.clear, 1);
 
   const scene = new THREE.Scene();
   const camera = new THREE.PerspectiveCamera(CAMERA_FOV, 1, 0.1, 500);
   const cameraTarget = new THREE.Vector3();
-  const tokens = readTokens();
+  /**
+   * Distance fog (`d13`), created with the scene so every program compiles with
+   * its fog branch once: switching the effect moves `near`/`far` (uniforms),
+   * never the material or the program. The fog colour is the panel's own
+   * background, so what recedes dissolves instead of drawing a horizon.
+   */
+  const fog = new THREE.Fog(floorColour.fog, 1, FOG_OFF);
+  scene.fog = fog;
+  /** The resolved expression state — what this renderer is allowed to draw. */
+  let ambientState: AmbientState = options.ambient ?? AMBIENT_DEFAULT;
+  /** The camera state last written, for the parallax and the fog distances. */
+  let lastCamera: DeckCamera | null = null;
 
   // One finitely sized grid: lines are 1 px wide, cover a bounded area, and
   // never shade the whole viewport (no full-screen layer anywhere in the deck).
   // Its scale follows the rail (`gridPlan`), so the floor keeps a fixed world
-  // cell and covers any run with a bounded number of lines.
+  // cell and covers any run with a bounded number of lines; its centre follows
+  // the rail (`placeGrid`), so the lines cover the world instead of hanging off
+  // the corner the layout happens to start at.
   const createGrid = (size: number, divisions: number): THREE.GridHelper => {
-    const helper = new THREE.GridHelper(size, divisions, 0x3b536b, 0x22303d);
+    const helper = new THREE.GridHelper(size, divisions, floorColour.gridMajor, floorColour.gridMinor);
     const material = helper.material as THREE.LineBasicMaterial;
     material.transparent = true;
     material.opacity = 0;
     helper.position.y = -0.01;
+    // The effect's switch is the object's visibility: off draws no floor at
+    // all (and `renderer.info.lines` says so), rather than a floor at
+    // brightness zero — the counters stay honest either way.
+    helper.visible = ambientState.floor;
     return helper;
   };
   let grid = createGrid(40, 8);
   let gridMaterial = grid.material as THREE.LineBasicMaterial;
   let gridDivisions = 8;
   let gridVertices = grid.geometry.getAttribute("position").count;
+  /** The floor's own centre (the rail's box), before the parallax offset. */
+  let floorX = 0;
+  let floorZ = 0;
   scene.add(grid);
 
   const padGeometry = new THREE.BoxGeometry(PAD_W, 1, PAD_D);
@@ -393,7 +442,13 @@ export function createDeckRenderer(canvas: HTMLCanvasElement, tier: QualityTier,
   // A wall tile: an upright tablet, also grown from the floor.
   const tileGeometry = new THREE.BoxGeometry(TILE_W, TILE_H, TILE_D);
   tileGeometry.translate(0, TILE_H / 2, 0);
-  const surfaceMaterial = new THREE.MeshBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0 });
+  // The completion plate (`d13`): a thin lid that settles onto a finished pad.
+  const settleGeometry = new THREE.BoxGeometry(PAD_W * SETTLE_W, SETTLE_T, PAD_D * SETTLE_W);
+  // The instance tint: white is the *identity* here (each instance's own colour
+  // is what is wanted), not a colour decision — which is why it is channels
+  // rather than a literal (`tests/deck-palette.test.ts` asserts no colour
+  // literal exists in `scene/**` outside `palette.ts`).
+  const surfaceMaterial = new THREE.MeshBasicMaterial({ color: new THREE.Color(1, 1, 1), transparent: true, opacity: 0 });
   const lineMaterial = new THREE.LineBasicMaterial({ vertexColors: true, transparent: true, opacity: 0 });
 
   const ringGeometry = new THREE.BufferGeometry().setFromPoints([
@@ -459,6 +514,7 @@ export function createDeckRenderer(canvas: HTMLCanvasElement, tier: QualityTier,
   const beacons = createInstances(beaconGeometry, BEACON_POOL);
   const ribbon = createInstances(ribbonGeometry, RIBBON_POOL);
   const tiles = createInstances(tileGeometry, TILE_POOL);
+  const settles = createInstances(settleGeometry, SETTLE_POOL);
   const edges = createLines(LINE_CAPACITY);
   const outlines = createLines(LINE_CAPACITY);
 
@@ -493,6 +549,10 @@ export function createDeckRenderer(canvas: HTMLCanvasElement, tier: QualityTier,
     ribbon: 0,
     tiles: 0,
     beacons: 0,
+    settles: 0,
+    fogFar: FOG_OFF,
+    floorVisible: ambientState.floor ? 1 : 0,
+    parallax: 0,
     tweens: 0,
     animatedEntities: 0,
     sceneWrites: 0,
@@ -545,6 +605,32 @@ export function createDeckRenderer(canvas: HTMLCanvasElement, tier: QualityTier,
     cameraTarget.set(state.target.x, state.target.y, state.target.z);
     camera.position.set(pose.x, pose.y, pose.z);
     camera.lookAt(cameraTarget);
+  };
+
+  /**
+   * Place the floor: the rail's own box centre plus the camera parallax. The
+   * parallax is a function of the camera pose only, so a settled camera never
+   * moves the floor and an idle deck still writes nothing.
+   */
+  const placeGrid = (): void => {
+    const offset = parallaxOffset(
+      lastCamera === null ? { x: floorX, z: floorZ } : cameraPose(lastCamera),
+      { x: floorX, z: floorZ },
+      ambientState.parallax,
+    );
+    grid.position.set(floorX + offset.x, -0.01, floorZ + offset.z);
+    stats.parallax = Math.round(Math.hypot(offset.x, offset.z) * 1000) / 1000;
+  };
+
+  /**
+   * Fog distances from the camera's own distance: what the operator is looking
+   * at keeps full contrast, what is beyond it recedes. Written as uniforms, so
+   * toggling the effect or moving the camera never re-compiles a program.
+   */
+  const updateFog = (): void => {
+    const plan = fogPlan(lastCamera?.distance ?? 1, ambientState.fog);
+    fog.near = plan.near;
+    fog.far = plan.far;
   };
 
   /**
@@ -611,12 +697,13 @@ export function createDeckRenderer(canvas: HTMLCanvasElement, tier: QualityTier,
   const beaconColour = new THREE.Color();
   const ribbonColour = new THREE.Color();
   const tileColour = new THREE.Color();
+  const settleColour = new THREE.Color();
   /** Per-bar merge scratch (`d07`): fixed size, so a cue frame allocates none. */
   const barCounts = new Float64Array(RIBBON_MAX_BARS);
   const barLanes = new Array<string | null>(RIBBON_MAX_BARS).fill(null);
   const beaconScratch = new THREE.Color();
-  /** The clear colour as a colour, for a cleared beacon's fade-out. */
-  const beaconFloor = new THREE.Color(BEACON_FLOOR);
+  /** The clear colour as a colour: what a cleared beacon / finished plate fades into. */
+  const floorFade = floorColour.clear.clone();
   /** Ring colour for one alert kind (severity is the ring count, not this). */
   const beaconToken = (kind: DeckAlertKind): THREE.Color => tokens[BEACON_TOKENS[kind]];
 
@@ -647,6 +734,13 @@ export function createDeckRenderer(canvas: HTMLCanvasElement, tier: QualityTier,
     for (const [entity, cue] of cues) {
       if (cueProgress(cue, at) >= 1) cues.delete(entity);
     }
+  };
+
+  /** How many cues of one kind are live (the settle's coalescing rule). */
+  const countCues = (kind: CueKind): number => {
+    let count = 0;
+    for (const cue of cues.values()) if (cue.kind === kind) count++;
+    return count;
   };
 
   const animatedIds: string[] = [];
@@ -822,14 +916,31 @@ export function createDeckRenderer(canvas: HTMLCanvasElement, tier: QualityTier,
       if (cue.kind !== "beacon-out" || cue.colour === undefined) continue;
       const t = ease(cueProgress(cue, at));
       const grow = CUE_START_SCALE + (1 - CUE_START_SCALE) * t;
-      beaconColour.copy(cue.colour).lerp(beaconFloor, t);
+      beaconColour.copy(cue.colour).lerp(floorFade, t);
       pushBeacon(cue.x ?? 0, cue.y ?? BEACON_Y, cue.z ?? 0, cue.rings ?? 1, grow, BEACON_DIM.high, beaconColour);
+    }
+
+    // Completion (`d13`): a finished slice's plate falls onto its pad and
+    // dissolves into the floor colour. Additive by construction — the pad's own
+    // height, colour and markers are the model's, written above, and the plate
+    // is a separate instance that exists only while the cue lasts. The whole
+    // effect is off (and every plate cue dropped) when the operator switches it
+    // off, or when the tier cannot afford it.
+    settles.count = 0;
+    if (ambientState.settle) {
+      for (const cue of cues.values()) {
+        if (cue.kind !== "settle") continue;
+        const t = ease(cueProgress(cue, at));
+        settleColour.copy(floorColour.settle).lerp(floorFade, t * 0.85);
+        pushInstance(settles, cue.x ?? 0, (cue.y ?? 0) + SETTLE_LIFT * (1 - t), cue.z ?? 0, 1, 1, 1, settleColour);
+      }
     }
 
     finishInstances(pads);
     finishInstances(markers);
     finishInstances(stations);
     finishInstances(beacons);
+    finishInstances(settles);
 
     // ---- the temporal layer (`d07`) ----
     //
@@ -910,6 +1021,11 @@ export function createDeckRenderer(canvas: HTMLCanvasElement, tier: QualityTier,
     stats.ribbon = ribbon.count;
     stats.tiles = tiles.count;
     stats.beacons = beacons.count;
+    // Completion plates (`d13`) are counted apart from `instances`: that number
+    // is the model's pools (pads + markers + stations + beacons + ribbon +
+    // tiles), and the specs' instance identity is built on it. A plate is a
+    // transient decoration with its own pool and its own counter.
+    stats.settles = settles.count;
     stats.stationSegments = focusedSegments;
     stats.tweens = cues.size;
     stats.animatedEntities = animatedEntityCount();
@@ -922,6 +1038,7 @@ export function createDeckRenderer(canvas: HTMLCanvasElement, tier: QualityTier,
       beacons.count * 24 +
       ribbon.count * 24 +
       tiles.count * 24 +
+      settles.count * 24 +
       edges.written +
       outlines.written +
       ringGeometry.getAttribute("position").count;
@@ -996,9 +1113,11 @@ export function createDeckRenderer(canvas: HTMLCanvasElement, tier: QualityTier,
     ring.visible = selected !== undefined;
     ring.position.set(selected?.x ?? 0, 0.025, selected?.z ?? 0);
 
-    // The floor follows the rail's extent, at a fixed world cell size. A change
-    // of division count is a structural change (a slice was added), never a
-    // status change.
+    // The floor follows the rail's extent, at a fixed world cell size, centred
+    // on the rail's box: the world's origin is the first pad's corner, so a
+    // grid left at the origin covers less than half of the run. A change of
+    // division count is a structural change (a slice was added), never a status
+    // change; a change of *centre* is one position write, not a rebuild.
     const plan = gridPlan(model.bounds);
     if (plan.divisions !== gridDivisions) {
       scene.remove(grid);
@@ -1011,6 +1130,9 @@ export function createDeckRenderer(canvas: HTMLCanvasElement, tier: QualityTier,
       gridVertices = grid.geometry.getAttribute("position").count;
       scene.add(grid);
     }
+    floorX = model.bounds.centerX;
+    floorZ = model.bounds.centerZ;
+    placeGrid();
 
     stats.vertices =
       gridVertices +
@@ -1020,6 +1142,7 @@ export function createDeckRenderer(canvas: HTMLCanvasElement, tier: QualityTier,
       beacons.count * 24 +
       ribbon.count * 24 +
       tiles.count * 24 +
+      settles.count * 24 +
       edges.written +
       outlines.written +
       ringGeometry.getAttribute("position").count;
@@ -1043,6 +1166,24 @@ export function createDeckRenderer(canvas: HTMLCanvasElement, tier: QualityTier,
       if (entity === null) continue; // recorded, not animated (`attempt`)
       if (delta.kind === "status") {
         addCue(entity, { kind: "pulse", id: delta.id, start: at, durationMs: cueMs });
+        // Completion (`d13`): a slice reaching `done` gets one settle plate, up
+        // to the coalescing cap — a burst of completions gets that many plates
+        // and ordinary highlights for the rest, never a queue that grows. The
+        // plate needs the pad's own height, so the node is looked up here.
+        if (delta.to === "done" && ambientState.settle) {
+          const node = nodesById.get(delta.id);
+          if (node !== undefined && countCues("settle") < SETTLE_MAX) {
+            addCue(`settle:${delta.id}`, {
+              kind: "settle",
+              id: delta.id,
+              start: at,
+              durationMs: SETTLE_MS,
+              x: node.x,
+              z: node.z,
+              y: (PAD_STYLES[node.status] ?? DEFAULT_PAD_STYLE).height,
+            });
+          }
+        }
         continue;
       }
       if (delta.kind === "stage") {
@@ -1094,7 +1235,13 @@ export function createDeckRenderer(canvas: HTMLCanvasElement, tier: QualityTier,
       return true;
     },
     setCamera(state: DeckCamera): void {
+      lastCamera = state;
       cameraFromState(state);
+      // Both ambient parameters are functions of the camera: the floor's
+      // parallax offset and the fog's near/far. One position write and two
+      // uniform writes — never a buffer rewrite, never a program switch.
+      placeGrid();
+      updateFog();
     },
     setHover(nodeId: string | null): void {
       if (nodeId === hoverId) return;
@@ -1166,6 +1313,22 @@ export function createDeckRenderer(canvas: HTMLCanvasElement, tier: QualityTier,
         stats.shadedPixels = stats.pixels * stats.fullScreenLayers + stats.linePixels;
       }
     },
+    setAmbient(next: AmbientState): void {
+      const previous = ambientState;
+      ambientState = next;
+      // Switching an effect off must not leave what it was drawing on screen:
+      // the floor leaves the draw list, and the plates of live settle cues go
+      // with it (the buffers are rewritten by the frame the caller requests, so
+      // `settles.count` is 0 from that write onward).
+      if (previous.floor !== next.floor) grid.visible = next.floor;
+      if (!next.settle && countCues("settle") > 0) {
+        for (const [entity, cue] of cues) {
+          if (cue.kind === "settle") cues.delete(entity);
+        }
+      }
+      if (previous.fog !== next.fog) updateFog();
+      if (previous.parallax !== next.parallax) placeGrid();
+    },
     render(): RenderStats {
       const at = now();
       if (Number.isFinite(lastRenderAt)) {
@@ -1208,6 +1371,10 @@ export function createDeckRenderer(canvas: HTMLCanvasElement, tier: QualityTier,
       stats.programs = info.programs?.length ?? 0;
       stats.textures = info.memory.textures;
       stats.geometries = info.memory.geometries;
+      // The expression layer's live values (`d13`), read after the frame that
+      // used them: the switch's own evidence.
+      stats.fogFar = fog.far;
+      stats.floorVisible = grid.visible ? 1 : 0;
       // Upper bound: no 1 px line covers more than the screen diagonal.
       stats.linePixels = Math.round(stats.lines * Math.hypot(width, height));
       stats.shadedPixels = stats.pixels * stats.fullScreenLayers + stats.linePixels;
@@ -1235,6 +1402,7 @@ export function createDeckRenderer(canvas: HTMLCanvasElement, tier: QualityTier,
         beacons.mesh,
         ribbon.mesh,
         tiles.mesh,
+        settles.mesh,
         edges.mesh,
         outlines.mesh,
         ring,
@@ -1247,6 +1415,7 @@ export function createDeckRenderer(canvas: HTMLCanvasElement, tier: QualityTier,
       beaconGeometry.dispose();
       ribbonGeometry.dispose();
       tileGeometry.dispose();
+      settleGeometry.dispose();
       ringGeometry.dispose();
       ringMaterial.dispose();
       surfaceMaterial.dispose();
@@ -1257,6 +1426,7 @@ export function createDeckRenderer(canvas: HTMLCanvasElement, tier: QualityTier,
       beacons.mesh.dispose();
       ribbon.mesh.dispose();
       tiles.mesh.dispose();
+      settles.mesh.dispose();
       edges.mesh.geometry.dispose();
       outlines.mesh.geometry.dispose();
       cues.clear();

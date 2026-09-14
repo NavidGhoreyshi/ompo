@@ -1,4 +1,5 @@
 import { expect, test, type Page } from "@playwright/test";
+import { AMBIENT_EFFECTS, AMBIENT_IDS, FOG_OFF } from "../../web/src/scene/ambient.ts";
 import { TIER_BUDGETS } from "../../web/src/scene/tier.ts";
 import { DECK_KEYS, type DeckCamera } from "../../web/src/scene/types.ts";
 import type { DeckSample } from "../../web/src/scene/instrument.ts";
@@ -71,6 +72,11 @@ interface DeckHook {
   logLines: number;
   positions: { id: string; x: number; z: number }[];
   screenPosition: ((id: string) => { x: number; y: number } | null) | null;
+  /** The expression layer (`d13`): effects running, plates drawn, drift, standing. */
+  ambient: string[];
+  settles: number;
+  cameraDrift: { x: number; z: number };
+  completion: { total: number; done: number; failed: number; skipped: number; remaining: number; complete: boolean; terminal: boolean; durationMs: number | null } | null;
 }
 
 /** Idle observation window; `DECK_IDLE_MS=20000` is how the slice review measured it. */
@@ -1335,3 +1341,183 @@ async function clickPad(page: Page, id: string): Promise<void> {
 function positionsKey(positions: { id: string; x: number; z: number }[]): string {
   return positions.map((p) => `${p.id}@${p.x},${p.z}`).join("|");
 }
+
+/**
+ * The expression pass (slice `d13`): the effect registry, its gate, and the
+ * promise that polish is optional.
+ *
+ * Three claims are tested here, and none of them is about looks: the deck runs
+ * exactly the set the tier/motion/prefs gate resolves; every effect has a
+ * working off switch that costs nothing (no camera move, no selection change,
+ * no re-created scene object) and persists; and with every effect off the deck
+ * is still a working surface — clickable pads, a camera, real frames.
+ */
+test.describe("deck expression pass", () => {
+  // The deck's own layout viewport (the same one the other deck specs use): the
+  // wall list and the lane strip are both anchored to the HUD's measured height,
+  // and the run-switch spec below opens the list.
+  test.use({ viewport: { width: 1440, height: 900 } });
+
+  test("the HUD lists every effect from the registry, with its tier and its switch", async ({ page }) => {
+    await gotoDeck(page);
+    // This machine classifies minimal: the clarifying set runs, the expression
+    // pass does not.
+    expect((await readHook(page)).ambient).toEqual(AMBIENT_IDS.filter((id) => id !== "drift"));
+
+    await page.locator(".omp-deck").press("h");
+    // The list is a disclosure inside the panel: one click, then its rows.
+    await expect(page.locator(".omp-deck-effects-head")).toHaveAttribute("aria-expanded", "false");
+    await page.locator(".omp-deck-effects-head").click();
+    await expect(page.locator(".omp-deck-effects-head")).toHaveAttribute("aria-expanded", "true");
+    const rows = page.locator(".omp-deck-effect");
+    await expect(rows).toHaveCount(AMBIENT_EFFECTS.length);
+    for (const effect of AMBIENT_EFFECTS) {
+      const row = page.locator(`.omp-deck-effect[data-effect="${effect.id}"]`);
+      const allowed = effect.id !== "drift"; // minimal, no MSAA box, motion "on"
+      await expect(row).toHaveAttribute("data-on", allowed ? "true" : "false");
+      await expect(row).toContainText(effect.label);
+      await expect(row.locator(".omp-deck-effect-tier")).toHaveText(effect.minTier);
+      // A row that cannot be switched on says why, in the panel's own words.
+      if (allowed) {
+        await expect(row).toHaveAttribute("data-blocked", "");
+      } else {
+        await expect(row).toHaveAttribute("data-blocked", `needs ${effect.minTier}`);
+        await expect(row.locator("input")).toBeDisabled();
+      }
+    }
+    await expect(page.locator("[data-ambient]").first()).toContainText(`effects:`);
+  });
+
+  test("switching an effect off moves nothing, reaches the scene, and persists", async ({ page }) => {
+    await gotoDeck(page);
+    await page.locator(".omp-deck").press("h");
+    await page.locator(".omp-deck-effects-head").click();
+    const before = await readHook(page);
+    const beforeSample = await readSample(page);
+    const camera = await settledCamera(page);
+    // The floor is in the draw list and the fog has a finite far plane.
+    expect(beforeSample.renderer?.floorVisible).toBe(1);
+    expect(beforeSample.renderer?.fogFar).toBeLessThan(FOG_OFF);
+
+    const floor = page.locator('.omp-deck-effect[data-effect="floor"]');
+    await floor.locator("input").uncheck();
+    await expect(floor).toHaveAttribute("data-on", "false");
+    await expect
+      .poll(async () => (await readHook(page)).ambient)
+      .toEqual(AMBIENT_IDS.filter((id) => id !== "floor" && id !== "drift"));
+    // The switch reached the renderer: the floor left the draw list (one draw
+    // call fewer) without re-creating a single scene object.
+    await expect.poll(async () => (await readSample(page)).renderer?.floorVisible).toBe(0);
+    await expect.poll(async () => (await readHook(page)).drawCalls).toBe(before.drawCalls - 1);
+
+    // The acceptance criterion: toggling an effect never moves the camera,
+    // changes the selection, or re-creates a scene object.
+    const after = await readHook(page);
+    const afterSample = await readSample(page);
+    expect(JSON.stringify(after.camera)).toBe(JSON.stringify(camera));
+    expect(after.selected).toBe(before.selected);
+    expect(after.focused).toBe(before.focused);
+    expect(after.nodes).toBe(before.nodes);
+    expect(after.instances).toBe(before.instances);
+    expect(afterSample.renderer?.geometries).toBe(beforeSample.renderer?.geometries);
+    expect(afterSample.renderer?.programs).toBe(beforeSample.renderer?.programs);
+
+    // Switching it back restores the floor, and the fog's own switch moves the
+    // far plane it is drawn with.
+    await floor.locator("input").check();
+    await expect.poll(async () => (await readSample(page)).renderer?.floorVisible).toBe(1);
+    const fog = page.locator('.omp-deck-effect[data-effect="fog"] input');
+    await fog.uncheck();
+    await expect.poll(async () => (await readSample(page)).renderer?.fogFar).toBe(FOG_OFF);
+    await fog.check();
+    await expect.poll(async () => (await readSample(page)).renderer?.fogFar).toBeLessThan(FOG_OFF);
+
+    // Persisted as an explicit off, and only the effects the operator touched.
+    await floor.locator("input").uncheck();
+    const stored = await page.evaluate(() => JSON.parse(window.localStorage.getItem("ompo.deck.prefs") ?? "{}") as { effects?: Record<string, boolean> });
+    expect(stored.effects).toEqual({ floor: false });
+
+    await page.reload();
+    await gotoDeck(page);
+    await expect.poll(async () => (await readHook(page)).ambient).toEqual(AMBIENT_IDS.filter((id) => id !== "floor" && id !== "drift"));
+    await page.locator(".omp-deck").press("h");
+    await page.locator(".omp-deck-effects-head").click();
+    await expect(page.locator('.omp-deck-effect[data-effect="floor"]')).toHaveAttribute("data-on", "false");
+    await expect.poll(async () => (await readSample(page)).renderer?.floorVisible).toBe(0);
+    console.log(`deck-d13-effects ${JSON.stringify({ ambient: after.ambient, stored: stored.effects, drawCalls: [before.drawCalls, after.drawCalls] })}`);
+  });
+
+  test("every effect off is still a working deck: selection, focus, camera, frames", async ({ page }) => {
+    await page.addInitScript(() => {
+      window.localStorage.setItem(
+        "ompo.deck.prefs",
+        JSON.stringify({
+          tier: "auto",
+          motion: "on",
+          forced: null,
+          effects: { floor: false, fog: false, parallax: false, settle: false, drift: false },
+        }),
+      );
+    });
+    await gotoDeck(page);
+    expect((await readHook(page)).ambient).toEqual([]);
+
+    const before = await readSample(page);
+    await selectPadViaMirror(page, "running");
+    await showWholeRail(page);
+    await page.locator(".omp-deck").press("]");
+    const after = await readHook(page);
+    const sample = await readSample(page);
+
+    // Real frames were drawn by those actions, and the world is the whole run.
+    expect(after.frames).toBeGreaterThan(before.frames);
+    expect(sample.frames).toBeGreaterThan(0);
+    expect(after.nodes).toBe(9);
+    expect(after.drawCalls).toBeGreaterThan(0);
+    expect(after.selected).not.toBeNull();
+    await expect(page.locator(".omp-deck-lane").first()).toBeVisible();
+    console.log(`deck-d13-plain ${JSON.stringify({ frames: sample.frames, drawCalls: after.drawCalls, objects: after.objects })}`);
+  });
+
+  test("reduced motion silences the animated effects and keeps the static ones", async ({ page }) => {
+    await page.addInitScript(() => {
+      window.localStorage.setItem("ompo.deck.prefs", JSON.stringify({ tier: "auto", motion: "reduced", forced: null }));
+    });
+    await gotoDeck(page);
+    expect((await readHook(page)).ambient).toEqual(["floor", "fog"]);
+    await page.locator(".omp-deck").press("h");
+    await page.locator(".omp-deck-effects-head").click();
+    // The panel explains each silenced effect rather than showing a dead switch.
+    for (const id of ["parallax", "settle"] as const) {
+      await expect(page.locator(`.omp-deck-effect[data-effect="${id}"]`)).toHaveAttribute("data-blocked", "motion is reduced");
+    }
+    await expect(page.locator('.omp-deck-effect[data-effect="floor"]')).toHaveAttribute("data-on", "true");
+  });
+
+  test("the run's ending is named once, from the DTOs, and only while it is true", async ({ page }) => {
+    await gotoDeck(page);
+    // The fixture's own run is still in flight: no ending to report.
+    expect(await page.locator(".omp-deck-complete").count()).toBe(0);
+
+    // A finished run — the second run in the same store, one slice, all done.
+    await page.locator(".omp-deck-time-wall").click();
+    await page
+      .locator(".omp-deck-wall-row")
+      .filter({ hasText: "e2e-overflow-probe-run-0123456789" })
+      .click();
+    const complete = page.locator(".omp-deck-complete");
+    await expect(complete).toHaveCount(1);
+    await expect(complete).toHaveAttribute("data-completion", "complete");
+    await expect(complete).toContainText("run complete · 1 slice");
+    const completion = (await readHook(page)).completion;
+    expect(completion?.complete).toBe(true);
+    expect(completion?.terminal).toBe(true);
+    expect(completion?.total).toBe(1);
+    console.log(`deck-d13-completion ${JSON.stringify(completion)}`);
+
+    // …and it is not a permanent banner: going back to the running run clears it.
+    await page.locator(".omp-deck-time-wall").click();
+    await page.locator(".omp-deck-wall-row").filter({ hasText: "e2emain" }).click();
+    await expect(complete).toHaveCount(0);
+  });
+});

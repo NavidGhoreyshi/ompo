@@ -21,7 +21,18 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { SliceDetail } from "../api.ts";
 import { INSPECTOR_TABS, type InspectorTab } from "../components/Inspector.tsx";
 import { describeEvent } from "../lib/events.ts";
+import { formatDurationMs } from "../lib/format.ts";
 import { appendDismissed, DISMISSED_KEY, dismissKey, parseDismissed, type DeckAlert } from "./alerts.ts";
+import {
+  AMBIENT_EFFECTS,
+  AMBIENT_IDS,
+  ambientEnabled,
+  ambientRows,
+  ambientSummary,
+  driftOffset,
+  toggleEffect,
+  type AmbientEffectId,
+} from "./ambient.ts";
 import { diffModels, type SceneDelta } from "./deltas.ts";
 import { attemptSegments, buildHistoryIndex, type RibbonBucket } from "./history.ts";
 import { buildDeckModel } from "./model.ts";
@@ -95,6 +106,7 @@ interface HudReadout {
   animatedEntities: number;
   sceneWrites: number;
   beacons: number;
+  settles: number;
   heapUsedBytes: number | null;
   heapReason: string;
   eventsPerSec: number;
@@ -254,8 +266,12 @@ function deckHook(): DeckDebugHook {
       ribbon: 0,
       tiles: 0,
       ribbonBuckets: 0,
+      settles: 0,
+      ambient: [],
+      completion: null,
       playing: false,
       camera: { ...DEFAULT_CAMERA, target: { ...DEFAULT_CAMERA.target } },
+      cameraDrift: { x: 0, z: 0 },
       stationSegments: 0,
       liveRows: 0,
       logLines: 0,
@@ -338,6 +354,14 @@ export default function Deck({
   /** The camera as the renderer last received it, and the flight in progress. */
   const cameraRef = useRef<DeckCamera>(DEFAULT_CAMERA);
   const tweenRef = useRef<{ from: DeckCamera; to: DeckCamera; startedAt: number; durationMs: number } | null>(null);
+  /**
+   * Focus drift (`d13`): the phase's origin (the mount, so the wander continues
+   * across animation episodes instead of restarting) and whether the pose on
+   * the canvas is currently drifted — the flag that guarantees the exact
+   * framing is restored before the loop settles.
+   */
+  const driftEpochRef = useRef(performance.now());
+  const driftAppliedRef = useRef(false);
   /** What the last framing decision was about, so it happens once per change. */
   const framingRef = useRef<{ focusId: string | null; shape: string } | null>(null);
   /** Set when a model change still owes the scene a frame (the latency stage). */
@@ -362,6 +386,8 @@ export default function Deck({
   const [autoStopped, setAutoStopped] = useState(false);
   const [downgradeNotice, setDowngradeNotice] = useState<TierDowngrade | null>(null);
   const [noticeDismissed, setNoticeDismissed] = useState(false);
+  /** The effects list is a disclosure inside the HUD panel (`d13`). */
+  const [effectsOpen, setEffectsOpen] = useState(false);
   /** The tier before any automatic demotion: classification or the pin. */
   const baseTier: QualityTier =
     prefs.tier === "auto" ? (rendererString === null ? "standard" : classifyRenderer(rendererString)) : prefs.tier;
@@ -407,6 +433,15 @@ export default function Deck({
   // mount. The explicit choice is what lets `M` turn motion back on where the
   // OS asks for reduced motion.
   const reducedMotion = prefs.motion === "system" ? systemReducedMotion : prefs.motion === "reduced";
+  /**
+   * The expression layer (`d13`): which effects this deck is running, resolved
+   * from the tier, the motion choice and the operator's own overrides. A tier
+   * change (an automatic demotion included) re-resolves it, which is how a
+   * machine that cannot afford an effect stops paying for it mid-session.
+   */
+  const ambientState = useMemo(() => ambientEnabled(tier, prefs, reducedMotion), [tier, prefs, reducedMotion]);
+  const ambientRef = useRef(ambientState);
+  ambientRef.current = ambientState;
   // Which projection may render (`d09`). The decision is made before any
   // renderer exists, so a no-WebGL2 device never creates a canvas it cannot
   // use; a lost or uncreatable context degrades to the same flat surface.
@@ -514,6 +549,7 @@ export default function Deck({
           nodes: lastModelRef.current.nodes,
           edges: lastModelRef.current.edges,
           counts: lastModelRef.current.counts,
+          completion: lastModelRef.current.completion,
           primaryId: lastModelRef.current.primaryId,
           liveIds: lastModelRef.current.liveIds,
           alerts: lastModelRef.current.alerts,
@@ -542,6 +578,36 @@ export default function Deck({
   // it cannot (so the lane list stays complete); the difference is the HUD's
   // overflow and what the scene folds into its stack marker.
   const pooledStations = model.stations.length - model.stationOverflow;
+  /**
+   * The run's ending (`d13`), as one line — `null` while anything is still to
+   * run, and while the deck is at a historical cursor (the pads show the
+   * recorded state then; "complete" is a present-tense claim). Complete is the
+   * strict all-done case; a run that ended with failures or skips says what is
+   * left over instead of staying silent, because "finished" and "done" are not
+   * the same answer and the operator is owed the difference.
+   */
+  const completion = model.completion;
+  const completionLine =
+    historySeq !== null || completion === null || !completion.terminal
+      ? null
+      : completion.complete
+        ? `run complete · ${completion.total} slice${completion.total === 1 ? "" : "s"}${
+            completion.durationMs === null ? "" : ` · ${formatDurationMs(completion.durationMs)}`
+          }`
+        : `run finished · ${completion.done}/${completion.total} done${
+            completion.failed > 0 ? ` · ${completion.failed} failed` : ""
+          }${completion.skipped > 0 ? ` · ${completion.skipped} skipped` : ""}${
+            completion.blocked > 0 ? ` · ${completion.blocked} blocked` : ""
+          }`;
+
+  /** Switch one effect on or off (`d13`); the renderer follows on the next frame. */
+  const setEffect = useCallback((id: AmbientEffectId, on: boolean): void => {
+    setPrefs((current) => {
+      const next = toggleEffect(current, id, on);
+      writePrefs(next);
+      return next;
+    });
+  }, []);
 
   /**
    * The deck subtree is the mutation/layout subject the instrument watches —
@@ -782,7 +848,7 @@ export default function Deck({
 
     let renderer: DeckRenderer;
     try {
-      renderer = createDeckRenderer(canvas, tier, { reducedMotion });
+      renderer = createDeckRenderer(canvas, tier, { reducedMotion, ambient: ambientRef.current });
     } catch (error) {
       console.error("deck: WebGL2 context unavailable", error);
       setContextFailed(true);
@@ -819,6 +885,36 @@ export default function Deck({
           refreshEdgeMarkers();
         }
       }
+      /**
+       * Focus drift (`d13`): while a worker is live and the deck is already
+       * animating (a camera flight, a transition cue), the framing breathes by
+       * at most half a world unit. It is deliberately *not* a reason to render:
+       * a settled deck draws no frame for it, and the frame that ends the last
+       * animation restores the exact framing (below), so the world never rests
+       * in a drifted pose and the published camera never moves.
+       */
+      const driftOn = ambientRef.current.drift && modelRef.current.focusId !== null;
+      if (driftOn && (active.animating() || tweenRef.current !== null)) {
+        const offset = driftOffset(performance.now() - driftEpochRef.current, true);
+        // Published into a stable object (the specs read it): a camera flight
+        // must not allocate per frame any more than the scene does.
+        hook.cameraDrift.x = offset.x;
+        hook.cameraDrift.z = offset.z;
+        active.setCamera({
+          ...cameraRef.current,
+          target: {
+            x: cameraRef.current.target.x + offset.x,
+            y: cameraRef.current.target.y,
+            z: cameraRef.current.target.z + offset.z,
+          },
+        });
+        driftAppliedRef.current = true;
+      } else if (driftAppliedRef.current) {
+        active.setCamera(cameraRef.current);
+        hook.cameraDrift.x = 0;
+        hook.cameraDrift.z = 0;
+        driftAppliedRef.current = false;
+      }
       const started = performance.now();
       const stats = active.render();
       const renderMs = performance.now() - started;
@@ -836,6 +932,17 @@ export default function Deck({
       hook.tweens = stats.tweens;
       hook.animatedEntities = stats.animatedEntities;
       hook.beacons = stats.beacons;
+      hook.settles = stats.settles;
+      // A drift that ends *inside* this frame (the cue it rode expired) must not
+      // be left painted: one more frame restores the exact framing and then the
+      // loop settles, because nothing else is dirty.
+      if (driftAppliedRef.current && !active.animating() && tweenRef.current === null) {
+        active.setCamera(cameraRef.current);
+        hook.cameraDrift.x = 0;
+        hook.cameraDrift.z = 0;
+        driftAppliedRef.current = false;
+        loop.request();
+      }
       // The scene stage of the event pipeline: the first frame that draws a
       // changed model. Attribution is per event record (instrument.ts).
       if (sceneStagePendingRef.current) {
@@ -900,6 +1007,18 @@ export default function Deck({
     // `availability` is in here so switching to flat (a lost context, `T`)
     // disposes the renderer, and returning to 3D builds one on the fresh canvas.
   }, [availability, ready, rendererString, contextKey]);
+
+  // The expression layer (`d13`): one writer for the renderer and the hook. A
+  // toggle is applied on the next frame, never rebuilds the context, and never
+  // touches the model — the state on screen is the same state either way.
+  useEffect(() => {
+    const renderer = rendererRef.current;
+    const hook = deckHook();
+    hook.ambient = AMBIENT_IDS.filter((id) => ambientState[id]);
+    if (!renderer) return;
+    renderer.setAmbient(ambientState);
+    loopRef.current?.request();
+  }, [ambientState]);
 
   // The tier, where it came from, and the automatic-demotion record (`d10`).
   // One writer for all of it: the renderer lifecycle above and the parameter
@@ -1002,6 +1121,7 @@ export default function Deck({
     hook.alerts = model.alerts.length;
     hook.alertsOverflow = model.alertsOverflow;
     hook.stationOverflow = model.stationOverflow;
+    hook.completion = model.completion;
   }, [model]);
 
   useEffect(() => {
@@ -1134,6 +1254,7 @@ export default function Deck({
         animatedEntities: stats.animatedEntities,
         sceneWrites: stats.sceneWrites,
         beacons: stats.beacons,
+        settles: stats.settles,
         heapUsedBytes: sample.heap.usedBytes,
         heapReason: sample.heap.reason,
         eventsPerSec: sample.events.perSec,
@@ -1801,68 +1922,102 @@ export default function Deck({
       {overlay}
       {dockPanel}
       <div className="omp-deck-hud" ref={hudRef}>
+        {/* The compact row, in three clusters — what the run *is* (identity,
+            state, alerts), what the frame *costs*, and where the camera is
+            pointed. The order is the operator's hierarchy: a live worker and a
+            critical alert outrank a frame counter, so the state cluster leads
+            and the event line gets a line of its own. Clustering is
+            presentation only: every chip keeps its own class and data
+            attributes, so nothing that reads the HUD has to know about it. */}
         <div className="omp-deck-row">
-          <span className="omp-deck-chip" data-tier={tier} data-tier-source={tierSource}>
-            {tier}
-            {tierSource === "auto" ? " · auto" : " · pinned"}
-          </span>
-          {downgradeNotice !== null && !noticeDismissed && (
-            <span className="omp-deck-warn omp-deck-downgrade" role="status" data-downgrade-to={downgradeNotice.to}>
-              downgraded to {downgradeNotice.to} — {Math.round(downgradeNotice.medianMs)} ms/frame
-              <button
-                type="button"
-                className="omp-deck-button omp-deck-downgrade-x"
-                aria-label="Dismiss the downgrade notice"
-                onClick={() => setNoticeDismissed(true)}
+          <span className="omp-deck-group" data-group="state">
+            <span className="omp-deck-chip" data-tier={tier} data-tier-source={tierSource}>
+              {tier}
+              {tierSource === "auto" ? " · auto" : " · pinned"}
+            </span>
+            {downgradeNotice !== null && !noticeDismissed && (
+              <span className="omp-deck-warn omp-deck-downgrade" role="status" data-downgrade-to={downgradeNotice.to}>
+                downgraded to {downgradeNotice.to} — {Math.round(downgradeNotice.medianMs)} ms/frame
+                <button
+                  type="button"
+                  className="omp-deck-button omp-deck-downgrade-x"
+                  aria-label="Dismiss the downgrade notice"
+                  onClick={() => setNoticeDismissed(true)}
+                >
+                  ×
+                </button>
+              </span>
+            )}
+            {tier === "minimal" && <span className="omp-deck-warn">software renderer detected</span>}
+            <span className="omp-deck-metric" data-live={live ? "true" : "false"}>
+              {live ? "live" : "quiescent"}
+            </span>
+            <span className="omp-deck-metric" data-live-count={model.liveIds.length} data-station-count={pooledStations}>
+              {stationCountLabel(model.liveIds.length, pooledStations)} · showing {model.focusId ?? "—"}
+              {pinnedId !== null ? ` · pinned` : ""}
+            </span>
+            <span className="omp-deck-metric" data-alert-count={model.alerts.length} data-beacon-count={model.beaconAlerts.length}>
+              alerts: {model.alerts.length}
+              {model.alertsOverflow > 0 ? ` · ${model.alertsOverflow} over the beacon cap` : ""}
+            </span>
+            {/* The run's ending (`d13`): one line, derived from the counts the
+                pads already show plus the DTO's own wall clock, present tense
+                only (a historical cursor has its own honest reading). */}
+            {completionLine !== null && (
+              <span
+                className="omp-deck-complete"
+                role="status"
+                data-completion={model.completion.complete ? "complete" : "finished"}
+                data-completion-done={model.completion.done}
+                data-completion-total={model.completion.total}
               >
-                ×
-              </button>
+                {completionLine}
+              </span>
+            )}
+            {model.warnings.length > 0 && (
+              <span className="omp-deck-warn" data-slot-warnings={model.warnings.length}>
+                {model.warnings.length} slot warning{model.warnings.length === 1 ? "" : "s"}
+              </span>
+            )}
+          </span>
+          <span className="omp-deck-group" data-group="frame">
+            <span className="omp-deck-metric">{readout ? `${readout.fps.toFixed(0)} fps` : "— fps"}</span>
+            <span className="omp-deck-metric" data-fps-cap={budget.maxFps}>
+              {budget.maxFps} fps cap
             </span>
-          )}
-          {tier === "minimal" && <span className="omp-deck-warn">software renderer detected</span>}
-          <span className="omp-deck-metric">{readout ? `${readout.fps.toFixed(0)} fps` : "— fps"}</span>
-          <span className="omp-deck-metric" data-fps-cap={budget.maxFps}>
-            {budget.maxFps} fps cap
-          </span>
-          <span className="omp-deck-metric">{readout?.drawCalls ?? 0} calls</span>
-          <span className="omp-deck-metric">{readout?.objects ?? 0} objects</span>
-          <span className="omp-deck-metric" data-model="true">
-            {model.nodes.length} pads · {model.edges.length} edges
-          </span>
-          <span className="omp-deck-metric">
-            {budget.resolutionScale}× · {readout?.pixels ?? 0} px
-          </span>
-          <span className="omp-deck-metric">run {runId ?? "none"}</span>
-          <span className="omp-deck-metric" data-live={live ? "true" : "false"}>
-            {live ? "live" : "quiescent"}
-          </span>
-          <span className="omp-deck-metric" data-live-count={model.liveIds.length} data-station-count={pooledStations}>
-            {stationCountLabel(model.liveIds.length, pooledStations)} · showing {model.focusId ?? "—"}
-            {pinnedId !== null ? ` · pinned` : ""}
-          </span>
-          <span className="omp-deck-metric" data-motion={reducedMotion ? "reduced" : "full"}>
-            motion: {reducedMotion ? "reduced" : "full"}
-          </span>
-          <span
-            className="omp-deck-metric"
-            data-history={model.historySeq === null ? "live" : "past"}
-            data-history-seq={model.historySeq ?? ""}
-          >
-            {model.historySeq === null
-              ? "at now"
-              : `at seq ${model.historySeq}${playing ? " · playing" : ""}${model.historyActive > 0 ? ` · ${model.historyActive} active` : ""}`}
-          </span>
-          <span className="omp-deck-metric" data-alert-count={model.alerts.length} data-beacon-count={model.beaconAlerts.length}>
-            alerts: {model.alerts.length}
-            {model.alertsOverflow > 0 ? ` · ${model.alertsOverflow} over the beacon cap` : ""}
-          </span>
-          {model.warnings.length > 0 && (
-            <span className="omp-deck-warn" data-slot-warnings={model.warnings.length}>
-              {model.warnings.length} slot warning{model.warnings.length === 1 ? "" : "s"}
+            <span className="omp-deck-metric">{readout?.drawCalls ?? 0} calls</span>
+            <span className="omp-deck-metric">{readout?.objects ?? 0} objects</span>
+            <span className="omp-deck-metric">
+              {budget.resolutionScale}× · {readout?.pixels ?? 0} px
             </span>
-          )}
+          </span>
+          <span className="omp-deck-group" data-group="world">
+            <span className="omp-deck-metric" data-model="true">
+              {model.nodes.length} pads · {model.edges.length} edges
+            </span>
+            <span className="omp-deck-metric">run {runId ?? "none"}</span>
+            <span className="omp-deck-metric" data-motion={reducedMotion ? "reduced" : "full"}>
+              motion: {reducedMotion ? "reduced" : "full"}
+            </span>
+            <span
+              className="omp-deck-metric"
+              data-history={model.historySeq === null ? "live" : "past"}
+              data-history-seq={model.historySeq ?? ""}
+            >
+              {model.historySeq === null
+                ? "at now"
+                : `at seq ${model.historySeq}${playing ? " · playing" : ""}${model.historyActive > 0 ? ` · ${model.historyActive} active` : ""}`}
+            </span>
+            <span className="omp-deck-metric" data-ambient={ambientSummary(ambientState)}>
+              effects: {ambientSummary(ambientState)}
+            </span>
+          </span>
+          {/* What just changed: its own line, because it is the one chip whose
+              content moves at run cadence — and the answer to the operator's
+              third question. */}
           {lastEvent && (
             <span className="omp-deck-event" ref={(element) => markRendered(element, lastEvent.seq)}>
+              <span className="omp-deck-event-tag">last change</span>
               {lastEvent.type}
               {lastEvent.sliceId ? ` · ${lastEvent.sliceId}` : ""}
               {describeEvent(lastEvent) && ` · ${describeEvent(lastEvent)}`} · seq {lastEvent.seq}
@@ -1917,8 +2072,15 @@ export default function Deck({
               <div>
                 <dt>transitions</dt>
                 <dd>
-                  {readout?.tweens ?? 0} cues · {readout?.animatedEntities ?? 0} entities · {readout?.sceneWrites ?? 0} scene writes
+                  {readout?.tweens ?? 0} cues · {readout?.animatedEntities ?? 0} entities · {readout?.settles ?? 0} completion
+                  plates · {readout?.sceneWrites ?? 0} scene writes
                   {reducedMotion ? " · motion reduced" : ""}
+                </dd>
+              </div>
+              <div>
+                <dt>effects</dt>
+                <dd data-ambient={ambientSummary(ambientState)}>
+                  {ambientSummary(ambientState)} · {AMBIENT_EFFECTS.filter((effect) => ambientState[effect.id]).map((effect) => effect.id).join(", ") || "none"}
                 </dd>
               </div>
               <div>
@@ -1981,6 +2143,70 @@ export default function Deck({
                 <dd>{readout?.heapUsedBytes === null || readout?.heapUsedBytes === undefined ? readout?.heapReason || "—" : `${(readout.heapUsedBytes / 1048576).toFixed(1)} MB`}</dd>
               </div>
             </dl>
+            {/* Effects (`d13`): the one part of the panel that is a *setting*
+                rather than a measurement, so it is rendered from the registry
+                itself — a new effect appears here with its tier requirement and
+                its off switch, and nothing else has to know it exists. The list
+                is a disclosure (the alert stack's own pattern): the panel keeps
+                its summary line and the deck keeps its DOM budget, which a
+                mount of thirty extra rows in the same tick would spend. */}
+            <section className="omp-deck-effects" aria-label="Visual effects">
+              <button
+                type="button"
+                className="omp-deck-effects-head"
+                aria-expanded={effectsOpen}
+                onClick={() => setEffectsOpen((open) => !open)}
+              >
+                <span className="omp-deck-effects-title">visual effects</span>
+                <span className="omp-deck-effects-summary" data-ambient={ambientSummary(ambientState)}>
+                  {ambientSummary(ambientState)}
+                </span>
+                <span className="omp-deck-effects-toggle" aria-hidden="true">
+                  {effectsOpen ? "▾" : "▸"}
+                </span>
+              </button>
+                {effectsOpen && (
+                <>
+                  <p className="omp-deck-subject">
+                    Each one decorates or clarifies the surface; none of them changes what the deck reports, and all of them
+                    off is still a fully working deck.
+                  </p>
+                  <ul className="omp-deck-effect-list">
+                    {ambientRows(tier, prefs, reducedMotion).map(({ effect, on, blocked, defaultedOff }) => (
+                      <li
+                        key={effect.id}
+                        className="omp-deck-effect"
+                        data-effect={effect.id}
+                        data-on={on ? "true" : "false"}
+                        data-blocked={blocked ?? ""}
+                        data-default-off={defaultedOff ? "true" : "false"}
+                        data-cost={effect.cost}
+                      >
+                        <label>
+                          <input
+                            type="checkbox"
+                            checked={on}
+                            disabled={blocked !== null}
+                            onChange={(event) => setEffect(effect.id, event.currentTarget.checked)}
+                          />
+                          <span className="omp-deck-effect-label">{effect.label}</span>
+                          <span className="omp-deck-effect-tier" title={`cheapest tier that may run it: ${effect.minTier}`}>
+                            {effect.minTier}
+                          </span>
+                          <span className="omp-deck-effect-note">
+                            {blocked !== null
+                              ? `${blocked} — ${effect.off}`
+                              : defaultedOff
+                                ? `off by default at this tier — ${effect.off}`
+                                : effect.description}
+                          </span>
+                        </label>
+                      </li>
+                    ))}
+                  </ul>
+                </>
+              )}
+            </section>
             {/* The keyboard help moved to the overlay (`d09`): `H` opens it
                 from either surface, including flat mode where no HUD exists. */}
           </div>
