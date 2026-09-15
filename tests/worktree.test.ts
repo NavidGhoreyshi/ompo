@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { gitWorktreeOps, inPlaceWorktreeOps } from "../src/worktree.ts";
@@ -66,6 +66,32 @@ describe("worktree (git)", () => {
     const dir = initRepo();
     const first = gitWorktreeOps.ensure(dir, "r1", "a");
     expect(gitWorktreeOps.ensure(dir, "r1", "a")).toBe(first);
+  });
+
+  test("ensure repairs a registered-but-unusable worktree instead of failing forever", () => {
+    const dir = initRepo();
+    const wt = gitWorktreeOps.ensure(dir, "r1", "a");
+    // Simulate the Windows failure: admin entry exists, checkout gutted
+    // (only .git + ROADMAP.md), re-attach fails with "already exists".
+    for (const entry of readdirSync(wt)) {
+      if (entry !== ".git") rmSync(join(wt, entry), { recursive: true, force: true });
+    }
+    writeFileSync(join(wt, "ROADMAP.md"), "stale\n", "utf8");
+    const repaired = gitWorktreeOps.ensure(dir, "r1", "a");
+    expect(repaired).toBe(wt);
+    expect(existsSync(join(wt, "base.txt"))).toBe(true);
+  });
+
+  test("ensure matches registered paths across separator styles (Windows C:/ vs C:\\)", () => {
+    const dir = initRepo();
+    const wt = gitWorktreeOps.ensure(dir, "r1", "a");
+    // The bug: `worktree list` prints C:\… while pathOf builds C:/… (or the
+    // reverse through interop) — exact match misses, re-add dies "already
+    // exists". Normalization must make them equal; assert the invariant
+    // directly since one git binary prints one style per host.
+    const norm = (p: string): string => p.replace(/\\/g, "/");
+    expect(norm("C:\\Users\\x\\proj\\.omp\\roadmap\\worktrees\\r1-a")).toBe(norm("C:/Users/x/proj/.omp/roadmap/worktrees/r1-a"));
+    expect(gitWorktreeOps.ensure(dir, "r1", "a")).toBe(wt);
   });
 
   test("empty branch merges as a no-op", () => {

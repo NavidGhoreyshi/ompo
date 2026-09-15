@@ -12,7 +12,7 @@
  */
 
 import { spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, symlinkSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, rmSync, symlinkSync } from "node:fs";
 import { join } from "node:path";
 
 export interface MergeOutcome {
@@ -79,10 +79,36 @@ export const gitWorktreeOps: WorktreeOps = {
     const wt = pathOf(projectDir, runId, sliceId);
     const branch = branchOf(runId, sliceId);
     mkdirSync(join(projectDir, ".omp", "roadmap", "worktrees"), { recursive: true });
+    // Git prints worktree paths with its own separators; on a Windows checkout
+    // driven through WSL interop the same dir can read `C:/…` from one git and
+    // `C:\…` (or a /mnt/c/… mount alias) from another. Compare normalized, or
+    // a registered worktree is invisible and the re-add fails "already exists".
+    const norm = (p: string): string => p.replace(/\\/g, "/").replace(/^\/mnt\/([a-z])\//, (_, d: string) => `${d.toUpperCase()}:/`);
     const listed = git(projectDir, "worktree", "list", "--porcelain");
-    if (listed.exit === 0 && listed.out.split("\n").some((l) => l === `worktree ${wt}`)) {
-      linkSharedState(projectDir, wt);
-      return wt; // resume/retry: worktree already registered
+    const registered = listed.exit === 0 && listed.out.split("\n").some((l) => l.startsWith("worktree ") && norm(l.slice(9).trim()) === norm(wt));
+    if (registered) {
+      // A previous attempt that died between `worktree add` and first use can
+      // leave a registered-but-contentless worktree behind (observed on
+      // Windows: admin gitdir entry exists, checkout dir has only `.git` +
+      // ROADMAP.md — `rev-parse` still passes there, so entry count is the
+      // probe. Repair once: drop the stale registration and re-add below; a
+      // healthy worktree returns early.
+      const probe = git(wt, "rev-parse", "--show-toplevel");
+      let entries: string[] = [".git", "x"];
+      try {
+        entries = readdirSync(wt);
+      } catch {
+        entries = [".git", "x"];
+      }
+      const content = entries.filter((e) => e !== ".git");
+      const contentless = probe.exit === 0 && (content.length === 0 || (content.length === 1 && content[0] === "ROADMAP.md"));
+      if (probe.exit !== 0 || contentless) {
+        git(projectDir, "worktree", "remove", "--force", wt);
+        rmSync(wt, { recursive: true, force: true });
+      } else {
+        linkSharedState(projectDir, wt);
+        return wt; // resume/retry: worktree already registered
+      }
     }
     let r = git(projectDir, "worktree", "add", "-b", branch, wt, "HEAD");
     if (r.exit !== 0) {
